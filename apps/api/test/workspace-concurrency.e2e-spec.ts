@@ -1,5 +1,6 @@
 import {
   bootstrapE2eApp,
+  createActiveUserAndLogin,
   createWorkspaceAsOwner,
   extractToken,
   getLatestEmailFor,
@@ -256,33 +257,129 @@ describe("Workspace concurrency (e2e)", () => {
     );
   });
 
-  describe("Concurrent invitation acceptance", () => {
-    it("only one of two simultaneous accept attempts on the same token succeeds", async () => {
-      const owner = await loginAsPlatformOwner(ctx);
-      const ws = await createWorkspaceAsOwner(ctx, owner.accessToken);
-      const email = uniqueEmail("concurrent-accept");
+  describe("Concurrent invitation acceptance (Module 1C.1 defect patch)", () => {
+    // Module 1C.1: two concurrent accept() calls on the same token used to
+    // produce one clean 200 and one UNHANDLED 500 (a raw Prisma unique-
+    // constraint exception escaping to the client). Both branches that can
+    // reach a create() call racily are covered here — see the inline note
+    // on why both are reachable, not just one.
 
-      await request(ctx.app.getHttpServer())
-        .post(`/api/v1/workspaces/${ws.publicId}/invitations`)
-        .set("Authorization", `Bearer ${owner.accessToken}`)
-        .set("X-Workspace-Id", ws.publicId)
-        .send({ email, roleName: "Content Writer" })
-        .expect(201);
-      const inviteEmail = await getLatestEmailFor(email);
-      const token = extractToken(inviteEmail.body);
+    it(
+      "new/PENDING_ACTIVATION-user branch: one request succeeds, the loser gets a clean 409, no duplicate state, no 500",
+      async () => {
+        const owner = await loginAsPlatformOwner(ctx);
+        const ws = await createWorkspaceAsOwner(ctx, owner.accessToken);
+        const email = uniqueEmail("concurrent-accept-new-user");
 
-      const [r1, r2] = await Promise.all([
-        request(ctx.app.getHttpServer()).post(`/api/v1/invitations/${token}/accept`),
-        request(ctx.app.getHttpServer()).post(`/api/v1/invitations/${token}/accept`),
-      ]);
+        // No account exists for this email yet — accept() will take the
+        // case-B branch, whose tx.user.create() is the exact call site
+        // that raced on users.email before this patch.
+        await request(ctx.app.getHttpServer())
+          .post(`/api/v1/workspaces/${ws.publicId}/invitations`)
+          .set("Authorization", `Bearer ${owner.accessToken}`)
+          .set("X-Workspace-Id", ws.publicId)
+          .send({ email, roleName: "Content Writer" })
+          .expect(201);
+        const inviteEmail = await getLatestEmailFor(email);
+        const token = extractToken(inviteEmail.body);
 
-      const succeeded = [r1, r2].filter((r) => r.status === 200);
-      expect(succeeded).toHaveLength(1);
+        const [r1, r2] = await Promise.all([
+          request(ctx.app.getHttpServer()).post(`/api/v1/invitations/${token}/accept`),
+          request(ctx.app.getHttpServer()).post(`/api/v1/invitations/${token}/accept`),
+        ]);
 
-      const wsRow = await ctx.prisma.workspace.findFirstOrThrow({ where: { publicId: ws.publicId } });
-      const user = await ctx.prisma.user.findFirstOrThrow({ where: { email } });
-      const memberships = await ctx.prisma.workspaceMember.findMany({ where: { workspaceId: wsRow.id, userId: user.id } });
-      expect(memberships).toHaveLength(1); // no duplicate membership row from the double-accept race
-    });
+        const statuses = [r1.status, r2.status].sort((a, b) => a - b);
+        expect(statuses).toEqual([200, 409]);
+        expect(statuses).not.toContain(500);
+
+        const loser = r1.status === 409 ? r1 : r2;
+        expect(loser.body.code).toBe("INVITATION_ALREADY_ACCEPTED");
+        // No Prisma internals (constraint names, stack traces, "Invalid
+        // `tx.user.create()` invocation", etc.) ever reach the client.
+        expect(JSON.stringify(loser.body)).not.toMatch(/prisma|constraint|invocation/i);
+
+        const wsRow = await ctx.prisma.workspace.findFirstOrThrow({ where: { publicId: ws.publicId } });
+        const user = await ctx.prisma.user.findFirstOrThrow({ where: { email } });
+
+        // Exactly one workspace_members row.
+        const memberships = await ctx.prisma.workspaceMember.findMany({ where: { workspaceId: wsRow.id, userId: user.id } });
+        expect(memberships).toHaveLength(1);
+
+        // Invitation is ACCEPTED, accepted_by is the winning user, exactly once.
+        const invitationRow = await ctx.prisma.workspaceInvitation.findFirstOrThrow({ where: { invitedEmail: email } });
+        expect(invitationRow.status).toBe("ACCEPTED");
+        expect(invitationRow.acceptedById).toBe(user.id);
+
+        // Exactly one USER_CREATED and one WORKSPACE_MEMBER_PENDING_ACTIVATION
+        // event — the loser's transaction rolled back before writing any audit
+        // row, so nothing is duplicated.
+        const userCreatedEvents = await ctx.prisma.auditLog.findMany({ where: { action: "USER_CREATED", entityId: user.publicId } });
+        const memberPendingEvents = await ctx.prisma.auditLog.findMany({
+          where: { action: "WORKSPACE_MEMBER_PENDING_ACTIVATION", workspaceId: wsRow.id, entityId: user.publicId },
+        });
+        expect(userCreatedEvents).toHaveLength(1);
+        expect(memberPendingEvents).toHaveLength(1);
+
+        // A single, valid activation token exists (not zero, not two).
+        const tokens = await ctx.prisma.userActionToken.findMany({
+          where: { userId: user.id, purpose: "ACCOUNT_ACTIVATION", status: "PENDING" },
+        });
+        expect(tokens).toHaveLength(1);
+      },
+      20_000,
+    );
+
+    it(
+      "existing-ACTIVE-user branch: one request succeeds, the loser gets a clean 409, no duplicate membership, no 500",
+      async () => {
+        const owner = await loginAsPlatformOwner(ctx);
+        const ws = await createWorkspaceAsOwner(ctx, owner.accessToken);
+        const member = await createActiveUserAndLogin(ctx, "concurrent-accept-existing-user");
+
+        // Inviting an already-ACTIVE user binds invitedUserId at creation
+        // (Module 1C Engineering Plan §2.C″(A)) — accept() takes the Case A
+        // path, whose joinAsActive() -> tx.workspaceMember.create() is the
+        // analogous racy call site for this branch (a different unique
+        // constraint — workspace_members(workspace_id,user_id) — but the
+        // exact same class of race, on a double-submitted accept from the
+        // same session).
+        await request(ctx.app.getHttpServer())
+          .post(`/api/v1/workspaces/${ws.publicId}/invitations`)
+          .set("Authorization", `Bearer ${owner.accessToken}`)
+          .set("X-Workspace-Id", ws.publicId)
+          .send({ email: member.email, roleName: "Content Writer" })
+          .expect(201);
+        const inviteEmail = await getLatestEmailFor(member.email);
+        const token = extractToken(inviteEmail.body);
+
+        const [r1, r2] = await Promise.all([
+          request(ctx.app.getHttpServer()).post(`/api/v1/invitations/${token}/accept`).set("Authorization", `Bearer ${member.accessToken}`),
+          request(ctx.app.getHttpServer()).post(`/api/v1/invitations/${token}/accept`).set("Authorization", `Bearer ${member.accessToken}`),
+        ]);
+
+        const statuses = [r1.status, r2.status].sort((a, b) => a - b);
+        expect(statuses).toEqual([200, 409]);
+        expect(statuses).not.toContain(500);
+
+        const loser = r1.status === 409 ? r1 : r2;
+        expect(loser.body.code).toBe("INVITATION_ALREADY_ACCEPTED");
+        expect(JSON.stringify(loser.body)).not.toMatch(/prisma|constraint|invocation/i);
+
+        const wsRow = await ctx.prisma.workspace.findFirstOrThrow({ where: { publicId: ws.publicId } });
+        const memberships = await ctx.prisma.workspaceMember.findMany({ where: { workspaceId: wsRow.id, userId: member.userId } });
+        expect(memberships).toHaveLength(1);
+        expect(memberships[0].status).toBe("ACTIVE");
+
+        const invitationRow = await ctx.prisma.workspaceInvitation.findFirstOrThrow({ where: { invitedEmail: member.email } });
+        expect(invitationRow.status).toBe("ACCEPTED");
+        expect(invitationRow.acceptedById).toBe(member.userId);
+
+        const joinedEvents = await ctx.prisma.auditLog.findMany({
+          where: { action: "WORKSPACE_MEMBER_JOINED", workspaceId: wsRow.id, entityId: member.userId },
+        });
+        expect(joinedEvents).toHaveLength(1);
+      },
+      20_000,
+    );
   });
 });

@@ -220,21 +220,41 @@ export class InvitationsService {
       // A user for this email may already exist as PENDING_ACTIVATION —
       // invited to a *different* workspace first, still mid-onboarding.
       // Reuse that same account rather than attempting a second
-      // tx.user.create() with the same email (would hit a live unique-
-      // constraint violation — caught exactly this way): the whole point
-      // of user-level activation tokens (Module 1C Engineering Plan §3) is
-      // that one eventual activation must cover every workspace this
-      // person was invited to, not just whichever came first.
+      // tx.user.create() with the same email: the whole point of user-
+      // level activation tokens (Module 1C Engineering Plan §3) is that one
+      // eventual activation must cover every workspace this person was
+      // invited to, not just whichever came first.
+      //
+      // Module 1C.1 defect patch: this branch is reached by a fresh read
+      // of currentUserForEmail above, so two concurrent accept() calls
+      // that both observe "no user yet" can both reach this create() before
+      // either commits — the database's own UNIQUE(email) constraint is
+      // what actually serializes them. Narrow catch: only a P2002 from
+      // THIS exact insert is translated to a clean conflict; every other
+      // failure in this transaction is untouched, and no Prisma error
+      // detail ever reaches the client. Nothing has been written yet in
+      // this transaction at this point, so the rollback this throw causes
+      // discards no state that needed to survive.
       const targetUser =
         currentUserForEmail ??
-        (await tx.user.create({
-          data: {
-            email: invitation.invitedEmail,
-            fullName: invitation.invitedEmail,
-            status: "PENDING_ACTIVATION",
-            createdById: invitation.invitedById,
-          },
-        }));
+        (await tx.user
+          .create({
+            data: {
+              email: invitation.invitedEmail,
+              fullName: invitation.invitedEmail,
+              status: "PENDING_ACTIVATION",
+              createdById: invitation.invitedById,
+            },
+          })
+          .catch((error) => {
+            if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === UNIQUE_CONSTRAINT_VIOLATION) {
+              throw new ConflictException({
+                code: "INVITATION_ALREADY_ACCEPTED",
+                message: "This invitation has already been accepted.",
+              });
+            }
+            throw error;
+          }));
 
       if (!currentUserForEmail) {
         await this.audit.recordWithinTransaction(tx, {
@@ -327,7 +347,19 @@ export class InvitationsService {
     return sessionUser;
   }
 
-  /** workspace_members has UNIQUE(workspaceId, userId) — re-joining after a prior REMOVED updates that row in place, never a duplicate insert. */
+  /**
+   * workspace_members has UNIQUE(workspaceId, userId) — re-joining after a
+   * prior REMOVED updates that row in place, never a duplicate insert.
+   *
+   * Module 1C.1 defect patch: this is the existing-ACTIVE-user counterpart
+   * to the new-user race fixed in accept() above — two concurrent accept()
+   * calls presenting the same session (e.g. a double-submitted click) can
+   * both observe `existing === null` and both reach this create() before
+   * either commits. Same narrow fix: only a P2002 from THIS insert is
+   * translated, on the same UNIQUE(workspace_id, user_id) constraint this
+   * branch's own preceding findUnique already checked (racily). Nothing
+   * has been written yet in this transaction at this point.
+   */
   private async joinAsActive(
     tx: Prisma.TransactionClient,
     invitation: WorkspaceInvitation,
@@ -343,16 +375,26 @@ export class InvitationsService {
         data: { status: "ACTIVE", roleId: invitation.roleId, joinedAt: new Date(), invitedById: invitation.invitedById },
       });
     } else {
-      await tx.workspaceMember.create({
-        data: {
-          workspaceId: invitation.workspaceId,
-          userId,
-          roleId: invitation.roleId,
-          status: "ACTIVE",
-          joinedAt: new Date(),
-          invitedById: invitation.invitedById,
-        },
-      });
+      await tx.workspaceMember
+        .create({
+          data: {
+            workspaceId: invitation.workspaceId,
+            userId,
+            roleId: invitation.roleId,
+            status: "ACTIVE",
+            joinedAt: new Date(),
+            invitedById: invitation.invitedById,
+          },
+        })
+        .catch((error) => {
+          if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === UNIQUE_CONSTRAINT_VIOLATION) {
+            throw new ConflictException({
+              code: "INVITATION_ALREADY_ACCEPTED",
+              message: "This invitation has already been accepted.",
+            });
+          }
+          throw error;
+        });
     }
     await tx.workspaceInvitation.update({
       where: { id: invitation.id },
