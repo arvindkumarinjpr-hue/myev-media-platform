@@ -5,7 +5,7 @@ import * as argon2 from "argon2";
  * Argon2id parameters — OWASP baseline (Module 1B.1 Engineering Plan §7,
  * §18 decision #2): 19 MiB memory, time cost 2, parallelism 1.
  */
-const ARGON2_OPTIONS: argon2.Options = {
+export const ARGON2_OPTIONS: argon2.Options = {
   type: argon2.argon2id,
   memoryCost: 19456,
   timeCost: 2,
