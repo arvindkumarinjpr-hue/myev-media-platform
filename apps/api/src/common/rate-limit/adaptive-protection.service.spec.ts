@@ -15,6 +15,14 @@ const redisMock = {
   ping: jest.fn(),
   on: jest.fn(),
   disconnect: jest.fn(),
+  // `retryStrategy: () => null` in the real client means a dropped
+  // connection never reconnects on its own — it parks in "end"/"close"
+  // status permanently. The recovery probe has to notice that and call
+  // .connect() itself; these two fields let tests simulate and assert on
+  // exactly that (this is the field the real bug lived in: the probe used
+  // to just call .ping() on a client that could never reconnect).
+  status: "ready" as string,
+  connect: jest.fn(),
 };
 
 jest.mock("ioredis", () => {
@@ -36,6 +44,10 @@ describe("AdaptiveProtectionService", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    redisMock.status = "ready";
+    redisMock.connect.mockImplementation(async () => {
+      redisMock.status = "ready";
+    });
     jest.useFakeTimers();
     service = new AdaptiveProtectionService(makeConfig());
   });
@@ -119,26 +131,57 @@ describe("AdaptiveProtectionService", () => {
   });
 
   describe("recovery", () => {
-    it("automatically switches back to Redis once it becomes reachable again", async () => {
-      redisMock.incr.mockRejectedValue(new Error("ECONNREFUSED"));
+    // Regression coverage: a live test against the real Docker stack found
+    // that recovery never actually happened. `retryStrategy: () => null`
+    // stops ioredis from ever reconnecting on its own once dropped, so the
+    // client parks permanently in "end" status — a probe that only calls
+    // .ping() fails forever, silently, even with the real Redis long back
+    // up. These tests simulate that permanent "end" status (rather than
+    // just making .ping() reject) so they only pass if the probe actually
+    // calls .connect() to recover, not just .ping().
+    function simulateRedisDown(): void {
+      redisMock.incr.mockImplementation(() => {
+        redisMock.status = "end";
+        return Promise.reject(new Error("ECONNREFUSED"));
+      });
+    }
+
+    it("explicitly reconnects (not just pings) once Redis becomes reachable again", async () => {
+      simulateRedisDown();
       await service.recordFailedAttempt("user@example.com", 5, 900);
       expect(service.isRedisAvailable()).toBe(false);
+      expect(redisMock.status).toBe("end");
 
       redisMock.ping.mockResolvedValue("PONG");
       await jest.advanceTimersByTimeAsync(5000);
 
+      expect(redisMock.connect).toHaveBeenCalled();
       expect(service.isRedisAvailable()).toBe(true);
     });
 
+    it("does not call connect() again once already reconnected (avoids double-connect errors)", async () => {
+      simulateRedisDown();
+      await service.recordFailedAttempt("user@example.com", 5, 900);
+
+      redisMock.ping.mockResolvedValue("PONG");
+      await jest.advanceTimersByTimeAsync(5000);
+      expect(redisMock.connect).toHaveBeenCalledTimes(1);
+
+      // A further probe tick after recovery must not fire — the interval
+      // is cleared once recovered.
+      await jest.advanceTimersByTimeAsync(10000);
+      expect(redisMock.connect).toHaveBeenCalledTimes(1);
+    });
+
     it("resumes logging degradation alerts if Redis fails again after recovering", async () => {
-      redisMock.incr.mockRejectedValue(new Error("ECONNREFUSED"));
+      simulateRedisDown();
       await service.recordFailedAttempt("user@example.com", 5, 900);
 
       redisMock.ping.mockResolvedValue("PONG");
       await jest.advanceTimersByTimeAsync(5000);
       expect(service.isRedisAvailable()).toBe(true);
 
-      redisMock.incr.mockRejectedValue(new Error("ECONNREFUSED again"));
+      simulateRedisDown();
       const errorSpy = jest.spyOn((service as unknown as { logger: { error: (...a: unknown[]) => void } }).logger, "error");
       await service.recordFailedAttempt("user@example.com", 5, 900);
 

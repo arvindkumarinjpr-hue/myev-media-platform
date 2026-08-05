@@ -178,6 +178,17 @@ export class AdaptiveProtectionService implements OnModuleDestroy {
     if (this.recoveryProbeHandle) return;
     this.recoveryProbeHandle = setInterval(async () => {
       try {
+        // `retryStrategy: () => null` (constructor above) stops ioredis
+        // from ever reconnecting on its own once the connection drops — by
+        // design, so a flaky Redis doesn't trigger its own internal retry
+        // storm on top of ours. The side effect: after a real outage the
+        // client parks permanently in "end"/"close" status, and calling
+        // .ping() on it fails forever even once Redis itself is back up.
+        // The probe owns reconnection itself, explicitly, for exactly this
+        // reason.
+        if (this.redis.status !== "ready" && this.redis.status !== "connect" && this.redis.status !== "connecting") {
+          await this.redis.connect();
+        }
         await this.redis.ping();
         this.redisAvailable = true;
         this.inMemoryStore.clear();
