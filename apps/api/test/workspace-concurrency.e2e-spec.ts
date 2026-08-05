@@ -257,12 +257,24 @@ describe("Workspace concurrency (e2e)", () => {
     );
   });
 
-  describe("Concurrent invitation acceptance (Module 1C.1 defect patch)", () => {
+  describe("Concurrent invitation acceptance (Module 1C.1 final concurrency correction)", () => {
     // Module 1C.1: two concurrent accept() calls on the same token used to
     // produce one clean 200 and one UNHANDLED 500 (a raw Prisma unique-
     // constraint exception escaping to the client). Both branches that can
     // reach a create() call racily are covered here — see the inline note
     // on why both are reachable, not just one.
+    //
+    // Final correction: accept() now takes a `SELECT ... FOR UPDATE` lock
+    // on the invitation row before any branching. For a same-token race,
+    // the loser's transaction blocks on that lock, then — once the winner
+    // commits — re-reads the row, observes status=ACCEPTED, and is
+    // rejected right there, before ever attempting user.create() or
+    // workspaceMember.create(). The response body's `source` field is
+    // in-code instrumentation proving exactly that: `"invitation_lock"`
+    // means the post-lock status re-check rejected the request;
+    // `"unique_constraint_fallback"` would mean a downstream P2002 catch
+    // did instead (which, for a same-token race, should now be
+    // structurally unreachable — the lock closes it first).
 
     it(
       "new/PENDING_ACTIVATION-user branch: one request succeeds, the loser gets a clean 409, no duplicate state, no 500",
@@ -294,6 +306,12 @@ describe("Workspace concurrency (e2e)", () => {
 
         const loser = r1.status === 409 ? r1 : r2;
         expect(loser.body.code).toBe("INVITATION_ALREADY_ACCEPTED");
+        // Proves the loser was rejected by the invitation-row lock's
+        // post-lock status re-check, not by falling through to the
+        // tx.user.create() unique-constraint catch — the winner's commit
+        // (which flips status to ACCEPTED) is what the loser's blocked
+        // transaction observes the instant it acquires the lock.
+        expect(loser.body.source).toBe("invitation_lock");
         // No Prisma internals (constraint names, stack traces, "Invalid
         // `tx.user.create()` invocation", etc.) ever reach the client.
         expect(JSON.stringify(loser.body)).not.toMatch(/prisma|constraint|invocation/i);
@@ -363,6 +381,10 @@ describe("Workspace concurrency (e2e)", () => {
 
         const loser = r1.status === 409 ? r1 : r2;
         expect(loser.body.code).toBe("INVITATION_ALREADY_ACCEPTED");
+        // Same proof as the new-user branch: the loser never reached
+        // joinAsActive()'s tx.workspaceMember.create() at all — it was
+        // rejected by the post-lock status re-check in accept() itself.
+        expect(loser.body.source).toBe("invitation_lock");
         expect(JSON.stringify(loser.body)).not.toMatch(/prisma|constraint|invocation/i);
 
         const wsRow = await ctx.prisma.workspace.findFirstOrThrow({ where: { publicId: ws.publicId } });
