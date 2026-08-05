@@ -5,6 +5,9 @@ import { randomUUID } from "crypto";
 import configuration from "./config/configuration";
 import { PrismaModule } from "./prisma/prisma.module";
 import { HealthModule } from "./health/health.module";
+import { AuditModule } from "./modules/audit/audit.module";
+import { RbacModule } from "./modules/rbac/rbac.module";
+import { AuthModule } from "./modules/auth/auth.module";
 import type { AppConfig } from "./config/configuration";
 
 @Module({
@@ -29,6 +32,9 @@ import type { AppConfig } from "./config/configuration";
     }),
     PrismaModule,
     HealthModule,
+    AuditModule,
+    RbacModule,
+    AuthModule,
   ],
 })
 export class AppModule {}

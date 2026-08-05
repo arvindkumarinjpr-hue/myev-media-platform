@@ -7,9 +7,13 @@ name: myev-media
 #     project stack already running locally on 3000/3001/5432/6379.
 #   - worker is scaffolded with zero BullMQ job processors (Module 1A scope
 #     per plan point 8) — it only proves it can start and reach Redis.
-#   - Mailpit/MailHog is intentionally NOT included yet: nothing in Module 1A
-#     sends email. It is added in Module 1B when password reset needs it —
-#     not included here to avoid expanding 1A's scope.
+#   - Mailpit added in Module 1B.1: local-dev-only SMTP capture for
+#     password-reset/activation email, per the approved Engineering Plan
+#     §10 ("Mailpit locally, no production vendor selected"). Its web UI
+#     is exposed on the host (127.0.0.1 only) purely as a developer
+#     convenience for inspecting captured mail — it is not part of the
+#     application's own network-exposure surface (SMTP itself stays
+#     internal-only, same as postgres/redis/minio).
 
 services:
   postgres:
@@ -63,6 +67,22 @@ services:
       retries: 10
     # No `ports:` — not reachable from the host, including the MinIO console.
 
+  mailpit:
+    image: axllent/mailpit:latest
+    restart: unless-stopped
+    networks:
+      - myev-internal
+    ports:
+      # Dev-convenience only (inspect captured mail in a browser) — bound
+      # to loopback, not 0.0.0.0. SMTP itself (1025) is internal-only, no
+      # host binding at all, consistent with postgres/redis/minio.
+      - "127.0.0.1:8025:8025"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8025/livez"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   api:
     build:
       context: ..
@@ -80,12 +100,20 @@ services:
       STORAGE_ACCESS_KEY: myev_minio_admin
       STORAGE_SECRET_KEY: myev_minio_dev_password
       STORAGE_BUCKET: myev-media-dev
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_FROM_ADDRESS: no-reply@myevmedia.com
+      APP_URL: http://localhost:3100
+      # Dev-only secret — never used outside this local compose stack.
+      JWT_ACCESS_SECRET: dev-only-jwt-secret-do-not-use-in-production
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
       minio:
+        condition: service_healthy
+      mailpit:
         condition: service_healthy
     ports:
       # Host port intentionally non-default (avoids the 3000/3001 already in
