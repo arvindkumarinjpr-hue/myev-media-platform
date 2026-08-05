@@ -4,6 +4,11 @@
 
 generator client {
   provider = "prisma-client-js"
+  // Custom output path (Module 1A.1 hardening): decouples the generated
+  // client from pnpm's hashed virtual-store path, which otherwise differs
+  // between a full (dev+prod) install and a --prod-only install — making it
+  // unsafe to copy the generated client between Docker build stages.
+  output   = "../generated/prisma"
 }
 
 datasource db {

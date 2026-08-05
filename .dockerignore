@@ -1,13 +1,20 @@
-node_modules/
-dist/
-.next/
-.turbo/
-*.tsbuildinfo
-.env
-.env.*
-!.env.example
+# Depth-independent patterns: bare globs like `*.tsbuildinfo` are NOT
+# guaranteed to match nested paths in Docker's ignore matcher the way they
+# would in .gitignore — this caused a real, reproduced bug where a stray
+# host apps/api/tsconfig.tsbuildinfo leaked into the build context and made
+# `nest build` silently emit only .d.ts files (incremental compiler thought
+# nothing had changed). Every pattern below is explicitly depth-independent.
+**/node_modules/
+**/dist/
+**/apps/api/generated/
+**/.next/
+**/.turbo/
+**/*.tsbuildinfo
+**/.env
+**/.env.*
+!**/.env.example
+**/coverage/
 .git/
 .github/
-coverage/
 docs/
 *.md

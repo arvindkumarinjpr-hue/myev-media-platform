@@ -1,6 +1,18 @@
 packages:
   - "apps/*"
   - "packages/*"
+overrides:
+  # Module 1A.1 hardening: force the single patched sharp resolution —
+  # without this, Next.js's own optional dependency on sharp pulls in the
+  # vulnerable 0.34.x line alongside our explicit 0.35.3 pin.
+  sharp: ^0.35.3
+  # Module 1A.1 hardening: runtime-path transitive vulnerabilities, all
+  # safe minor/patch bumps (verified non-breaking for how @nestjs/core
+  # and @nestjs/platform-express consume them) — see the Hardening Report.
+  multer: ^2.2.0
+  lodash: ^4.17.24
+  qs: ^6.15.2
+  body-parser: ^1.20.6
 allowBuilds:
   '@nestjs/core': true
   '@prisma/client': true

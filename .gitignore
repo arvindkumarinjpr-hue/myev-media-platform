@@ -8,7 +8,7 @@ dist/
 !.env.example
 .DS_Store
 coverage/
-prisma/generated/
+apps/api/generated/
 minio-data/
 postgres-data/
 redis-data/

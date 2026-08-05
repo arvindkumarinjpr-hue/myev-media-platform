@@ -1,5 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
-import { PrismaClient } from "@prisma/client";
+// Generated to a stable, non-node_modules path — see prisma/schema.prisma's
+// custom `output` (Module 1A.1 hardening rationale documented there).
+import { PrismaClient } from "../../generated/prisma";
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {

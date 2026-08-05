@@ -4,7 +4,9 @@ module.exports = {
   rootDir: ".",
   testRegex: ".*\\.spec\\.ts$",
   transform: {
-    "^.+\\.(t|j)s$": "ts-jest",
+    // .ts only — the generated Prisma client (apps/api/generated/prisma) is
+    // already-compiled JS and must run as-is, not be re-processed by ts-jest.
+    "^.+\\.ts$": "ts-jest",
   },
   collectCoverageFrom: ["src/**/*.(t|j)s"],
   coverageDirectory: "./coverage",
