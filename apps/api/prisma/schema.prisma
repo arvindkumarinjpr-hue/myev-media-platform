@@ -1,0 +1,12 @@
+// Module 1A: datasource and generator wired only.
+// Business tables (users, workspaces, etc.) are added in Module 1B / 1C
+// per the approved Module 1 Engineering Plan — intentionally empty here.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
