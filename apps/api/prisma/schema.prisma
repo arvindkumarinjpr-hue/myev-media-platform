@@ -1,17 +1,238 @@
-// Module 1A: datasource and generator wired only.
-// Business tables (users, workspaces, etc.) are added in Module 1B / 1C
-// per the approved Module 1 Engineering Plan — intentionally empty here.
+// Module 1B.1: Identity & Access Core.
+// Workspace-scoped role ASSIGNMENT (workspace_members) is Module 1C's
+// responsibility — roles/permissions here are the platform-level catalog
+// and enforcement machinery only. See MODULE_1B1_ENGINEERING_PLAN §8.
 
 generator client {
   provider = "prisma-client-js"
-  // Custom output path (Module 1A.1 hardening): decouples the generated
-  // client from pnpm's hashed virtual-store path, which otherwise differs
-  // between a full (dev+prod) install and a --prod-only install — making it
-  // unsafe to copy the generated client between Docker build stages.
   output   = "../generated/prisma"
 }
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+enum UserStatus {
+  PENDING_ACTIVATION
+  ACTIVE
+  DISABLED
+}
+
+enum SessionStatus {
+  ACTIVE
+  ROTATED
+  REVOKED
+  EXPIRED
+}
+
+enum RevokedReason {
+  LOGOUT
+  PASSWORD_CHANGE
+  PASSWORD_RESET
+  ADMIN_LOCK
+  REUSE_DETECTED
+  EXPIRED
+}
+
+enum TokenPurpose {
+  PASSWORD_RESET
+  ACCOUNT_ACTIVATION
+}
+
+enum TokenActionStatus {
+  PENDING
+  USED
+  EXPIRED
+  INVALIDATED
+}
+
+enum AuditAction {
+  LOGIN_SUCCESS
+  LOGIN_FAILED
+  LOGOUT
+  TOKEN_REFRESHED
+  TOKEN_REUSE_DETECTED
+  PASSWORD_RESET_REQUESTED
+  PASSWORD_RESET_COMPLETED
+  PASSWORD_CHANGED
+  ACCOUNT_LOCKED
+  USER_CREATED
+  ACCOUNT_ACTIVATED
+}
+
+model User {
+  id           String     @id @default(uuid()) @db.Uuid
+  publicId     String     @unique @default(uuid()) @map("public_id") @db.Uuid
+  email        String     @unique
+  passwordHash String?    @map("password_hash")
+  fullName     String     @map("full_name")
+  status       UserStatus @default(PENDING_ACTIVATION)
+
+  createdById  String?  @map("created_by") @db.Uuid
+  createdBy    User?    @relation("UserCreatedBy", fields: [createdById], references: [id])
+  createdUsers User[]   @relation("UserCreatedBy")
+
+  activatedAt DateTime? @map("activated_at")
+  lastLoginAt DateTime? @map("last_login_at")
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  passwordHistory UserPasswordHistory[]
+  sessions        UserSession[]
+  actionTokens    UserActionToken[]
+  auditLogs       AuditLog[]
+
+  @@map("users")
+}
+
+model Role {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  rolePermissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String   @id @default(uuid()) @db.Uuid
+  constant    String   @unique
+  category    String
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String @map("role_id") @db.Uuid
+  permissionId String @map("permission_id") @db.Uuid
+
+  role       Role       @relation(fields: [roleId], references: [id])
+  permission Permission @relation(fields: [permissionId], references: [id])
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model UserPasswordHistory {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @map("user_id") @db.Uuid
+  user         User     @relation(fields: [userId], references: [id])
+  passwordHash String   @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([userId, createdAt])
+  @@map("user_password_history")
+}
+
+// Postgres is the source of truth for sessions — no Redis-only session
+// model (standing correction from the Module 1 Engineering Plan).
+model UserSession {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+  userId   String @map("user_id") @db.Uuid
+  user     User   @relation(fields: [userId], references: [id])
+
+  // Rotation lineage
+  familyId        String        @map("family_id") @db.Uuid
+  parentSessionId String?       @map("parent_session_id") @db.Uuid
+  parentSession   UserSession?  @relation("SessionRotation", fields: [parentSessionId], references: [id])
+  childSessions   UserSession[] @relation("SessionRotation")
+
+  refreshTokenHash String        @unique @map("refresh_token_hash")
+  status           SessionStatus @default(ACTIVE)
+
+  issuedAt        DateTime       @default(now()) @map("issued_at")
+  expiresAt       DateTime       @map("expires_at")
+  familyExpiresAt DateTime       @map("family_expires_at")
+  revokedAt       DateTime?      @map("revoked_at")
+  revokedReason   RevokedReason? @map("revoked_reason")
+
+  ipAddress String? @map("ip_address")
+  userAgent String? @map("user_agent")
+
+  // Refinement 2: device metadata — no UI in Module 1B, persisted for
+  // future active-session-list / logout-specific-device / trusted-device
+  // features.
+  deviceName      String? @map("device_name")
+  browser         String?
+  operatingSystem String? @map("operating_system")
+  platform        String?
+  lastSeenAt      DateTime @default(now()) @map("last_seen_at")
+
+  // Refinement 3: fingerprint — observability/anomaly signal ONLY, never a
+  // hard authentication factor. deviceFingerprint is reserved for a future
+  // client-supplied value (no frontend exists yet to produce one);
+  // sessionFingerprint is computed server-side from available signals.
+  deviceFingerprint  String? @map("device_fingerprint")
+  sessionFingerprint String? @map("session_fingerprint")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([familyId])
+  @@index([status])
+  @@index([expiresAt])
+  @@map("user_sessions")
+}
+
+// Consolidates password-reset and account-activation tokens — both are
+// "one-time, expiring, hashed" tokens differing only in purpose.
+model UserActionToken {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  user   User   @relation(fields: [userId], references: [id])
+
+  purpose TokenPurpose
+  status  TokenActionStatus @default(PENDING)
+
+  tokenHash   String    @unique @map("token_hash")
+  expiresAt   DateTime  @map("expires_at")
+  usedAt      DateTime? @map("used_at")
+  requestedIp String?   @map("requested_ip")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId, purpose, status])
+  @@index([expiresAt])
+  @@map("user_action_tokens")
+}
+
+// Append-only. No deletedAt field exists on this model at all — deletion
+// is structurally impossible through the Prisma client, not just forbidden
+// by convention.
+model AuditLog {
+  id          String  @id @default(uuid()) @db.Uuid
+  workspaceId String? @map("workspace_id") @db.Uuid
+
+  actorUserId String? @map("actor_user_id") @db.Uuid
+  actor       User?   @relation(fields: [actorUserId], references: [id])
+
+  action AuditAction
+
+  entityType String? @map("entity_type")
+  entityId   String? @map("entity_id")
+
+  beforeState Json? @map("before_state")
+  afterState  Json? @map("after_state")
+
+  ipAddress     String? @map("ip_address")
+  requestId     String? @map("request_id")
+  correlationId String? @map("correlation_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([actorUserId])
+  @@index([action])
+  @@index([createdAt])
+  @@index([correlationId])
+  @@map("audit_logs")
 }
