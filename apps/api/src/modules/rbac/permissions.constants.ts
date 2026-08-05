@@ -8,6 +8,12 @@ export const PERMISSIONS = {
   WORKSPACE_CREATE: "WORKSPACE_CREATE",
   WORKSPACE_UPDATE: "WORKSPACE_UPDATE",
   WORKSPACE_DELETE: "WORKSPACE_DELETE",
+  // Module 1C: reversible archive/restore, deliberately distinct from
+  // WORKSPACE_DELETE (irreversible, Owner-exclusive per FR-WS-001) and from
+  // WORKSPACE_UPDATE (held by Administrator, who must NOT be able to
+  // archive/restore under this module's design). See MODULE_1C_ENGINEERING
+  // PLAN §5, "Missing constant identified."
+  WORKSPACE_ARCHIVE: "WORKSPACE_ARCHIVE",
 
   PROJECT_VIEW: "PROJECT_VIEW",
   PROJECT_CREATE: "PROJECT_CREATE",
@@ -54,7 +60,13 @@ export const PERMISSIONS = {
 export type PermissionConstant = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
 
 export const PERMISSION_CATEGORIES: Record<string, PermissionConstant[]> = {
-  Workspace: [PERMISSIONS.WORKSPACE_VIEW, PERMISSIONS.WORKSPACE_CREATE, PERMISSIONS.WORKSPACE_UPDATE, PERMISSIONS.WORKSPACE_DELETE],
+  Workspace: [
+    PERMISSIONS.WORKSPACE_VIEW,
+    PERMISSIONS.WORKSPACE_CREATE,
+    PERMISSIONS.WORKSPACE_UPDATE,
+    PERMISSIONS.WORKSPACE_DELETE,
+    PERMISSIONS.WORKSPACE_ARCHIVE,
+  ],
   Projects: [PERMISSIONS.PROJECT_VIEW, PERMISSIONS.PROJECT_CREATE, PERMISSIONS.PROJECT_UPDATE, PERMISSIONS.PROJECT_DELETE],
   "Knowledge Packs": [PERMISSIONS.KP_VIEW, PERMISSIONS.KP_CREATE, PERMISSIONS.KP_UPDATE, PERMISSIONS.KP_DELETE],
   Research: [PERMISSIONS.RESEARCH_RUN, PERMISSIONS.RESEARCH_APPROVE],
@@ -108,9 +120,11 @@ export const ROLE_PERMISSIONS: Record<string, PermissionConstant[]> = {
     PERMISSIONS.ANALYTICS_EXPORT,
     PERMISSIONS.USER_MANAGE,
     PERMISSIONS.AUDIT_VIEW,
-    // Deliberately excluded: WORKSPACE_CREATE/DELETE, ROLE_MANAGE,
+    // Deliberately excluded: WORKSPACE_CREATE/DELETE/ARCHIVE, ROLE_MANAGE,
     // SETTINGS_MANAGE — Owner-exclusive per FR-WS-001 and the Matrix's
-    // "Cannot: Transfer Ownership" note.
+    // "Cannot: Transfer Ownership" note. WORKSPACE_ARCHIVE added in Module
+    // 1C, kept out of this list on purpose (Module 1C Engineering Plan §2.A:
+    // archive/restore is Owner-only, not Administrator-accessible).
   ],
   "Content Manager": [
     PERMISSIONS.PROJECT_VIEW,
