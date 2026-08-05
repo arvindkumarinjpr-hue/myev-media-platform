@@ -8,6 +8,9 @@ import { HealthModule } from "./health/health.module";
 import { AuditModule } from "./modules/audit/audit.module";
 import { RbacModule } from "./modules/rbac/rbac.module";
 import { AuthModule } from "./modules/auth/auth.module";
+import { WorkspacesModule } from "./modules/workspaces/workspaces.module";
+import { WorkspaceMembersModule } from "./modules/workspace-members/workspace-members.module";
+import { ProjectsModule } from "./modules/projects/projects.module";
 import type { AppConfig } from "./config/configuration";
 
 @Module({
@@ -35,6 +38,9 @@ import type { AppConfig } from "./config/configuration";
     AuditModule,
     RbacModule,
     AuthModule,
+    WorkspacesModule,
+    WorkspaceMembersModule,
+    ProjectsModule,
   ],
 })
 export class AppModule {}

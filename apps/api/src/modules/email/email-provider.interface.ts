@@ -1,8 +1,20 @@
-export type EmailTemplateId = "PASSWORD_RESET" | "ACCOUNT_ACTIVATION";
+export type EmailTemplateId = "PASSWORD_RESET" | "ACCOUNT_ACTIVATION" | "WORKSPACE_INVITATION";
 
 export interface EmailTemplateVariables {
   PASSWORD_RESET: { recipientName: string; resetUrl: string; expiresInMinutes: number };
-  ACCOUNT_ACTIVATION: { recipientName: string; activationUrl: string; expiresInMinutes: number };
+  // workspaceName is optional and deliberately singular — Module 1C
+  // Engineering Plan §3 (activation resend cross-workspace behavior): this
+  // email must never name more than the one workspace that actually
+  // triggered it, even when the recipient has other PENDING_ACTIVATION
+  // memberships elsewhere.
+  ACCOUNT_ACTIVATION: { recipientName: string; activationUrl: string; expiresInMinutes: number; workspaceName?: string };
+  WORKSPACE_INVITATION: {
+    recipientName: string;
+    workspaceName: string;
+    inviterName: string;
+    acceptUrl: string;
+    expiresInDays: number;
+  };
 }
 
 /**

@@ -12,20 +12,25 @@ import { AuthController } from "./auth.controller";
 import { AuthService } from "./auth.service";
 import { SessionsService } from "./sessions.service";
 
+const JWT_MODULE = JwtModule.registerAsync({
+  inject: [ConfigService],
+  useFactory: (config: ConfigService<AppConfig, true>) => {
+    const auth = config.get("auth", { infer: true });
+    return { secret: auth.jwtSecret, signOptions: { expiresIn: auth.accessTokenTtlSeconds } };
+  },
+});
+
 @Module({
-  imports: [
-    UsersModule,
-    EmailModule,
-    JwtModule.registerAsync({
-      inject: [ConfigService],
-      useFactory: (config: ConfigService<AppConfig, true>) => {
-        const auth = config.get("auth", { infer: true });
-        return { secret: auth.jwtSecret, signOptions: { expiresIn: auth.accessTokenTtlSeconds } };
-      },
-    }),
-  ],
+  imports: [UsersModule, EmailModule, JWT_MODULE],
   controllers: [AuthController],
   providers: [AuthService, SessionsService, PasswordPolicyService, TokenService, AdaptiveProtectionService, SessionGuard],
-  exports: [SessionGuard, SessionsService],
+  // JwtModule re-exported: Module 1C's public invitation-accept endpoint
+  // needs JwtService directly (to best-effort decode an optional session,
+  // since accept() must also work with no session at all) — not just
+  // indirectly through SessionGuard. AdaptiveProtectionService re-exported:
+  // Module 1C's activation-resend rate limiting reuses it directly.
+  // TokenService re-exported: Module 1C's invitation/activation tokens
+  // reuse the same opaque-token generation/hashing as refresh/reset tokens.
+  exports: [SessionGuard, SessionsService, JWT_MODULE, AdaptiveProtectionService, TokenService],
 })
 export class AuthModule {}
