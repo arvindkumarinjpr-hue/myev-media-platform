@@ -37,6 +37,9 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Verify internal workspace packages import cleanly at runtime
+        run: pnpm verify:packages
+
   docker-validate:
     name: Docker Compose Config & Build
     runs-on: ubuntu-latest
