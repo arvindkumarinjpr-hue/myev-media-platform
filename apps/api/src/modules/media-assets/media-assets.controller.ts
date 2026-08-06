@@ -7,33 +7,18 @@ import { WorkspaceContextGuard, type WorkspaceContext } from "../../common/guard
 import { PermissionGuard } from "../../common/guards/permission.guard";
 import { PERMISSIONS } from "../rbac/permissions.constants";
 import type { MediaAssetStatus, MediaAssetType } from "../../../generated/prisma";
-import { MediaAssetsService } from "./media-assets.service";
+import { MediaAssetsService, type MediaAssetWithProjectPublicId } from "./media-assets.service";
 import { CreateUploadIntentDto, CreateVersionUploadIntentDto } from "./dto/create-upload-intent.dto";
 import { UpdateMediaAssetDto } from "./dto/update-media-asset.dto";
 
-function serializeAsset(asset: {
-  publicId: string;
-  workspaceId: string;
-  projectId: string | null;
-  assetType: MediaAssetType;
-  originalFilename: string;
-  normalizedFilename: string;
-  declaredMimeType: string;
-  verifiedMimeType: string | null;
-  declaredSizeBytes: bigint;
-  verifiedSizeBytes: bigint | null;
-  status: MediaAssetStatus;
-  malwareScanStatus: string;
-  rejectionReason: string | null;
-  versionNumber: number;
-  assetGroupId: string;
-  duplicateOfAssetId: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-}) {
+// DEFECT-1D-001: projectId here is the related project's PUBLIC id (via
+// the `project` relation every MediaAssetsService read/write method now
+// includes) — never asset.projectId itself, which is the internal FK and
+// must never reach a client.
+function serializeAsset(asset: MediaAssetWithProjectPublicId) {
   return {
     publicId: asset.publicId,
-    projectId: asset.projectId,
+    projectId: asset.project?.publicId ?? null,
     assetType: asset.assetType,
     originalFilename: asset.originalFilename,
     normalizedFilename: asset.normalizedFilename,

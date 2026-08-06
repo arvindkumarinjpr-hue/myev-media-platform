@@ -24,6 +24,15 @@ interface RequestContext {
   ipAddress?: string;
 }
 
+// DEFECT-1D-001: MediaAsset.projectId is the INTERNAL FK — never
+// client-facing. Every query whose result reaches the controller's
+// serializeAsset() includes the related project's publicId alongside the
+// row, via this one shared definition, so every affected call site stays
+// consistent and future mapping drift can't reintroduce the leak. Only
+// `publicId` is selected — no extra project fields are pulled in.
+const WITH_PROJECT_PUBLIC_ID = { project: { select: { publicId: true } } } satisfies Prisma.MediaAssetInclude;
+export type MediaAssetWithProjectPublicId = Prisma.MediaAssetGetPayload<{ include: typeof WITH_PROJECT_PUBLIC_ID }>;
+
 const UNIQUE_CONSTRAINT_VIOLATION = "P2002";
 
 const ASSET_TYPE_MAX_SIZE_CONFIG_KEY: Record<MediaAssetType, "image" | "audio" | "video" | "document"> = {
@@ -818,7 +827,10 @@ export class MediaAssetsService {
   // ---------------------------------------------------------------------
   // Read/write CRUD surface.
   // ---------------------------------------------------------------------
-  async list(workspaceId: string, filters: { projectId?: string; assetType?: MediaAssetType; status?: MediaAssetStatus }) {
+  async list(
+    workspaceId: string,
+    filters: { projectId?: string; assetType?: MediaAssetType; status?: MediaAssetStatus },
+  ): Promise<MediaAssetWithProjectPublicId[]> {
     // filters.projectId is the project's PUBLIC id (client-facing); the
     // row's own projectId column is the internal FK — must resolve one to
     // the other, never compare them directly.
@@ -836,12 +848,13 @@ export class MediaAssetsService {
         ...(filters.assetType ? { assetType: filters.assetType } : {}),
         status: filters.status ?? { notIn: ["DELETED", "REJECTED"] },
       },
+      include: WITH_PROJECT_PUBLIC_ID,
       orderBy: { createdAt: "desc" },
     });
   }
 
-  async findOne(workspaceId: string, assetPublicId: string) {
-    const asset = await this.prisma.mediaAsset.findFirst({ where: { publicId: assetPublicId, workspaceId } });
+  async findOne(workspaceId: string, assetPublicId: string): Promise<MediaAssetWithProjectPublicId> {
+    const asset = await this.prisma.mediaAsset.findFirst({ where: { publicId: assetPublicId, workspaceId }, include: WITH_PROJECT_PUBLIC_ID });
     if (!asset) throw new NotFoundException({ code: "MEDIA_ASSET_NOT_FOUND", message: "Media asset not found." });
     return asset;
   }
@@ -881,7 +894,13 @@ export class MediaAssetsService {
     return { downloadUrl, expiresAt };
   }
 
-  async updateMetadata(workspace: { id: string }, userId: string, assetPublicId: string, dto: UpdateMediaAssetDto, context: RequestContext) {
+  async updateMetadata(
+    workspace: { id: string },
+    userId: string,
+    assetPublicId: string,
+    dto: UpdateMediaAssetDto,
+    context: RequestContext,
+  ): Promise<MediaAssetWithProjectPublicId> {
     const asset = await this.findOne(workspace.id, assetPublicId);
 
     let projectId = asset.projectId;
@@ -898,6 +917,7 @@ export class MediaAssetsService {
         metadata: (dto.metadata as Prisma.InputJsonValue) ?? undefined,
         projectId,
       },
+      include: WITH_PROJECT_PUBLIC_ID,
     });
 
     await this.audit.record({
@@ -912,12 +932,16 @@ export class MediaAssetsService {
     return updated;
   }
 
-  async archive(workspace: { id: string }, userId: string, assetPublicId: string, context: RequestContext) {
+  async archive(workspace: { id: string }, userId: string, assetPublicId: string, context: RequestContext): Promise<MediaAssetWithProjectPublicId> {
     const asset = await this.findOne(workspace.id, assetPublicId);
     if (asset.status !== "ACTIVE") {
       throw new ConflictException({ code: "MEDIA_ASSET_NOT_ACTIVE", message: "Only an ACTIVE asset can be archived." });
     }
-    const updated = await this.prisma.mediaAsset.update({ where: { id: asset.id }, data: { status: "ARCHIVED", archivedAt: new Date() } });
+    const updated = await this.prisma.mediaAsset.update({
+      where: { id: asset.id },
+      data: { status: "ARCHIVED", archivedAt: new Date() },
+      include: WITH_PROJECT_PUBLIC_ID,
+    });
     await this.audit.record({
       action: "MEDIA_ASSET_ARCHIVED",
       actorUserId: userId,
@@ -940,7 +964,7 @@ export class MediaAssetsService {
    * ACTIVE in the group — deadlock-safe against a concurrent
    * version-replacement finalize on the same group.
    */
-  async restore(workspace: { id: string }, userId: string, assetPublicId: string, context: RequestContext) {
+  async restore(workspace: { id: string }, userId: string, assetPublicId: string, context: RequestContext): Promise<MediaAssetWithProjectPublicId> {
     const targetLookup = await this.prisma.mediaAsset.findFirst({ where: { publicId: assetPublicId, workspaceId: workspace.id } });
     if (!targetLookup) throw new NotFoundException({ code: "MEDIA_ASSET_NOT_FOUND", message: "Media asset not found." });
 
@@ -964,7 +988,11 @@ export class MediaAssetsService {
         });
       }
 
-      const result = await tx.mediaAsset.update({ where: { id: target.id }, data: { status: "ACTIVE", archivedAt: null } });
+      const result = await tx.mediaAsset.update({
+        where: { id: target.id },
+        data: { status: "ACTIVE", archivedAt: null },
+        include: WITH_PROJECT_PUBLIC_ID,
+      });
       await this.audit.recordWithinTransaction(tx, {
         action: "MEDIA_ASSET_RESTORED",
         actorUserId: userId,
@@ -979,12 +1007,16 @@ export class MediaAssetsService {
     return updated;
   }
 
-  async softDelete(workspace: { id: string }, userId: string, assetPublicId: string, context: RequestContext) {
+  async softDelete(workspace: { id: string }, userId: string, assetPublicId: string, context: RequestContext): Promise<MediaAssetWithProjectPublicId> {
     const asset = await this.findOne(workspace.id, assetPublicId);
     if (asset.status === "PENDING_UPLOAD" || asset.status === "VERIFYING" || asset.status === "DELETED") {
       throw new ConflictException({ code: "MEDIA_ASSET_NOT_DELETABLE", message: "This asset cannot be deleted in its current state." });
     }
-    const updated = await this.prisma.mediaAsset.update({ where: { id: asset.id }, data: { status: "DELETED", deletedAt: new Date() } });
+    const updated = await this.prisma.mediaAsset.update({
+      where: { id: asset.id },
+      data: { status: "DELETED", deletedAt: new Date() },
+      include: WITH_PROJECT_PUBLIC_ID,
+    });
     await this.audit.record({
       action: "MEDIA_ASSET_DELETED",
       actorUserId: userId,
