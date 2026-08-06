@@ -141,6 +141,13 @@ export function extractToken(url: string): string {
   return match[1];
 }
 
+// Local Docker Compose reaches Mailpit's web API via the Docker-internal
+// hostname "mailpit". GitHub Actions' service containers are published to
+// the runner's own localhost instead — that hostname doesn't resolve
+// there at all (getaddrinfo EAI_AGAIN mailpit). CI sets MAILPIT_API_URL
+// to override this; local runs fall back to the Docker-network default.
+const MAILPIT_API_URL = process.env.MAILPIT_API_URL ?? "http://mailpit:8025";
+
 /**
  * Polls Mailpit for the newest message to `recipient`, retrying briefly —
  * a message sent by the request that just resolved is not always
@@ -152,11 +159,11 @@ export function extractToken(url: string): string {
 export async function getLatestEmailFor(recipient: string, sinceMessageId?: string): Promise<{ subject: string; body: string; id: string }> {
   const deadline = Date.now() + 5000;
   for (;;) {
-    const listRes = await fetch(`http://mailpit:8025/api/v1/messages?limit=25`);
+    const listRes = await fetch(`${MAILPIT_API_URL}/api/v1/messages?limit=25`);
     const list = (await listRes.json()) as { messages: Array<{ ID: string; To: Array<{ Address: string }>; Subject: string }> };
     const match = list.messages.find((m) => m.To.some((to) => to.Address === recipient) && m.ID !== sinceMessageId);
     if (match) {
-      const detailRes = await fetch(`http://mailpit:8025/api/v1/message/${match.ID}`);
+      const detailRes = await fetch(`${MAILPIT_API_URL}/api/v1/message/${match.ID}`);
       const detail = (await detailRes.json()) as { Text: string; Subject: string };
       return { subject: detail.Subject, body: detail.Text, id: match.ID };
     }

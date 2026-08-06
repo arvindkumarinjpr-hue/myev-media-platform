@@ -97,6 +97,10 @@ jobs:
       SMTP_HOST: localhost
       SMTP_PORT: "1025"
       SMTP_FROM_ADDRESS: no-reply@myevmedia.com
+      # e2e-app.ts's getLatestEmailFor() defaults to the Docker-Compose
+      # hostname "mailpit", which doesn't resolve on a GitHub-hosted
+      # runner — service containers are reached via localhost instead.
+      MAILPIT_API_URL: http://localhost:8025
       APP_URL: http://localhost:3100
       JWT_ACCESS_SECRET: ci-only-jwt-secret-do-not-use-elsewhere
       NODE_ENV: development
