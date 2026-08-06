@@ -42,7 +42,15 @@ const TERMINAL_STATUSES = ["COMPLETED", "FAILED", "TIMED_OUT"] as const;
  * the Worker owns (status RUNNING/COMPLETED/FAILED/TIMED_OUT,
  * startedAt/completedAt/failedAt, attempts, processorVersion,
  * resultMetadata) — see apps/worker/src/bullmq/bullmq-worker.manager.ts
- * for that half.
+ * for that half, including its own automatic retry/backoff/dead-letter
+ * scheduling (Milestone 5) and the "exactly one component schedules a
+ * retry" invariant documented there. `requestRetry()` here is the other,
+ * user-triggered half of that same invariant: it only ever acts on a row
+ * already in a terminal status, which the Worker's own automatic
+ * scheduling never leaves ambiguous (see that class's doc comment) — and
+ * every write on this side is additionally a guarded conditional UPDATE,
+ * so a violation of that reasoning fails deterministically rather than
+ * double-dispatching.
  *
  * `enqueue()` has no public HTTP endpoint in Module 1F (no business job
  * exists yet to trigger one) — it is internal plumbing a future module's
@@ -207,9 +215,18 @@ export class BackgroundJobsService implements OnModuleDestroy {
       throw new ConflictException({ code: "JOB_NOT_RETRYABLE_IN_CURRENT_STATE", message: "Only a failed or timed-out job can be retried." });
     }
 
-    await this.prisma.$transaction(async (tx) => {
-      await tx.backgroundJob.update({
-        where: { id: job.id },
+    // Exactly-one-scheduler invariant: the read above and this write are
+    // not atomic — two concurrent retry requests (a double-click, or a
+    // race with whatever else might touch this row) could both pass the
+    // status check above before either commits. The WHERE clause here is
+    // the real guard: only a row still in a retryable status at WRITE
+    // time is affected, and Postgres serializes the two UPDATEs, so
+    // exactly one of two racing callers ever sees count===1. The loser
+    // fails deterministically instead of silently also dispatching a
+    // second, duplicate execution.
+    const scheduled = await this.prisma.$transaction(async (tx) => {
+      const result = await tx.backgroundJob.updateMany({
+        where: { id: job.id, status: { in: ["FAILED", "TIMED_OUT"] } },
         data: {
           status: "QUEUED",
           startedAt: null,
@@ -223,6 +240,7 @@ export class BackgroundJobsService implements OnModuleDestroy {
           resultMetadata: Prisma.JsonNull,
         },
       });
+      if (result.count === 0) return false;
       await tx.backgroundJobHistory.create({ data: { backgroundJobId: job.id, fromStatus: job.status, toStatus: "QUEUED", detail: { reason: "manual_retry" } } });
       await this.audit.recordWithinTransaction(tx, {
         action: "JOB_RETRY_REQUESTED",
@@ -232,14 +250,24 @@ export class BackgroundJobsService implements OnModuleDestroy {
         entityId: job.publicId,
         ipAddress,
       });
+      return true;
     });
 
+    if (!scheduled) {
+      throw new ConflictException({
+        code: "JOB_RETRY_ALREADY_SCHEDULED",
+        message: "This job's retry has already been scheduled by another request.",
+      });
+    }
+
     // A manual retry is a fresh, immediate re-attempt — no backoff delay
-    // (that belongs to Milestone 5's automatic transient-failure retry).
-    // The same background_jobs.id is reused as BullMQ's jobId (see
-    // apps/worker's correlation mechanism), so the prior dispatch's
+    // (that belongs to the Worker's own automatic transient-failure
+    // retry). The same background_jobs.id is reused as BullMQ's jobId
+    // (see apps/worker's correlation mechanism), so the prior dispatch's
     // completed/failed BullMQ entry must be removed first or the re-add
-    // would collide.
+    // would collide. This dispatch only ever runs after the guarded
+    // Postgres write above has already succeeded, so it can never itself
+    // run twice for the same execution either.
     const queue = this.getQueue(job.queueName);
     await queue.remove(job.id).catch(() => undefined);
     await queue.add(job.jobType, job.payloadMetadata as object, {

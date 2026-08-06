@@ -22,6 +22,18 @@ export class SystemPingPayload {
   @Min(0)
   @Max(30_000)
   delayMs?: number;
+
+  // Optional deterministic-failure hook, same rationale as delayMs: when
+  // set, the processor throws a plain (non-cancellation) error on every
+  // attempt whose context.attempt is below this value, then succeeds
+  // normally from that attempt onward. Exists purely so Module 1F
+  // Milestone 5's retry/backoff/dead-letter tests can exercise a real
+  // transient-failure-then-recovery (or exhaustion) cycle deterministically.
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(10)
+  failUntilAttempt?: number;
 }
 
 export class SystemPingResult {

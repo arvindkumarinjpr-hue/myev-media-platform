@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { BadRequestException } from "@nestjs/common";
 import { bootstrapE2eApp, createWorkspaceAsOwner, loginAsPlatformOwner, request, teardownE2eApp, type E2eApp } from "./helpers/e2e-app";
 import { BackgroundJobsService } from "../src/modules/background-jobs/background-jobs.service";
@@ -210,6 +211,81 @@ describe("Background jobs (e2e)", () => {
         .set("X-Workspace-Id", workspace.publicId)
         .expect(409);
       expect(res.body.code).toBe("JOB_NOT_RETRYABLE_IN_CURRENT_STATE");
+    });
+
+    it("retry request during failure processing: rejects a retry attempted while the job is still RUNNING (not yet a concluded failure)", async () => {
+      const created = await backgroundJobs.enqueue({
+        workspaceId: workspaceInternalId,
+        jobType: "system.ping.v1",
+        payload: { echo: "still-running", delayMs: 2_500 },
+      });
+      await waitForStatus(ctx, workspace.publicId, ownerAccessToken, created.publicId, ["RUNNING"]);
+
+      const res = await request(ctx.app.getHttpServer())
+        .post(`/api/v1/workspaces/${workspace.publicId}/background-jobs/${created.publicId}/retry`)
+        .set("Authorization", `Bearer ${ownerAccessToken}`)
+        .set("X-Workspace-Id", workspace.publicId)
+        .expect(409);
+      expect(res.body.code).toBe("JOB_NOT_RETRYABLE_IN_CURRENT_STATE");
+
+      // Drain — let the job actually finish so it doesn't leak into later
+      // tests/teardown mid-flight.
+      await waitForStatus(ctx, workspace.publicId, ownerAccessToken, created.publicId, ["COMPLETED", "FAILED", "TIMED_OUT"]);
+    });
+
+    it("exactly-one-scheduler invariant: two concurrent retry requests on the same terminal job — exactly one succeeds, the other is rejected deterministically, not silently duplicated", async () => {
+      // Constructed directly (bypassing a real failed execution) purely
+      // to make the race itself the only variable under test.
+      const row = await ctx.prisma.backgroundJob.create({
+        data: {
+          workspaceId: workspaceInternalId,
+          jobType: "system.ping.v1",
+          queueName: "SYSTEM",
+          correlationId: randomUUID(),
+          status: "FAILED",
+          failedAt: new Date(),
+          errorCode: "PROCESSOR_ERROR",
+          attempts: 1,
+          maxAttempts: 3,
+        },
+      });
+
+      const fireRetry = () =>
+        request(ctx.app.getHttpServer())
+          .post(`/api/v1/workspaces/${workspace.publicId}/background-jobs/${row.publicId}/retry`)
+          .set("Authorization", `Bearer ${ownerAccessToken}`)
+          .set("X-Workspace-Id", workspace.publicId);
+
+      const [first, second] = await Promise.all([fireRetry(), fireRetry()]);
+      const statuses = [first.status, second.status].sort();
+      expect(statuses).toEqual([201, 409]);
+
+      // The loser's rejection reason depends on exactly how close the race
+      // was: if it loses badly enough that even its OWN initial read
+      // already reflects the winner's committed write, it's rejected by
+      // the ordinary status guard (JOB_NOT_RETRYABLE_IN_CURRENT_STATE); if
+      // it's closer than that, both pass the initial read and it's the
+      // guarded UPDATE's WHERE clause that rejects it
+      // (JOB_RETRY_ALREADY_SCHEDULED). Both are the SAME invariant holding
+      // — a deterministic rejection, never a duplicate dispatch — just
+      // via whichever of the two guards actually caught it; the test
+      // asserts the invariant, not one specific code path's exact timing.
+      const rejected = first.status === 409 ? first : second;
+      expect(["JOB_RETRY_ALREADY_SCHEDULED", "JOB_NOT_RETRYABLE_IN_CURRENT_STATE"]).toContain(rejected.body.code);
+
+      // Not asserting status==="QUEUED" specifically: the real, always-on
+      // Worker in this stack picks a re-queued system.ping.v1 job up
+      // near-instantly, so by the time this read runs the row may already
+      // be RUNNING or even COMPLETED — any of which proves the retry was
+      // genuinely scheduled and is progressing, which is what matters here.
+      const afterRace = await ctx.prisma.backgroundJob.findUniqueOrThrow({ where: { id: row.id } });
+      expect(["QUEUED", "RUNNING", "COMPLETED"]).toContain(afterRace.status);
+
+      // Only ONE retry transition was ever recorded, not two.
+      const history = await ctx.prisma.backgroundJobHistory.findMany({ where: { backgroundJobId: row.id, toStatus: "QUEUED" } });
+      expect(history).toHaveLength(1);
+
+      await waitForStatus(ctx, workspace.publicId, ownerAccessToken, row.publicId, ["COMPLETED", "FAILED", "TIMED_OUT"]);
     });
   });
 });

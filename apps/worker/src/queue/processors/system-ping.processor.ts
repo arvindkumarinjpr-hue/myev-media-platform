@@ -29,6 +29,12 @@ export class SystemPingProcessor {
       throw new JobCancelledError();
     }
 
+    // Deterministic-failure hook for Milestone 5's retry/backoff/dead-
+    // letter tests — see SystemPingPayload.failUntilAttempt's own comment.
+    if (payload.failUntilAttempt && context.attempt < payload.failUntilAttempt) {
+      throw new Error("Simulated transient failure for testing.");
+    }
+
     this.logger.info({ jobId: context.jobId, correlationId: context.correlationId, attempt: context.attempt }, "system.ping.v1 processed");
     return { echo: payload.echo ?? "pong", respondedAt: new Date().toISOString() };
   };
