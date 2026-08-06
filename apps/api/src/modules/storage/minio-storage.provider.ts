@@ -1,7 +1,7 @@
 import { createHash } from "crypto";
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, type OnModuleInit } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { CreateBucketCommand, DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type { Readable } from "stream";
@@ -32,7 +32,7 @@ async function streamToBuffer(stream: Readable): Promise<Buffer> {
  * differs.
  */
 @Injectable()
-export class MinioStorageProvider implements StorageProvider {
+export class MinioStorageProvider implements StorageProvider, OnModuleInit {
   private readonly logger = new Logger(MinioStorageProvider.name);
   private readonly client: S3Client;
   private readonly bucket: string;
@@ -50,6 +50,25 @@ export class MinioStorageProvider implements StorageProvider {
       credentials: { accessKeyId: storage.accessKey, secretAccessKey: storage.secretKey },
       forcePathStyle: true, // required for MinIO; harmless for most S3-compatible providers
     });
+  }
+
+  /**
+   * Neither the local Docker Compose stack nor a fresh CI run creates the
+   * configured bucket anywhere — MinIO doesn't auto-create one. Idempotent
+   * self-provisioning at bootstrap, mirroring the same "the app ensures
+   * its own prerequisites" spirit as `postinstall: prisma generate` —
+   * every environment that boots this module (local dev, e2e locally, e2e
+   * in CI) gets a working bucket with no separate manual step.
+   */
+  async onModuleInit(): Promise<void> {
+    try {
+      await this.client.send(new CreateBucketCommand({ Bucket: this.bucket }));
+      this.logger.log(`Created storage bucket "${this.bucket}".`);
+    } catch (error) {
+      const name = (error as { name?: string })?.name;
+      if (name === "BucketAlreadyOwnedByYou" || name === "BucketAlreadyExists") return;
+      this.logger.warn(`Could not ensure storage bucket "${this.bucket}" exists: ${(error as Error).message}`);
+    }
   }
 
   async createUploadInstruction(input: {

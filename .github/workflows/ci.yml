@@ -50,7 +50,7 @@ jobs:
         run: docker compose -f docker/docker-compose.yml build
 
   e2e:
-    name: E2E Tests (Postgres + Redis + Mailpit)
+    name: E2E Tests (Postgres + Redis + Mailpit + MinIO)
     runs-on: ubuntu-latest
     # GitHub-hosted service containers — ephemeral, per-job, torn down when
     # the job ends. Exposing their ports to the runner's localhost here is
@@ -91,6 +91,12 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+    # No `minio` entry here: unlike every other service above, the
+    # minio/minio image has no usable default command (it exits 0
+    # immediately printing --help unless given `server /data` explicitly),
+    # and GitHub Actions' declarative `services:` block has no field to
+    # override a service container's command. MinIO is started as a plain
+    # `docker run` step below instead — see "Start MinIO".
     env:
       DATABASE_URL: postgresql://myev:myev_ci_password@localhost:5432/myev_media_test?schema=public
       REDIS_URL: redis://localhost:6379
@@ -112,10 +118,8 @@ jobs:
       # just created.
       BOOTSTRAP_OWNER_EMAIL: owner@myevmedia.com
       BOOTSTRAP_OWNER_PASSWORD: ci-only-owner-password-do-not-use-elsewhere-123
-      # No MinIO service container in CI — nothing in Module 1B.1's scope
-      # (auth-only) touches storage. /health/ready degrades gracefully
-      # (reports storage: "down", still returns a response) rather than
-      # crashing, so this is a deliberate, harmless gap, not an oversight.
+      # Module 1D: MinIO started via the "Start MinIO" step below (see the
+      # comment above `services:` for why it isn't a service container).
       STORAGE_ENDPOINT: localhost
       STORAGE_PORT: "9000"
       STORAGE_USE_SSL: "false"
@@ -136,6 +140,24 @@ jobs:
 
       - name: Install dependencies (frozen lockfile)
         run: pnpm install --frozen-lockfile
+
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=myev_minio_admin \
+            -e MINIO_ROOT_PASSWORD=myev_minio_dev_password \
+            minio/minio:latest server /data
+          for i in $(seq 1 30); do
+            if curl -fs http://localhost:9000/minio/health/live > /dev/null; then
+              echo "MinIO is healthy."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "MinIO did not become healthy in time." >&2
+          docker logs minio
+          exit 1
 
       - name: Apply database migrations
         working-directory: apps/api
