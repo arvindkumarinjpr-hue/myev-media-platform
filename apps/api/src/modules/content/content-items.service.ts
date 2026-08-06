@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { Prisma, type ContentItemStatus } from "../../../generated/prisma";
+import { Prisma, type ContentItemStatus, type ContentReviewAction } from "../../../generated/prisma";
 import { PrismaService } from "../../prisma/prisma.service";
 import { AuditService } from "../audit/audit.service";
 import type { AppConfig } from "../../config/configuration";
@@ -113,6 +113,39 @@ export class ContentItemsService {
     private readonly bodyValidator: ContentBodyValidator,
     private readonly config: ConfigService<AppConfig, true>,
   ) {}
+
+  /**
+   * Locks a content_items row by internal id (FOR UPDATE) and throws the
+   * standard enumeration-safe 404 if it's missing or soft-deleted.
+   * Shared by every mutating method below — each previously repeated this
+   * exact query + guard inline.
+   */
+  private async lockItemOrThrow(tx: Prisma.TransactionClient, itemId: string): Promise<LockedContentItemRow> {
+    const [locked] = await tx.$queryRaw<LockedContentItemRow[]>`
+      SELECT ${Prisma.raw(CONTENT_ITEM_COLUMNS)} FROM content_items WHERE id = ${itemId}::uuid FOR UPDATE
+    `;
+    if (!locked || locked.deletedAt) throw new NotFoundException({ code: "CONTENT_ITEM_NOT_FOUND", message: "Content item not found." });
+    return locked;
+  }
+
+  /** Shared by submit/approve/reject — identical shape, only action/comment differ. */
+  private async createReviewEvent(
+    tx: Prisma.TransactionClient,
+    params: { workspaceId: string; contentItemId: string; contentVersionId: string; action: ContentReviewAction; comment: string | null; actorId: string },
+  ): Promise<void> {
+    await tx.contentReviewEvent.create({
+      data: {
+        id: randomUUID(),
+        publicId: randomUUID(),
+        workspaceId: params.workspaceId,
+        contentItemId: params.contentItemId,
+        contentVersionId: params.contentVersionId,
+        action: params.action,
+        comment: params.comment,
+        actorId: params.actorId,
+      },
+    });
+  }
 
   // ---------------------------------------------------------------------
   // Creation — atomic 5-step transaction (Module 1E Engineering Plan
@@ -318,10 +351,7 @@ export class ContentItemsService {
     this.bodyValidator.validate(item.contentType as "BLOG" | "VIDEO", dto.body);
 
     return this.prisma.$transaction(async (tx) => {
-      const [locked] = await tx.$queryRaw<LockedContentItemRow[]>`
-        SELECT ${Prisma.raw(CONTENT_ITEM_COLUMNS)} FROM content_items WHERE id = ${item.id}::uuid FOR UPDATE
-      `;
-      if (!locked || locked.deletedAt) throw new NotFoundException({ code: "CONTENT_ITEM_NOT_FOUND", message: "Content item not found." });
+      const locked = await this.lockItemOrThrow(tx, item.id);
       if (!EDITABLE_STATUSES.includes(locked.status)) {
         throw new ConflictException({ code: "CONTENT_ITEM_NOT_EDITABLE", message: `Cannot add a new version while status is ${locked.status}.` });
       }
@@ -361,10 +391,7 @@ export class ContentItemsService {
   async start(workspace: { id: string }, actor: ContentActor, itemPublicId: string, context: RequestContext): Promise<ContentItemWithPublicRefs> {
     const item = await this.resolveForAction(workspace.id, actor, itemPublicId, "edit");
     return this.prisma.$transaction(async (tx) => {
-      const [locked] = await tx.$queryRaw<LockedContentItemRow[]>`
-        SELECT ${Prisma.raw(CONTENT_ITEM_COLUMNS)} FROM content_items WHERE id = ${item.id}::uuid FOR UPDATE
-      `;
-      if (!locked || locked.deletedAt) throw new NotFoundException({ code: "CONTENT_ITEM_NOT_FOUND", message: "Content item not found." });
+      const locked = await this.lockItemOrThrow(tx, item.id);
       if (locked.status !== "DRAFT") {
         throw new ConflictException({ code: "CONTENT_ITEM_INVALID_TRANSITION", message: `Cannot start from status ${locked.status}.` });
       }
@@ -389,13 +416,10 @@ export class ContentItemsService {
     context: RequestContext,
   ): Promise<ContentItemWithPublicRefs> {
     const item = await this.resolveForAction(workspace.id, actor, itemPublicId, "edit");
-    const comment = this.normalizeOptionalComment(dto.comment);
+    const comment = this.validateAndNormalizeComment(dto.comment, { required: false });
 
     return this.prisma.$transaction(async (tx) => {
-      const [locked] = await tx.$queryRaw<LockedContentItemRow[]>`
-        SELECT ${Prisma.raw(CONTENT_ITEM_COLUMNS)} FROM content_items WHERE id = ${item.id}::uuid FOR UPDATE
-      `;
-      if (!locked || locked.deletedAt) throw new NotFoundException({ code: "CONTENT_ITEM_NOT_FOUND", message: "Content item not found." });
+      const locked = await this.lockItemOrThrow(tx, item.id);
       if (locked.status !== "IN_PROGRESS") {
         throw new ConflictException({ code: "CONTENT_ITEM_INVALID_TRANSITION", message: `Cannot submit for review from status ${locked.status}.` });
       }
@@ -406,17 +430,13 @@ export class ContentItemsService {
       }
 
       const updated = await tx.contentItem.update({ where: { id: locked.id }, data: { status: "REVIEW" }, include: WITH_PUBLIC_REFS });
-      await tx.contentReviewEvent.create({
-        data: {
-          id: randomUUID(),
-          publicId: randomUUID(),
-          workspaceId: workspace.id,
-          contentItemId: locked.id,
-          contentVersionId: locked.currentVersionId,
-          action: "SUBMITTED",
-          comment,
-          actorId: actor.internalId,
-        },
+      await this.createReviewEvent(tx, {
+        workspaceId: workspace.id,
+        contentItemId: locked.id,
+        contentVersionId: locked.currentVersionId,
+        action: "SUBMITTED",
+        comment,
+        actorId: actor.internalId,
       });
       await this.audit.recordWithinTransaction(tx, {
         action: "CONTENT_ITEM_SUBMITTED_FOR_REVIEW",
@@ -438,13 +458,10 @@ export class ContentItemsService {
     context: RequestContext,
   ): Promise<ContentItemWithPublicRefs> {
     const item = await this.resolveForAction(workspace.id, actor, itemPublicId, "approve");
-    const comment = this.normalizeOptionalComment(dto.comment);
+    const comment = this.validateAndNormalizeComment(dto.comment, { required: false });
 
     return this.prisma.$transaction(async (tx) => {
-      const [locked] = await tx.$queryRaw<LockedContentItemRow[]>`
-        SELECT ${Prisma.raw(CONTENT_ITEM_COLUMNS)} FROM content_items WHERE id = ${item.id}::uuid FOR UPDATE
-      `;
-      if (!locked || locked.deletedAt) throw new NotFoundException({ code: "CONTENT_ITEM_NOT_FOUND", message: "Content item not found." });
+      const locked = await this.lockItemOrThrow(tx, item.id);
       if (locked.status !== "REVIEW") {
         throw new ConflictException({ code: "CONTENT_ITEM_INVALID_TRANSITION", message: `Cannot approve from status ${locked.status}.` });
       }
@@ -453,17 +470,13 @@ export class ContentItemsService {
       }
 
       const updated = await tx.contentItem.update({ where: { id: locked.id }, data: { status: "APPROVED" }, include: WITH_PUBLIC_REFS });
-      await tx.contentReviewEvent.create({
-        data: {
-          id: randomUUID(),
-          publicId: randomUUID(),
-          workspaceId: workspace.id,
-          contentItemId: locked.id,
-          contentVersionId: locked.currentVersionId,
-          action: "APPROVED",
-          comment,
-          actorId: actor.internalId,
-        },
+      await this.createReviewEvent(tx, {
+        workspaceId: workspace.id,
+        contentItemId: locked.id,
+        contentVersionId: locked.currentVersionId,
+        action: "APPROVED",
+        comment,
+        actorId: actor.internalId,
       });
       await this.audit.recordWithinTransaction(tx, {
         action: "CONTENT_ITEM_APPROVED",
@@ -485,20 +498,10 @@ export class ContentItemsService {
     context: RequestContext,
   ): Promise<ContentItemWithPublicRefs> {
     const item = await this.resolveForAction(workspace.id, actor, itemPublicId, "approve");
-    const comment = dto.comment.trim();
-    const maxLength = this.config.get("content", { infer: true }).reviewCommentMaxLength;
-    if (comment.length === 0) {
-      throw new BadRequestException({ code: "CONTENT_REVIEW_COMMENT_REQUIRED", message: "A non-empty comment is required to reject content." });
-    }
-    if (comment.length > maxLength) {
-      throw new BadRequestException({ code: "CONTENT_REVIEW_COMMENT_TOO_LONG", message: `comment must be at most ${maxLength} characters.` });
-    }
+    const comment = this.validateAndNormalizeComment(dto.comment, { required: true });
 
     return this.prisma.$transaction(async (tx) => {
-      const [locked] = await tx.$queryRaw<LockedContentItemRow[]>`
-        SELECT ${Prisma.raw(CONTENT_ITEM_COLUMNS)} FROM content_items WHERE id = ${item.id}::uuid FOR UPDATE
-      `;
-      if (!locked || locked.deletedAt) throw new NotFoundException({ code: "CONTENT_ITEM_NOT_FOUND", message: "Content item not found." });
+      const locked = await this.lockItemOrThrow(tx, item.id);
       if (locked.status !== "REVIEW") {
         throw new ConflictException({ code: "CONTENT_ITEM_INVALID_TRANSITION", message: `Cannot reject from status ${locked.status}.` });
       }
@@ -507,17 +510,13 @@ export class ContentItemsService {
       }
 
       const updated = await tx.contentItem.update({ where: { id: locked.id }, data: { status: "IN_PROGRESS" }, include: WITH_PUBLIC_REFS });
-      await tx.contentReviewEvent.create({
-        data: {
-          id: randomUUID(),
-          publicId: randomUUID(),
-          workspaceId: workspace.id,
-          contentItemId: locked.id,
-          contentVersionId: locked.currentVersionId,
-          action: "REJECTED",
-          comment,
-          actorId: actor.internalId,
-        },
+      await this.createReviewEvent(tx, {
+        workspaceId: workspace.id,
+        contentItemId: locked.id,
+        contentVersionId: locked.currentVersionId,
+        action: "REJECTED",
+        comment,
+        actorId: actor.internalId,
       });
       await this.audit.recordWithinTransaction(tx, {
         action: "CONTENT_ITEM_REJECTED",
@@ -534,10 +533,7 @@ export class ContentItemsService {
   async archive(workspace: { id: string }, actor: ContentActor, itemPublicId: string, context: RequestContext): Promise<ContentItemWithPublicRefs> {
     const item = await this.resolveForAction(workspace.id, actor, itemPublicId, "edit");
     return this.prisma.$transaction(async (tx) => {
-      const [locked] = await tx.$queryRaw<LockedContentItemRow[]>`
-        SELECT ${Prisma.raw(CONTENT_ITEM_COLUMNS)} FROM content_items WHERE id = ${item.id}::uuid FOR UPDATE
-      `;
-      if (!locked || locked.deletedAt) throw new NotFoundException({ code: "CONTENT_ITEM_NOT_FOUND", message: "Content item not found." });
+      const locked = await this.lockItemOrThrow(tx, item.id);
       if (!ARCHIVABLE_STATUSES.includes(locked.status)) {
         throw new ConflictException({ code: "CONTENT_ITEM_NOT_ARCHIVABLE", message: `Cannot archive from status ${locked.status}.` });
       }
@@ -562,10 +558,7 @@ export class ContentItemsService {
   async restore(workspace: { id: string }, actor: ContentActor, itemPublicId: string, context: RequestContext): Promise<ContentItemWithPublicRefs> {
     const item = await this.resolveForAction(workspace.id, actor, itemPublicId, "edit");
     return this.prisma.$transaction(async (tx) => {
-      const [locked] = await tx.$queryRaw<LockedContentItemRow[]>`
-        SELECT ${Prisma.raw(CONTENT_ITEM_COLUMNS)} FROM content_items WHERE id = ${item.id}::uuid FOR UPDATE
-      `;
-      if (!locked || locked.deletedAt) throw new NotFoundException({ code: "CONTENT_ITEM_NOT_FOUND", message: "Content item not found." });
+      const locked = await this.lockItemOrThrow(tx, item.id);
       if (locked.status !== "ARCHIVED" || !locked.archivedFromStatus) {
         throw new ConflictException({ code: "CONTENT_ITEM_NOT_ARCHIVED", message: "Content item is not archived." });
       }
@@ -590,12 +583,7 @@ export class ContentItemsService {
   async remove(workspace: { id: string }, actor: ContentActor, itemPublicId: string, context: RequestContext): Promise<void> {
     const item = await this.resolveForAction(workspace.id, actor, itemPublicId, "edit");
     await this.prisma.$transaction(async (tx) => {
-      const [locked] = await tx.$queryRaw<LockedContentItemRow[]>`
-        SELECT ${Prisma.raw(CONTENT_ITEM_COLUMNS)} FROM content_items WHERE id = ${item.id}::uuid FOR UPDATE
-      `;
-      if (!locked || locked.deletedAt || locked.status === "DELETED") {
-        throw new NotFoundException({ code: "CONTENT_ITEM_NOT_FOUND", message: "Content item not found." });
-      }
+      const locked = await this.lockItemOrThrow(tx, item.id);
       await tx.contentItem.update({ where: { id: locked.id }, data: { status: "DELETED", deletedAt: new Date() } });
       await this.audit.recordWithinTransaction(tx, {
         action: "CONTENT_ITEM_DELETED",
@@ -608,9 +596,25 @@ export class ContentItemsService {
     });
   }
 
-  private normalizeOptionalComment(comment: string | undefined): string | null {
-    if (comment === undefined) return null;
-    const trimmed = comment.trim();
+  /**
+   * Shared by submit/approve/reject — the single place a review comment's
+   * length is checked against the *configured* limit. Previously only
+   * reject() re-validated against ConfigService (submit/approve trimmed
+   * and passed the comment straight through); an operator lowering
+   * CONTENT_REVIEW_COMMENT_MAX_LENGTH below the DTO layer's hardcoded
+   * 2000-char ceiling would have had that stricter limit silently
+   * unenforced for submit/approve. required=true additionally rejects a
+   * blank/whitespace-only comment (reject's own rule).
+   */
+  private validateAndNormalizeComment(comment: string | undefined, options: { required: boolean }): string | null {
+    const maxLength = this.config.get("content", { infer: true }).reviewCommentMaxLength;
+    const trimmed = comment?.trim() ?? "";
+    if (options.required && trimmed.length === 0) {
+      throw new BadRequestException({ code: "CONTENT_REVIEW_COMMENT_REQUIRED", message: "A non-empty comment is required to reject content." });
+    }
+    if (trimmed.length > maxLength) {
+      throw new BadRequestException({ code: "CONTENT_REVIEW_COMMENT_TOO_LONG", message: `comment must be at most ${maxLength} characters.` });
+    }
     return trimmed.length === 0 ? null : trimmed;
   }
 
@@ -650,10 +654,7 @@ export class ContentItemsService {
             `
           : [];
 
-      const [lockedItem] = await tx.$queryRaw<LockedContentItemRow[]>`
-        SELECT ${Prisma.raw(CONTENT_ITEM_COLUMNS)} FROM content_items WHERE id = ${item.id}::uuid FOR UPDATE
-      `;
-      if (!lockedItem || lockedItem.deletedAt) throw new NotFoundException({ code: "CONTENT_ITEM_NOT_FOUND", message: "Content item not found." });
+      const lockedItem = await this.lockItemOrThrow(tx, item.id);
 
       // A third party changed this item's series between our pre-
       // transaction lookup and lock acquisition — the lock set above may
@@ -729,10 +730,7 @@ export class ContentItemsService {
       }
 
       // Step 3: lock item second.
-      const [lockedItem] = await tx.$queryRaw<LockedContentItemRow[]>`
-        SELECT ${Prisma.raw(CONTENT_ITEM_COLUMNS)} FROM content_items WHERE id = ${item.id}::uuid FOR UPDATE
-      `;
-      if (!lockedItem || lockedItem.deletedAt) throw new NotFoundException({ code: "CONTENT_ITEM_NOT_FOUND", message: "Content item not found." });
+      const lockedItem = await this.lockItemOrThrow(tx, item.id);
 
       // Step 4: revalidate — the series lock acquired above is only
       // trustworthy if the item's series assignment hasn't changed since
@@ -747,7 +745,7 @@ export class ContentItemsService {
       if (lockedCurrentSeries && !lockedCurrentSeries.deletedAt) {
         if (!isSeriesProjectCompatible(lockedCurrentSeries.projectId, targetProjectInternalId)) {
           throw new ConflictException({
-            code: "CONTENT_ITEM_PROJECT_INCOMPATIBLE_WITH_SERIES",
+            code: "CONTENT_ITEM_SERIES_PROJECT_INCOMPATIBLE",
             message: "This content item's current series is not compatible with the target project. Unassign the series first.",
           });
         }
@@ -796,11 +794,7 @@ export class ContentItemsService {
 
     if (dto.mediaAssetId === null) {
       return this.prisma.$transaction(async (tx) => {
-        const [lockedItem] = await tx.$queryRaw<LockedContentItemRow[]>`
-          SELECT ${Prisma.raw(CONTENT_ITEM_COLUMNS)} FROM content_items WHERE id = ${item.id}::uuid FOR UPDATE
-        `;
-        if (!lockedItem || lockedItem.deletedAt) throw new NotFoundException({ code: "CONTENT_ITEM_NOT_FOUND", message: "Content item not found." });
-
+        const lockedItem = await this.lockItemOrThrow(tx, item.id);
         const updated = await tx.contentItem.update({ where: { id: lockedItem.id }, data: { featuredMediaAssetId: null }, include: WITH_PUBLIC_REFS });
         await this.audit.recordWithinTransaction(tx, {
           action: "CONTENT_ITEM_UPDATED",
@@ -821,10 +815,7 @@ export class ContentItemsService {
 
     return this.prisma.$transaction(async (tx) => {
       // content_items before media_assets — fixed order.
-      const [lockedItem] = await tx.$queryRaw<LockedContentItemRow[]>`
-        SELECT ${Prisma.raw(CONTENT_ITEM_COLUMNS)} FROM content_items WHERE id = ${item.id}::uuid FOR UPDATE
-      `;
-      if (!lockedItem || lockedItem.deletedAt) throw new NotFoundException({ code: "CONTENT_ITEM_NOT_FOUND", message: "Content item not found." });
+      const lockedItem = await this.lockItemOrThrow(tx, item.id);
 
       const [lockedMedia] = await tx.$queryRaw<LockedMediaAssetRow[]>`
         SELECT ${Prisma.raw(MEDIA_ASSET_LOCK_COLUMNS)} FROM media_assets WHERE id = ${mediaLookup.id}::uuid FOR UPDATE

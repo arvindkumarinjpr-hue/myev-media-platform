@@ -47,11 +47,6 @@ const ACTION_PERMISSIONS: Record<ContentPermissionAction, Record<SupportedConten
   approve: { BLOG: PERMISSIONS.BLOG_APPROVE, VIDEO: PERMISSIONS.VIDEO_APPROVE },
 };
 
-const VIEW_PERMISSION_BY_TYPE: Record<SupportedContentType, PermissionConstant> = {
-  BLOG: PERMISSIONS.BLOG_VIEW,
-  VIDEO: PERMISSIONS.VIDEO_VIEW,
-};
-
 /**
  * Dynamic, content-type-aware authorization (Module 1E Engineering Plan
  * §6). Deliberately NOT a static @RequirePermission decorator: which
@@ -83,6 +78,6 @@ export class ContentPermissionResolver {
    */
   async getViewableContentTypes(userPublicId: string, workspaceId: string): Promise<SupportedContentType[]> {
     const granted = await this.permissionResolver.resolve(userPublicId, workspaceId);
-    return SUPPORTED_CONTENT_TYPES.filter((type) => granted.includes(VIEW_PERMISSION_BY_TYPE[type]));
+    return SUPPORTED_CONTENT_TYPES.filter((type) => granted.includes(ACTION_PERMISSIONS.view[type]));
   }
 }

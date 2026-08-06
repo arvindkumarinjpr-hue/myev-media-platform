@@ -57,6 +57,18 @@ async function uploadActiveAsset(ctx: E2eApp, accessToken: string, wsPublicId: s
   return assetPublicId as string;
 }
 
+// Deliberately never confirmed — stays PENDING_UPLOAD, for exercising
+// setFeaturedMedia's MEDIA_ASSET_NOT_ACTIVE rejection.
+async function createPendingUploadAsset(ctx: E2eApp, accessToken: string, wsPublicId: string) {
+  const intentRes = await request(ctx.app.getHttpServer())
+    .post(`/api/v1/workspaces/${wsPublicId}/assets/upload-intent`)
+    .set("Authorization", `Bearer ${accessToken}`)
+    .set("X-Workspace-Id", wsPublicId)
+    .send({ assetType: "IMAGE", originalFilename: "pending.png", declaredMimeType: "image/png", declaredSizeBytes: PNG_BYTES.length })
+    .expect(201);
+  return intentRes.body.data.assetPublicId as string;
+}
+
 describe("Content items (e2e)", () => {
   let ctx: E2eApp;
 
@@ -70,6 +82,31 @@ describe("Content items (e2e)", () => {
 
   afterAll(async () => {
     await teardownE2eApp(ctx);
+  });
+
+  describe("Update (title/metadata)", () => {
+    it("updates title and metadata, and rejects an update for a role without edit access", async () => {
+      const owner = await loginAsPlatformOwner(ctx);
+      const ws = await createWorkspaceAsOwner(ctx, owner.accessToken);
+      const item = await createBlogItem(ctx, owner.accessToken, ws.publicId);
+      const auth = { Authorization: `Bearer ${owner.accessToken}`, "X-Workspace-Id": ws.publicId };
+
+      const updated = await request(ctx.app.getHttpServer())
+        .patch(`/api/v1/workspaces/${ws.publicId}/content-items/${item.publicId}`)
+        .set(auth)
+        .send({ title: "Updated title", metadata: { seoScore: 88 } })
+        .expect(200);
+      expect(updated.body.data.title).toBe("Updated title");
+      expect(updated.body.data.metadata).toEqual({ seoScore: 88 });
+
+      const videoEditor = await addMember(ctx, ws.publicId, "video-editor-update", "Video Editor");
+      const denied = await request(ctx.app.getHttpServer())
+        .patch(`/api/v1/workspaces/${ws.publicId}/content-items/${item.publicId}`)
+        .set("Authorization", `Bearer ${videoEditor.accessToken}`)
+        .set("X-Workspace-Id", ws.publicId)
+        .send({ title: "Should be denied" });
+      expect(denied.status).toBe(404);
+    });
   });
 
   describe("Creation", () => {
@@ -478,6 +515,21 @@ describe("Content items (e2e)", () => {
         .send({ mediaAssetId: null })
         .expect(200);
       expect(clear.body.data.featuredMediaAssetId).toBeNull();
+    });
+
+    it("rejects a non-ACTIVE asset as featured media", async () => {
+      const owner = await loginAsPlatformOwner(ctx);
+      const ws = await createWorkspaceAsOwner(ctx, owner.accessToken);
+      const auth = { Authorization: `Bearer ${owner.accessToken}`, "X-Workspace-Id": ws.publicId };
+      const item = await createBlogItem(ctx, owner.accessToken, ws.publicId);
+      const pendingAssetId = await createPendingUploadAsset(ctx, owner.accessToken, ws.publicId);
+
+      const res = await request(ctx.app.getHttpServer())
+        .patch(`/api/v1/workspaces/${ws.publicId}/content-items/${item.publicId}/featured-media`)
+        .set(auth)
+        .send({ mediaAssetId: pendingAssetId });
+      expect(res.status).toBe(409);
+      expect(res.body.code).toBe("MEDIA_ASSET_NOT_ACTIVE");
     });
   });
 });
