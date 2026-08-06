@@ -76,6 +76,26 @@ export interface AppConfig {
     downloadUrl: { limit: number; windowSeconds: number };
     retryVerification: { limit: number; windowSeconds: number };
   };
+  content: {
+    // Module 1E Engineering Plan's Body Validation Contract. No frozen FRD
+    // figure exists for these — reasonable, documented ceilings rather
+    // than unbounded input, consistent with Module 1D's config-driven
+    // (never hardcoded) approach to every other size/shape limit.
+    maxBodySizeBytes: number;
+    maxBodyDepth: number;
+    maxStringValueLength: number;
+    // Below this length, a string is never run through the base64-pattern
+    // heuristic (Tier 3) — short alphanumeric values (ids, slugs, short
+    // codes) legitimately match the base64 character class and would
+    // otherwise false-positive. The data-URI prefix check (Tier 2) still
+    // applies at any length.
+    base64HeuristicMinLength: number;
+    // 2000 UTF-8 chars — Module 1E Engineering Plan, "Review Comment
+    // Limit" (final approval round). Mirrored by the hand-written
+    // content_review_events_comment_check DB constraint as a backstop;
+    // this is the value application code validates against first.
+    reviewCommentMaxLength: number;
+  };
 }
 
 /**
@@ -163,5 +183,12 @@ export default (): AppConfig => ({
       limit: parseInt(process.env.MEDIA_RETRY_VERIFICATION_RATE_LIMIT ?? "10", 10),
       windowSeconds: parseInt(process.env.MEDIA_RETRY_VERIFICATION_RATE_WINDOW_SECONDS ?? "3600", 10),
     },
+  },
+  content: {
+    maxBodySizeBytes: parseInt(process.env.CONTENT_MAX_BODY_SIZE_BYTES ?? "2000000", 10), // 2MB
+    maxBodyDepth: parseInt(process.env.CONTENT_MAX_BODY_DEPTH ?? "10", 10),
+    maxStringValueLength: parseInt(process.env.CONTENT_MAX_STRING_VALUE_LENGTH ?? "200000", 10),
+    base64HeuristicMinLength: parseInt(process.env.CONTENT_BASE64_HEURISTIC_MIN_LENGTH ?? "512", 10),
+    reviewCommentMaxLength: parseInt(process.env.CONTENT_REVIEW_COMMENT_MAX_LENGTH ?? "2000", 10),
   },
 });
