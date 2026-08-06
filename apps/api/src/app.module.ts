@@ -11,6 +11,7 @@ import { AuthModule } from "./modules/auth/auth.module";
 import { WorkspacesModule } from "./modules/workspaces/workspaces.module";
 import { WorkspaceMembersModule } from "./modules/workspace-members/workspace-members.module";
 import { ProjectsModule } from "./modules/projects/projects.module";
+import { MediaAssetsModule } from "./modules/media-assets/media-assets.module";
 import type { AppConfig } from "./config/configuration";
 
 @Module({
@@ -41,6 +42,7 @@ import type { AppConfig } from "./config/configuration";
     WorkspacesModule,
     WorkspaceMembersModule,
     ProjectsModule,
+    MediaAssetsModule,
   ],
 })
 export class AppModule {}
