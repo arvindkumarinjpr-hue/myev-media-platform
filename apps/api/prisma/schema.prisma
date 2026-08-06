@@ -133,6 +133,44 @@ enum MediaAssetVisibility {
   WORKSPACE_PRIVATE
 }
 
+// Module 1E: Content Foundation. Six values per the frozen DB Entity
+// Design doc §5.4 — Module 1E's own creation endpoint only accepts
+// BLOG/VIDEO; the other four exist for forward compatibility, same
+// pattern as Module 1D keeping unused MediaStorageProviderIdentity values.
+enum ContentType {
+  BLOG
+  VIDEO
+  SHORT
+  REEL
+  NEWSLETTER
+  SOCIAL_POST
+}
+
+// Module 1E-driven editorial states: DRAFT, IN_PROGRESS, REVIEW, APPROVED,
+// ARCHIVED, DELETED. RENDERING/FAILED/SCHEDULED/PUBLISHED are reserved —
+// no Module 1E code path ever sets them; they exist only because the
+// frozen FRD §24.5/24.6 vocabulary requires them for schema completeness.
+// See MODULE 1E ENGINEERING PLAN for the full state machine and why
+// Video's real Rendering requirement is deliberately simplified here.
+enum ContentItemStatus {
+  DRAFT
+  IN_PROGRESS
+  REVIEW
+  APPROVED
+  ARCHIVED
+  DELETED
+  RENDERING
+  FAILED
+  SCHEDULED
+  PUBLISHED
+}
+
+enum ContentReviewAction {
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
 enum AuditAction {
   LOGIN_SUCCESS
   LOGIN_FAILED
@@ -179,6 +217,20 @@ enum AuditAction {
   MEDIA_ASSET_DELETED
   MEDIA_ASSET_METADATA_UPDATED
   MEDIA_ASSET_DOWNLOAD_URL_ISSUED
+  CONTENT_ITEM_CREATED
+  CONTENT_ITEM_UPDATED
+  CONTENT_VERSION_CREATED
+  CONTENT_ITEM_STARTED
+  CONTENT_ITEM_SUBMITTED_FOR_REVIEW
+  CONTENT_ITEM_APPROVED
+  CONTENT_ITEM_REJECTED
+  CONTENT_ITEM_ARCHIVED
+  CONTENT_ITEM_RESTORED
+  CONTENT_ITEM_DELETED
+  CONTENT_ITEM_SERIES_CHANGED
+  CONTENT_SERIES_CREATED
+  CONTENT_SERIES_UPDATED
+  CONTENT_SERIES_DELETED
 }
 
 model User {
@@ -197,9 +249,9 @@ model User {
   // than the serialized bootstrap seed — see PlatformOwnerService.
   isPlatformOwner Boolean @default(false) @map("is_platform_owner")
 
-  createdById  String?  @map("created_by") @db.Uuid
-  createdBy    User?    @relation("UserCreatedBy", fields: [createdById], references: [id])
-  createdUsers User[]   @relation("UserCreatedBy")
+  createdById  String? @map("created_by") @db.Uuid
+  createdBy    User?   @relation("UserCreatedBy", fields: [createdById], references: [id])
+  createdUsers User[]  @relation("UserCreatedBy")
 
   activatedAt DateTime? @map("activated_at")
   lastLoginAt DateTime? @map("last_login_at")
@@ -213,16 +265,20 @@ model User {
   actionTokens    UserActionToken[]
   auditLogs       AuditLog[]
 
-  ownedWorkspaces      Workspace[]           @relation("WorkspaceOwner")
-  createdWorkspaces    Workspace[]           @relation("WorkspaceCreatedBy")
-  workspaceMemberships WorkspaceMember[]     @relation("WorkspaceMemberUser")
-  memberInvitesSent    WorkspaceMember[]     @relation("WorkspaceMemberInvitedBy")
-  invitationsSent      WorkspaceInvitation[] @relation("InvitationInvitedBy")
-  invitationsReceived  WorkspaceInvitation[] @relation("InvitationInvitedUser")
-  invitationsAccepted  WorkspaceInvitation[] @relation("InvitationAcceptedBy")
-  ownedProjects        Project[]             @relation("ProjectOwner")
-  createdProjects      Project[]             @relation("ProjectCreatedBy")
-  createdMediaAssets   MediaAsset[]          @relation("MediaAssetCreatedBy")
+  ownedWorkspaces        Workspace[]           @relation("WorkspaceOwner")
+  createdWorkspaces      Workspace[]           @relation("WorkspaceCreatedBy")
+  workspaceMemberships   WorkspaceMember[]     @relation("WorkspaceMemberUser")
+  memberInvitesSent      WorkspaceMember[]     @relation("WorkspaceMemberInvitedBy")
+  invitationsSent        WorkspaceInvitation[] @relation("InvitationInvitedBy")
+  invitationsReceived    WorkspaceInvitation[] @relation("InvitationInvitedUser")
+  invitationsAccepted    WorkspaceInvitation[] @relation("InvitationAcceptedBy")
+  ownedProjects          Project[]             @relation("ProjectOwner")
+  createdProjects        Project[]             @relation("ProjectCreatedBy")
+  createdMediaAssets     MediaAsset[]          @relation("MediaAssetCreatedBy")
+  createdContentItems    ContentItem[]         @relation("ContentItemCreatedBy")
+  createdContentVersions ContentVersion[]      @relation("ContentVersionCreatedBy")
+  createdContentSeries   ContentSeries[]       @relation("ContentSeriesCreatedBy")
+  contentReviewEvents    ContentReviewEvent[]
 
   @@map("users")
 }
@@ -303,9 +359,9 @@ model UserSession {
   // Refinement 2: device metadata — no UI in Module 1B, persisted for
   // future active-session-list / logout-specific-device / trusted-device
   // features.
-  deviceName      String? @map("device_name")
+  deviceName      String?  @map("device_name")
   browser         String?
-  operatingSystem String? @map("operating_system")
+  operatingSystem String?  @map("operating_system")
   platform        String?
   lastSeenAt      DateTime @default(now()) @map("last_seen_at")
 
@@ -426,6 +482,9 @@ model Workspace {
   sessionsLastActiveHere  UserSession[]              @relation("LastActiveWorkspace")
   auditLogs               AuditLog[]
   mediaAssets             MediaAsset[]
+  contentItems            ContentItem[]
+  contentSeries           ContentSeries[]
+  contentReviewEvents     ContentReviewEvent[]
 
   @@index([slug])
   @@index([status])
@@ -535,8 +594,8 @@ model WorkspaceInvitation {
 // composite foreign key, same pattern as Workspace. See
 // MODULE_1C_ENGINEERING PLAN §2.F / §1.
 model Project {
-  id       String        @id @default(uuid()) @db.Uuid
-  publicId String        @unique @default(uuid()) @map("public_id") @db.Uuid
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
 
   workspaceId String    @map("workspace_id") @db.Uuid
   workspace   Workspace @relation(fields: [workspaceId], references: [id])
@@ -558,7 +617,17 @@ model Project {
 
   slugReservations ProjectSlugReservation[]
   mediaAssets      MediaAsset[]
+  contentItems     ContentItem[]            @relation("ContentItemProject")
+  contentSeries    ContentSeries[]          @relation("ContentSeriesProject")
 
+  // Module 1E: workspace-safe composite FK target for content_items and
+  // content_series' projectId — see MODULE 1E ENGINEERING PLAN
+  // "Workspace-Safe Project/Series Relationships". `id` alone is already
+  // unique (primary key); this composite adds no new uniqueness
+  // guarantee of its own, it only exists to be a valid multi-column FK
+  // target so a content item/series can never reference a project in a
+  // different workspace.
+  @@unique([id, workspaceId])
   @@index([workspaceId])
   @@index([slug])
   @@index([status])
@@ -589,11 +658,10 @@ model ProjectSlugReservation {
 // field separation, append-only versioning, per-workspace-only duplicate
 // detection, and the retryable-verification state machine (Safeguard 2).
 //
-// `contentItemId` is deliberately a plain, unconstrained UUID column, not
-// a Prisma relation — the `content_items` table doesn't exist yet (no
-// Content module). A future migration adds the real FK once it does. See
-// plan §6.1 "content-item compatibility without requiring the Content
-// module."
+// `contentItemId`'s real, workspace-safe composite FK is completed in
+// Module 1E, now that `content_items` exists — see MODULE 1E ENGINEERING
+// PLAN "Workspace-Safe Media Relationships". Module 1D left it plain and
+// unconstrained deliberately, anticipating exactly this.
 //
 // The two partial unique indexes this design requires (one ACTIVE row per
 // assetGroupId; at most one non-terminal replacement per assetGroupId)
@@ -613,8 +681,9 @@ model MediaAsset {
   projectId String?  @map("project_id") @db.Uuid
   project   Project? @relation(fields: [projectId], references: [id])
 
-  // No @relation — see model-level comment above.
-  contentItemId String? @map("content_item_id") @db.Uuid
+  // Workspace-safe composite FK — see model-level comment above.
+  contentItemId String?      @map("content_item_id") @db.Uuid
+  contentItem   ContentItem? @relation("MediaAssetContentItem", fields: [contentItemId, workspaceId], references: [id, workspaceId])
 
   assetType MediaAssetType @map("asset_type")
 
@@ -642,7 +711,7 @@ model MediaAsset {
   malwareScanStatus MalwareScanStatus @default(NOT_SCANNED) @map("malware_scan_status")
 
   // Versioning — see plan §5. First version's own id is its assetGroupId.
-  assetGroupId String  @map("asset_group_id") @db.Uuid
+  assetGroupId  String @map("asset_group_id") @db.Uuid
   versionNumber Int    @default(1) @map("version_number")
 
   supersedesAssetId String?      @map("supersedes_asset_id") @db.Uuid
@@ -682,13 +751,204 @@ model MediaAsset {
   archivedAt DateTime? @map("archived_at")
   deletedAt  DateTime? @map("deleted_at")
 
+  // Module 1E: back-relation for content_items.featuredMediaAssetId's
+  // own workspace-safe composite FK into this table.
+  featuredInContentItems ContentItem[] @relation("ContentItemFeaturedMedia")
+
   // Safeguard 1: version numbers can never duplicate within one asset
   // group, expressible directly (unlike the two partial indexes above).
   @@unique([assetGroupId, versionNumber])
+  // Module 1E: workspace-safe composite FK target for content_items'
+  // contentItemId and featuredMediaAssetId relations.
+  @@unique([id, workspaceId])
   @@index([workspaceId])
   @@index([projectId])
   @@index([assetGroupId])
   @@index([status])
   @@index([workspaceId, verifiedChecksumSha256])
   @@map("media_assets")
+}
+
+// Module 1E: Content Foundation. See MODULE 1E ENGINEERING PLAN —
+// IMPLEMENTATION-READY FINAL for the full design: the editorial state
+// machine (§ Revised State Machine), the current-version composite FK +
+// deferred constraint trigger guaranteeing every committed non-deleted
+// row has one (hand-written in this migration's raw SQL — no Prisma
+// equivalent exists for a deferred trigger), and every workspace-safe
+// composite relationship below.
+model ContentItem {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  // Workspace-safe composite FK — a content item's project must belong
+  // to the SAME workspace; a plain FK on projectId alone couldn't
+  // guarantee that.
+  projectId String?  @map("project_id") @db.Uuid
+  project   Project? @relation("ContentItemProject", fields: [projectId, workspaceId], references: [id, workspaceId])
+
+  contentType ContentType @map("content_type")
+  title       String
+
+  // Composite ownership FK — the version this points at must belong to
+  // THIS item, never another's. Nullable only to allow the
+  // create-item-then-create-version-then-link sequence; the deferred
+  // trigger (migration raw SQL) guarantees it is never left null past
+  // commit for a non-deleted row.
+  currentVersionId String?         @map("current_version_id") @db.Uuid
+  currentVersion   ContentVersion? @relation("ContentItemCurrentVersion", fields: [currentVersionId, id], references: [id, contentItemId])
+
+  // Workspace-safe composite FK.
+  seriesId String?        @map("series_id") @db.Uuid
+  series   ContentSeries? @relation(fields: [seriesId, workspaceId], references: [id, workspaceId])
+
+  // Workspace-safe composite FK. Valid only if null, or points at an
+  // asset already linked to this same item, or an unassigned
+  // workspace-level asset — never an asset linked to a different item
+  // (service-level rule, not expressible as a single FK condition).
+  featuredMediaAssetId String?     @map("featured_media_asset_id") @db.Uuid
+  featuredMediaAsset   MediaAsset? @relation("ContentItemFeaturedMedia", fields: [featuredMediaAssetId, workspaceId], references: [id, workspaceId])
+
+  status             ContentItemStatus  @default(DRAFT)
+  // Set at archive time, consulted (via an explicit allow-list, never
+  // inferred) at restore time — see plan's Archive/Restore Rules.
+  archivedFromStatus ContentItemStatus? @map("archived_from_status")
+
+  // Generic, type-agnostic bag — Module 1E deliberately defers real
+  // blog_articles/video_scripts extension tables, same precedent as
+  // Module 1D deferring media's own type-specific extension tables.
+  metadata Json @default("{}")
+
+  createdById String @map("created_by") @db.Uuid
+  createdBy   User   @relation("ContentItemCreatedBy", fields: [createdById], references: [id])
+
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+  archivedAt DateTime? @map("archived_at")
+  deletedAt  DateTime? @map("deleted_at")
+
+  versions     ContentVersion[]     @relation("ContentItemVersions")
+  reviewEvents ContentReviewEvent[]
+  mediaAssets  MediaAsset[]         @relation("MediaAssetContentItem")
+
+  // Workspace-safe composite FK target for content_review_events'
+  // contentItemId relation.
+  @@unique([id, workspaceId])
+  // `id` alone already guarantees (currentVersionId, id) is unique —
+  // Prisma requires it declared explicitly to recognize the to-one
+  // relation shape on this side.
+  @@unique([currentVersionId, id])
+  @@index([workspaceId])
+  @@index([projectId])
+  @@index([seriesId])
+  @@index([status])
+  @@index([contentType])
+  @@map("content_items")
+}
+
+// Immutable — an edit always inserts a new row, never mutated or
+// deleted. UNIQUE(contentItemId, versionNumber) is Safeguard-equivalent
+// to Module 1D's version-number invariant, same pattern reused directly.
+// UNIQUE(id, contentItemId) is what makes the current-version and
+// review-event ownership composite FKs possible — one constraint, two
+// consumers.
+model ContentVersion {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  contentItemId String      @map("content_item_id") @db.Uuid
+  contentItem   ContentItem @relation("ContentItemVersions", fields: [contentItemId], references: [id])
+
+  versionNumber Int @map("version_number")
+
+  // Opaque JSONB — validated (size/depth/type/minimal per-type shape,
+  // three-tier binary-content heuristic) at the service layer before
+  // storage; never interpreted further by Module 1E once accepted. See
+  // plan's Body Validation Contract.
+  body Json
+
+  createdById String @map("created_by") @db.Uuid
+  createdBy   User   @relation("ContentVersionCreatedBy", fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  currentForItem ContentItem?         @relation("ContentItemCurrentVersion")
+  reviewEvents   ContentReviewEvent[]
+
+  @@unique([contentItemId, versionNumber])
+  @@unique([id, contentItemId])
+  @@index([contentItemId])
+  @@map("content_versions")
+}
+
+// Minimal, intentionally — a label/grouping with no workflow of its own,
+// hence a plain nullable deletedAt rather than a full status enum. See
+// plan's "Content Series Must Be Usable or Deferred" — included, not
+// deferred, with workspace-scoped CRUD and RESTRICT-style delete
+// protection while active content items still reference it.
+model ContentSeries {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  // Workspace-safe composite FK.
+  projectId String?  @map("project_id") @db.Uuid
+  project   Project? @relation("ContentSeriesProject", fields: [projectId, workspaceId], references: [id, workspaceId])
+
+  name String
+
+  createdById String @map("created_by") @db.Uuid
+  createdBy   User   @relation("ContentSeriesCreatedBy", fields: [createdById], references: [id])
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  contentItems ContentItem[]
+
+  // Workspace-safe composite FK target for content_items.seriesId.
+  @@unique([id, workspaceId])
+  @@index([workspaceId])
+  @@index([projectId])
+  @@map("content_series")
+}
+
+// Append-only business record of every submit/approve/reject action —
+// never audit_logs alone, since a required rejection comment is a
+// business fact, not incidental diagnostic metadata. Both composite FKs
+// are workspace/ownership-safety guarantees: this event's workspaceId
+// genuinely matches its content item's actual workspace, and its
+// reviewed version genuinely belongs to that exact content item (reusing
+// content_versions' own id+contentItemId uniqueness).
+model ContentReviewEvent {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  contentItemId String      @map("content_item_id") @db.Uuid
+  contentItem   ContentItem @relation(fields: [contentItemId, workspaceId], references: [id, workspaceId])
+
+  contentVersionId String         @map("content_version_id") @db.Uuid
+  contentVersion   ContentVersion @relation(fields: [contentVersionId, contentItemId], references: [id, contentItemId])
+
+  action  ContentReviewAction
+  // Required + non-empty (trimmed) for REJECTED, optional (but bounded)
+  // otherwise — enforced at DTO, service, AND database layers (a raw SQL
+  // CHECK constraint, hand-written in this migration).
+  comment String?
+
+  actorId String @map("actor_id") @db.Uuid
+  actor   User   @relation(fields: [actorId], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([contentItemId])
+  @@index([workspaceId])
+  @@map("content_review_events")
 }
