@@ -1,5 +1,8 @@
 import { randomUUID } from "crypto";
-import { BadRequestException } from "@nestjs/common";
+import { BadRequestException, ConflictException } from "@nestjs/common";
+import { Queue } from "bullmq";
+import type { Redis } from "ioredis";
+import { SYSTEM_PING_V1_MANIFEST } from "@myev/shared";
 import { bootstrapE2eApp, createWorkspaceAsOwner, loginAsPlatformOwner, request, teardownE2eApp, type E2eApp } from "./helpers/e2e-app";
 import { BackgroundJobsService } from "../src/modules/background-jobs/background-jobs.service";
 
@@ -315,5 +318,223 @@ describe("Background jobs (e2e)", () => {
         }
       }
     }, 10_000);
+  });
+
+  describe("idempotency (Milestone 6)", () => {
+    let idempotencyQueue: Queue;
+    let idempotencyQueueConnection: Redis;
+
+    beforeAll(() => {
+      // Queue.close() does NOT close a connection passed in via `connection`
+      // — BullMQ assumes an externally-supplied connection may be shared
+      // with other Queue/Worker instances the caller owns, so closing it
+      // is the caller's own responsibility. Not doing so here left a live
+      // TCP socket open forever (found via --detectOpenHandles: a lone
+      // TCPWRAP traced straight to this .duplicate() call), which is what
+      // hung this exact suite — Jest was correctly reporting ALL tests as
+      // finished, then waiting indefinitely for an event loop that never
+      // emptied. Captured explicitly so afterAll can close it too.
+      idempotencyQueueConnection = ctx.redis.duplicate();
+      idempotencyQueue = new Queue(SYSTEM_PING_V1_MANIFEST.queue, { connection: idempotencyQueueConnection });
+    });
+
+    afterAll(async () => {
+      await idempotencyQueue.close();
+      await idempotencyQueueConnection.quit();
+    });
+
+    it("sequential duplicate request: returns the same job, exactly one row and one QUEUED history entry exist", async () => {
+      const key = `e2e-idem-seq-${randomUUID()}`;
+      const payload = { echo: "sequential" };
+
+      const first = await backgroundJobs.enqueue({ workspaceId: workspaceInternalId, jobType: "system.ping.v1", payload, idempotencyKey: key });
+      const second = await backgroundJobs.enqueue({ workspaceId: workspaceInternalId, jobType: "system.ping.v1", payload, idempotencyKey: key });
+
+      expect(second.id).toBe(first.id);
+
+      const count = await ctx.prisma.backgroundJob.count({ where: { workspaceId: workspaceInternalId, idempotencyKey: key } });
+      expect(count).toBe(1);
+
+      const history = await ctx.prisma.backgroundJobHistory.findMany({ where: { backgroundJobId: first.id, toStatus: "QUEUED" } });
+      expect(history).toHaveLength(1);
+    });
+
+    it("concurrent duplicate request: exactly one authoritative job is created and exactly one dispatch happens, never two", async () => {
+      const key = `e2e-idem-concurrent-${randomUUID()}`;
+      const payload = { echo: "concurrent" };
+      const enqueueOnce = () => backgroundJobs.enqueue({ workspaceId: workspaceInternalId, jobType: "system.ping.v1", payload, idempotencyKey: key });
+
+      const [a, b] = await Promise.all([enqueueOnce(), enqueueOnce()]);
+      expect(a.id).toBe(b.id);
+
+      const count = await ctx.prisma.backgroundJob.count({ where: { workspaceId: workspaceInternalId, idempotencyKey: key } });
+      expect(count).toBe(1);
+
+      // Exactly one logical dispatch: only one QUEUED-origin history row —
+      // if both racing calls had each dispatched, this would be 2.
+      const history = await ctx.prisma.backgroundJobHistory.findMany({ where: { backgroundJobId: a.id, toStatus: "QUEUED" } });
+      expect(history).toHaveLength(1);
+
+      const bullJob = await idempotencyQueue.getJob(a.id);
+      expect(bullJob).toBeDefined();
+    });
+
+    it("same idempotency key with a different payload returns a deterministic conflict (API-level cache-hit path), with no payload leaked in the error", async () => {
+      const key = `e2e-idem-mismatch-cache-${randomUUID()}`;
+      const secretMarkerA = `secret-a-${randomUUID()}`;
+      const secretMarkerB = `secret-b-${randomUUID()}`;
+      const original = await backgroundJobs.enqueue({ workspaceId: workspaceInternalId, jobType: "system.ping.v1", payload: { echo: secretMarkerA }, idempotencyKey: key });
+
+      expect.assertions(6);
+      try {
+        await backgroundJobs.enqueue({ workspaceId: workspaceInternalId, jobType: "system.ping.v1", payload: { echo: secretMarkerB }, idempotencyKey: key });
+      } catch (error) {
+        expect(error).toBeInstanceOf(ConflictException);
+        const body = (error as ConflictException).getResponse() as { code: string; message: string };
+        expect(body.code).toBe("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+        const serialized = JSON.stringify(body);
+        expect(serialized).not.toContain(secretMarkerA);
+        expect(serialized).not.toContain(secretMarkerB);
+      }
+
+      // Still exactly one row — the mismatched attempt never created a
+      // second one, and never touched the original.
+      const count = await ctx.prisma.backgroundJob.count({ where: { workspaceId: workspaceInternalId, idempotencyKey: key } });
+      expect(count).toBe(1);
+      const unchanged = await ctx.prisma.backgroundJob.findUniqueOrThrow({ where: { id: original.id } });
+      expect((unchanged.payloadMetadata as { echo?: string }).echo).toBe(secretMarkerA);
+    });
+
+    it("same idempotency key with a different payload is caught at the Postgres level too, when the API-level cache misses", async () => {
+      const key = `e2e-idem-mismatch-db-${randomUUID()}`;
+      const first = await backgroundJobs.enqueue({ workspaceId: workspaceInternalId, jobType: "system.ping.v1", payload: { echo: "original" }, idempotencyKey: key });
+
+      // Force a cache miss without touching Redis availability at all —
+      // deleting the entry produces the exact same code path a Redis
+      // outage would (checkIdempotencyCache fails open to null either
+      // way), so this proves the DB-level check independently of the
+      // API-level cache ever having seen this key.
+      await ctx.redis.del(`bg-job-idem:${workspaceInternalId}:${key}`);
+
+      expect.assertions(3);
+      try {
+        await backgroundJobs.enqueue({ workspaceId: workspaceInternalId, jobType: "system.ping.v1", payload: { echo: "different" }, idempotencyKey: key });
+      } catch (error) {
+        expect(error).toBeInstanceOf(ConflictException);
+        expect((error as ConflictException).getResponse()).toMatchObject({ code: "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH" });
+      }
+
+      const count = await ctx.prisma.backgroundJob.count({ where: { id: first.id } });
+      expect(count).toBe(1);
+    });
+
+    it("the same idempotency key in two different workspaces creates two genuinely independent jobs", async () => {
+      const otherWorkspace = await createWorkspaceAsOwner(ctx, ownerAccessToken);
+      const otherWorkspaceRow = await ctx.prisma.workspace.findUniqueOrThrow({ where: { publicId: otherWorkspace.publicId } });
+
+      const key = `e2e-idem-cross-ws-${randomUUID()}`;
+      const payload = { echo: "cross-workspace" };
+      const a = await backgroundJobs.enqueue({ workspaceId: workspaceInternalId, jobType: "system.ping.v1", payload, idempotencyKey: key });
+      const b = await backgroundJobs.enqueue({ workspaceId: otherWorkspaceRow.id, jobType: "system.ping.v1", payload, idempotencyKey: key });
+
+      expect(a.id).not.toBe(b.id);
+      expect(a.workspaceId).toBe(workspaceInternalId);
+      expect(b.workspaceId).toBe(otherWorkspaceRow.id);
+    });
+
+    it("BullMQ data already cleaned up: a replay still succeeds and returns the original row without needing the old BullMQ entry to still exist", async () => {
+      const key = `e2e-idem-bullmq-cleaned-${randomUUID()}`;
+      const payload = { echo: "cleanup" };
+      const first = await backgroundJobs.enqueue({ workspaceId: workspaceInternalId, jobType: "system.ping.v1", payload, idempotencyKey: key });
+
+      // Wait for the real, already-running Worker to actually finish it
+      // first — removing a job BullMQ still considers active is a
+      // different (and here, irrelevant) scenario; the one this test
+      // means to simulate is age-based cleanup AFTER completion, which by
+      // definition only ever runs once a job is done.
+      await waitForStatus(ctx, workspace.publicId, ownerAccessToken, first.publicId, ["COMPLETED", "FAILED", "TIMED_OUT"]);
+
+      // Simulate BullMQ's own removeOnComplete/removeOnFail age-based
+      // cleanup having already run before the replay lands.
+      await idempotencyQueue.remove(first.id);
+      expect(await idempotencyQueue.getJob(first.id)).toBeUndefined();
+
+      const second = await backgroundJobs.enqueue({ workspaceId: workspaceInternalId, jobType: "system.ping.v1", payload, idempotencyKey: key });
+      expect(second.id).toBe(first.id);
+    });
+
+    it("Redis unavailable: database-level deduplication still works, and the call never hangs", async () => {
+      const originalRedisUrl = process.env.REDIS_URL;
+      process.env.REDIS_URL = "redis://redis:1";
+      let brokenCtx: E2eApp | undefined;
+      try {
+        brokenCtx = await bootstrapE2eApp();
+        const brokenBackgroundJobs = brokenCtx.app.get(BackgroundJobsService);
+
+        // Pre-seeded directly — exactly what a prior successful enqueue
+        // (while Redis was healthy) would have produced — so the call
+        // below hits the Postgres unique constraint and takes the replay
+        // path, which never calls queue.add() at all (proven independently
+        // by the "BullMQ data already cleaned up" case above). That is
+        // exactly what makes it safe to exercise against a connection
+        // that will never connect: only the FAIL-FAST idempotency cache
+        // (maxRetriesPerRequest: 1, no reconnect) is on the path, never
+        // the BullMQ producer connection (maxRetriesPerRequest: null,
+        // which would hang indefinitely offline).
+        const key = `e2e-idem-redis-down-${randomUUID()}`;
+        const payload = { echo: "no-redis" };
+        const preSeeded = await brokenCtx.prisma.backgroundJob.create({
+          data: {
+            workspaceId: workspaceInternalId,
+            jobType: "system.ping.v1",
+            queueName: "SYSTEM",
+            payloadMetadata: payload,
+            correlationId: randomUUID(),
+            idempotencyKey: key,
+          },
+        });
+
+        const replayed = await brokenBackgroundJobs.enqueue({ workspaceId: workspaceInternalId, jobType: "system.ping.v1", payload, idempotencyKey: key });
+        expect(replayed.id).toBe(preSeeded.id);
+
+        const count = await brokenCtx.prisma.backgroundJob.count({ where: { id: preSeeded.id } });
+        expect(count).toBe(1);
+      } finally {
+        process.env.REDIS_URL = originalRedisUrl;
+        if (brokenCtx) {
+          await brokenCtx.redis.quit().catch(() => undefined);
+          await brokenCtx.app.close();
+        }
+      }
+    }, 15_000);
+
+    it("retry of the original job does not create a second logical job under the same idempotency key", async () => {
+      const key = `e2e-idem-retry-${randomUUID()}`;
+      const payload = { echo: "retry-me", delayMs: 2_500 };
+      const created = await backgroundJobs.enqueue({ workspaceId: workspaceInternalId, jobType: "system.ping.v1", payload, idempotencyKey: key });
+
+      await request(ctx.app.getHttpServer())
+        .post(`/api/v1/workspaces/${workspace.publicId}/background-jobs/${created.publicId}/cancel`)
+        .set("Authorization", `Bearer ${ownerAccessToken}`)
+        .set("X-Workspace-Id", workspace.publicId)
+        .expect(201);
+      await waitForStatus(ctx, workspace.publicId, ownerAccessToken, created.publicId, ["FAILED"]);
+
+      await request(ctx.app.getHttpServer())
+        .post(`/api/v1/workspaces/${workspace.publicId}/background-jobs/${created.publicId}/retry`)
+        .set("Authorization", `Bearer ${ownerAccessToken}`)
+        .set("X-Workspace-Id", workspace.publicId)
+        .expect(201);
+
+      // A subsequent enqueue() with the SAME key must still resolve to
+      // the SAME row (now mid-retry), never create a new one.
+      const replayed = await backgroundJobs.enqueue({ workspaceId: workspaceInternalId, jobType: "system.ping.v1", payload, idempotencyKey: key });
+      expect(replayed.id).toBe(created.id);
+
+      const count = await ctx.prisma.backgroundJob.count({ where: { id: created.id } });
+      expect(count).toBe(1);
+
+      await waitForStatus(ctx, workspace.publicId, ownerAccessToken, created.publicId, ["COMPLETED", "FAILED", "TIMED_OUT"]);
+    });
   });
 });

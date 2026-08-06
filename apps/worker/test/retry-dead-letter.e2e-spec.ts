@@ -6,6 +6,7 @@ import { SYSTEM_PING_V1_MANIFEST } from "@myev/shared";
 import { AppModule } from "../src/app.module";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { WorkerHeartbeatService } from "../src/heartbeat/worker-heartbeat.service";
+import { BullMqWorkerManager } from "../src/bullmq/bullmq-worker.manager";
 import type { BackgroundJob, BackgroundJobHistory } from "../../api/generated/prisma";
 
 /**
@@ -311,9 +312,47 @@ describe("Worker (e2e) — retry, backoff, and dead-letter", () => {
           // connection.quit()) both wait for a graceful Redis handshake
           // that a truly unreachable connection will never provide, so a
           // full close() here can hang indefinitely. Bounded so THIS test
-          // doesn't hang — the module instance is abandoned (not leaked
-          // in any way that affects other tests; it never held a real
-          // Redis connection to begin with) if the race is lost.
+          // doesn't hang.
+          //
+          // Losing that race does NOT mean the connections are harmlessly
+          // abandoned: ioredis's default retryStrategy keeps retrying
+          // ECONNREFUSED forever, so unclosed connections here keep the
+          // event loop alive and the whole Jest process hangs on exit
+          // (found while validating Milestone 6 — a real leak, distinct
+          // from DEFECT-1F-001 itself, which is about production shutdown
+          // behavior, not this test's own cleanup).
+          //
+          // Two separate connections need forcing, not one: BullMQ's Worker
+          // internally duplicates its own "blocking connection" for
+          // BRPOPLPUSH-style commands, which it owns and normally closes
+          // gracefully in worker.close() — but only skips the graceful
+          // handshake when called with force=true, which
+          // onApplicationShutdown() does not do. The manager's raw shared
+          // `connection` is explicitly NOT owned/closed by BullMQ (a
+          // user-supplied connection), so it needs its own explicit
+          // fallback regardless.
+          //
+          // Order matters here. Losing the race below leaves
+          // onApplicationShutdown()'s own internal close chain running
+          // detached in the background (the race abandons the *wait*, not
+          // the underlying call) — and if the raw connection is still
+          // reconnecting when that detached chain reaches
+          // `connection.quit()`, ioredis queues QUIT as an offline command
+          // that will never flush, hanging that detached promise forever
+          // too (a silent leak with no further log output, distinct from
+          // the earlier one). So: force-close every Worker AND disconnect
+          // the raw connection FIRST, before ever attempting the graceful
+          // module close — that way both the redundant worker.close() and
+          // connection.quit() calls inside onApplicationShutdown() find
+          // everything already in the 'end' state and resolve immediately
+          // instead of blocking on a handshake that will never arrive.
+          const brokenManager = brokenModuleRef.get(BullMqWorkerManager);
+          const brokenInternals = brokenManager as unknown as {
+            workers?: { close: (force?: boolean) => Promise<void> }[];
+            connection?: { disconnect: () => void };
+          };
+          await Promise.all((brokenInternals.workers ?? []).map((worker) => worker.close(true)));
+          brokenInternals.connection?.disconnect();
           await Promise.race([brokenModuleRef.close(), new Promise((resolve) => setTimeout(resolve, 3_000))]);
         }
       }

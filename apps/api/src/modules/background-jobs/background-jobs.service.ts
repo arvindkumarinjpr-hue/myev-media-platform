@@ -1,4 +1,4 @@
-import { randomUUID } from "crypto";
+import { randomUUID, createHash } from "crypto";
 import { BadRequestException, ConflictException, HttpException, HttpStatus, Inject, Injectable, Logger, NotFoundException, OnModuleDestroy } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { plainToInstance } from "class-transformer";
@@ -21,6 +21,40 @@ function isExpectedUniqueViolation(error: unknown, columnSubstrings: string[]): 
   const target = error.meta?.target;
   const targets = Array.isArray(target) ? target : typeof target === "string" ? [target] : [];
   return columnSubstrings.every((needle) => targets.some((entry) => typeof entry === "string" && entry.toLowerCase().includes(needle.toLowerCase())));
+}
+
+// Deterministic regardless of key insertion order, so two logically-
+// identical payloads submitted with differently-ordered object keys
+// still fingerprint identically — a naive JSON.stringify would not
+// guarantee that.
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value !== null && typeof value === "object") {
+    return Object.keys(value as Record<string, unknown>)
+      .sort()
+      .reduce<Record<string, unknown>>((acc, key) => {
+        acc[key] = canonicalize((value as Record<string, unknown>)[key]);
+        return acc;
+      }, {});
+  }
+  return value;
+}
+
+/**
+ * Identifies "is this the same logical enqueue request" for idempotency
+ * purposes — never logged or echoed back to a caller (a hash, not the
+ * payload itself), so a mismatch can be reported without leaking either
+ * side's actual content.
+ */
+function computeFingerprint(jobType: string, payload: unknown): string {
+  return createHash("sha256").update(JSON.stringify(canonicalize({ jobType, payload }))).digest("hex");
+}
+
+const IDEMPOTENCY_CACHE_TTL_SECONDS = 86_400; // 24h — Module 1F Engineering Plan §7's API-level response-replay window.
+
+interface IdempotencyCacheEntry {
+  fingerprint: string;
+  jobId: string;
 }
 
 export interface EnqueueJobInput {
@@ -55,12 +89,32 @@ const TERMINAL_STATUSES = ["COMPLETED", "FAILED", "TIMED_OUT"] as const;
  * `enqueue()` has no public HTTP endpoint in Module 1F (no business job
  * exists yet to trigger one) — it is internal plumbing a future module's
  * own service calls directly once it has a real job type to dispatch.
+ *
+ * Idempotency (Milestone 6) is two layers, per the Engineering Plan:
+ * queue-level (the `@@unique([workspaceId, idempotencyKey])` constraint
+ * on background_jobs — always authoritative, Postgres-enforced, correct
+ * even if Redis is down or a prior BullMQ entry has long since been
+ * cleaned up by removeOnComplete/removeOnFail) and API-level (a Redis-
+ * backed 24h response-replay cache in front of it — a fail-open
+ * optimization, never itself a source of truth, so a Redis outage
+ * degrades to "always fall through to Postgres," never to "dedup stops
+ * working"). Both layers additionally verify the request's fingerprint
+ * (jobType + canonicalized payload) matches the original — a same-key,
+ * different-payload resubmission is a deterministic 409, never a silent
+ * replay of the wrong result and never a second logical job.
  */
 @Injectable()
 export class BackgroundJobsService implements OnModuleDestroy {
   private readonly logger = new Logger(BackgroundJobsService.name);
   private redisConnection?: Redis;
   private readonly queues = new Map<string, Queue>();
+  // Deliberately a SEPARATE connection from redisConnection (BullMQ's,
+  // configured with maxRetriesPerRequest: null so commands queue forever
+  // while offline — exactly wrong for a cache that must fail open
+  // quickly). Mirrors WorkspaceCacheService's own fail-open pattern
+  // (Module 1C): lazyConnect + maxRetriesPerRequest: 1 + no reconnect
+  // backoff, so a GET/SET fails fast on a Redis outage instead of hanging.
+  private idempotencyRedis?: Redis;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -83,6 +137,30 @@ export class BackgroundJobsService implements OnModuleDestroy {
         message: "Job payload failed validation.",
         details: validationErrors.map((error) => error.toString()),
       });
+    }
+
+    // Computed once, after validation, and reused for BOTH idempotency
+    // layers below — always over the validated/transformed payload, never
+    // the raw input, so the API-level cache check and the DB-level
+    // conflict check compare apples to apples.
+    const fingerprint = computeFingerprint(input.jobType, payload);
+
+    if (input.idempotencyKey) {
+      const cached = await this.checkIdempotencyCache(input.workspaceId, input.idempotencyKey);
+      if (cached) {
+        if (cached.fingerprint !== fingerprint) {
+          throw new ConflictException({
+            code: "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH",
+            message: "This idempotency key was already used with a different job type or payload.",
+          });
+        }
+        const cachedRow = await this.prisma.backgroundJob.findUnique({ where: { id: cached.jobId } });
+        // A cache hit pointing at a row that no longer exists shouldn't
+        // happen in practice (the cache's 24h TTL is far shorter than the
+        // 90-day background_jobs retention it points into) — if it ever
+        // does, fall through to the normal path below rather than error.
+        if (cachedRow) return cachedRow;
+      }
     }
 
     const correlationId = input.correlationId ?? randomUUID();
@@ -110,19 +188,31 @@ export class BackgroundJobsService implements OnModuleDestroy {
     } catch (error) {
       // Queue-level idempotency (Module 1F Engineering Plan §7): the
       // authoritative dedup is this Postgres unique constraint, not
-      // BullMQ jobId alone. A replay of the same (workspaceId,
-      // idempotencyKey) pair returns the ORIGINAL row rather than
-      // erroring or double-enqueuing. Full API-level Idempotency-Key
-      // response replay is Milestone 6's scope — this is the queue-level
-      // half only. The lookup MUST run outside the failed transaction:
-      // Postgres aborts the entire transaction on the first error and
-      // refuses any further command in it (25P02) — recovery can only
-      // happen in a fresh query after the rollback completes.
+      // BullMQ jobId alone — correct even if the API-level cache above
+      // missed (a cold cache, a Redis outage, or simply outside its 24h
+      // window) or the original dispatch's BullMQ entry has long since
+      // been cleaned up by removeOnComplete/removeOnFail. A replay of the
+      // same (workspaceId, idempotencyKey) pair returns the ORIGINAL row
+      // rather than erroring or double-enqueuing — UNLESS the fingerprint
+      // doesn't match, which is a genuinely different request reusing the
+      // same key and must be a deterministic conflict, not a silent
+      // replay of someone else's result. The lookup MUST run outside the
+      // failed transaction: Postgres aborts the entire transaction on the
+      // first error and refuses any further command in it (25P02) —
+      // recovery can only happen in a fresh query after the rollback
+      // completes.
       const existing =
         input.idempotencyKey && isExpectedUniqueViolation(error, ["workspace_id", "idempotency_key"])
           ? await this.prisma.backgroundJob.findFirst({ where: { workspaceId: input.workspaceId, idempotencyKey: input.idempotencyKey } })
           : null;
       if (!existing) throw error;
+      const existingFingerprint = computeFingerprint(existing.jobType, existing.payloadMetadata);
+      if (existingFingerprint !== fingerprint) {
+        throw new ConflictException({
+          code: "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH",
+          message: "This idempotency key was already used with a different job type or payload.",
+        });
+      }
       row = existing;
       replay = true;
     }
@@ -149,6 +239,10 @@ export class BackgroundJobsService implements OnModuleDestroy {
         .update({ where: { id: row.id }, data: { status: "FAILED", failedAt: new Date(), errorCode: "ENQUEUE_DISPATCH_FAILED", errorMessageSafe: "Failed to dispatch job to the queue." } })
         .catch(() => undefined);
       throw error;
+    }
+
+    if (input.idempotencyKey) {
+      await this.cacheIdempotencyResult(input.workspaceId, input.idempotencyKey, fingerprint, row.id);
     }
 
     return row;
@@ -317,8 +411,60 @@ export class BackgroundJobsService implements OnModuleDestroy {
     return queue;
   }
 
+  private getIdempotencyRedis(): Redis {
+    if (!this.idempotencyRedis) {
+      this.idempotencyRedis = new Redis(this.config.get("redisUrl", { infer: true }), {
+        lazyConnect: true,
+        maxRetriesPerRequest: 1,
+        retryStrategy: () => null,
+      });
+      this.idempotencyRedis.on("error", () => {
+        // Swallow — every call site below already treats a Redis error as
+        // a cache miss / no-op and logs its own warning with call-site
+        // context; nothing else to react to here (mirrors
+        // WorkspaceCacheService's identical rationale).
+      });
+    }
+    return this.idempotencyRedis;
+  }
+
+  private idempotencyCacheKey(workspaceId: string | null, idempotencyKey: string): string {
+    return `bg-job-idem:${workspaceId ?? "platform"}:${idempotencyKey}`;
+  }
+
+  private async checkIdempotencyCache(workspaceId: string | null, idempotencyKey: string): Promise<IdempotencyCacheEntry | null> {
+    try {
+      const raw = await this.getIdempotencyRedis().get(this.idempotencyCacheKey(workspaceId, idempotencyKey));
+      return raw ? (JSON.parse(raw) as IdempotencyCacheEntry) : null;
+    } catch (error) {
+      // Fail OPEN: a Redis outage here degrades to "always fall through
+      // to the Postgres-level check below," never to "dedup breaks" — the
+      // unique constraint remains authoritative regardless. Never logs
+      // the idempotency key or any payload — just that a read failed.
+      this.logger.warn({ err: error }, "idempotency cache read failed — failing open, Postgres unique constraint remains authoritative");
+      return null;
+    }
+  }
+
+  private async cacheIdempotencyResult(workspaceId: string | null, idempotencyKey: string, fingerprint: string, jobId: string): Promise<void> {
+    try {
+      await this.getIdempotencyRedis().set(
+        this.idempotencyCacheKey(workspaceId, idempotencyKey),
+        JSON.stringify({ fingerprint, jobId } satisfies IdempotencyCacheEntry),
+        "EX",
+        IDEMPOTENCY_CACHE_TTL_SECONDS,
+      );
+    } catch (error) {
+      // Best-effort only — a failed cache write never fails the enqueue
+      // that already succeeded; the next replay attempt just falls
+      // through to the (slower, but authoritative) Postgres path.
+      this.logger.warn({ err: error }, "idempotency cache write failed — best-effort only, enqueue already succeeded");
+    }
+  }
+
   async onModuleDestroy(): Promise<void> {
     await Promise.all([...this.queues.values()].map((queue) => queue.close()));
     await this.redisConnection?.quit();
+    this.idempotencyRedis?.disconnect();
   }
 }
