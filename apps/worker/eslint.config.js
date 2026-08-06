@@ -13,8 +13,12 @@ module.exports = tseslint.config(
         process: "readonly",
         console: "readonly",
         setInterval: "readonly",
+        clearInterval: "readonly",
         NodeJS: "readonly",
       },
+    },
+    rules: {
+      "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }],
     },
   },
   {

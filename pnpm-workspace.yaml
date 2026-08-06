@@ -21,3 +21,7 @@ allowBuilds:
   prisma: true
   sharp: true
   unrs-resolver: true
+  # bullmq's optional native msgpack binding (Module 1F, apps/worker) —
+  # same category as the other native addons above (prebuilt binary via
+  # node-gyp-build, no arbitrary postinstall network/script behavior).
+  msgpackr-extract: true

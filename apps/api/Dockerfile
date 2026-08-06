@@ -40,11 +40,17 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm-store,sharing=locked \
     pnpm install --offline --frozen-lockfile --filter @myev/api... --filter @myev/shared
 
 # ---- build: compile TS, generate Prisma client ----
+# packages/shared must be compiled BEFORE apps/api — its package.json
+# `main`/`types` point at ./dist (Module 1F: it now ships real runtime
+# values, e.g. QueueRegistryBuilder, not just type-only exports, so it
+# can no longer resolve straight to raw .ts source the way it used to).
 FROM base AS build
 COPY --from=deps /repo /repo
 COPY tsconfig.base.json ./
-COPY apps/api apps/api
 COPY packages/shared packages/shared
+WORKDIR /repo/packages/shared
+RUN pnpm build
+COPY apps/api /repo/apps/api
 WORKDIR /repo/apps/api
 RUN pnpm prisma:generate
 RUN pnpm build

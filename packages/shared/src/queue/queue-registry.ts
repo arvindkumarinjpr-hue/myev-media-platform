@@ -59,8 +59,13 @@ export class QueueRegistryBuilder {
   /**
    * Binds a real handler to an already-registered manifest. Worker-only —
    * the API process never calls this, since it never executes anything.
+   * Generic over the caller's own payload/result types so a concrete
+   * processor (e.g. ProcessorHandler<SystemPingPayload, SystemPingResult>)
+   * can be bound without an unsafe cast at the call site — internal
+   * storage is still the erased ProcessorHandler, since a registry
+   * spanning many job types can't statically type each entry uniformly.
    */
-  bindHandler(jobType: string, handler: ProcessorHandler): void {
+  bindHandler<TPayload, TResult>(jobType: string, handler: ProcessorHandler<TPayload, TResult>): void {
     if (this.frozen) throw new QueueRegistryValidationError("registry is already frozen — cannot register after bootstrap");
     if (!this.manifests.has(jobType)) {
       throw new QueueRegistryValidationError(`cannot bind a handler for "${jobType}": no ProcessorManifest registered for it`);
@@ -68,7 +73,7 @@ export class QueueRegistryBuilder {
     if (this.handlers.has(jobType)) {
       throw new QueueRegistryValidationError(`duplicate handler registration for "${jobType}"`);
     }
-    this.handlers.set(jobType, handler);
+    this.handlers.set(jobType, handler as ProcessorHandler);
   }
 
   /**
