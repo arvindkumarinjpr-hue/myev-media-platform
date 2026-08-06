@@ -65,6 +65,12 @@ export async function teardownE2eApp({ app, redis, prisma }: E2eApp): Promise<vo
   await prisma.$transaction(async (tx) => {
     await tx.auditLog.deleteMany({ where: { OR: [{ actorUserId: { in: testUserIds } }, { workspaceId: { in: testWorkspaceIds } }] } });
     await tx.workspaceInvitation.deleteMany({ where: { workspaceId: { in: testWorkspaceIds } } });
+    // Module 1D: media_assets.workspace_id/project_id/created_by are all
+    // RESTRICT FKs — must go before the workspace/project/user rows they
+    // reference. supersedes_asset_id/duplicate_of_asset_id are
+    // self-referential SET NULL, so plain deleteMany (no explicit
+    // unlinking pass) is safe here.
+    await tx.mediaAsset.deleteMany({ where: { OR: [{ workspaceId: { in: testWorkspaceIds } }, { createdById: { in: testUserIds } }] } });
     await tx.projectSlugReservation.deleteMany({ where: { workspaceId: { in: testWorkspaceIds } } });
     await tx.project.deleteMany({ where: { workspaceId: { in: testWorkspaceIds } } });
     await tx.workspaceMember.deleteMany({ where: { OR: [{ userId: { in: testUserIds } }, { workspaceId: { in: testWorkspaceIds } }] } });
@@ -126,6 +132,56 @@ export async function createWorkspaceAsOwner(
     .expect(201);
   return res.body.data as { publicId: string; slug: string; name: string };
 }
+
+export async function createProjectAsOwner(
+  ctx: E2eApp,
+  ownerAccessToken: string,
+  workspacePublicId: string,
+  overrides: Partial<{ name: string; slug: string }> = {},
+): Promise<{ publicId: string; slug: string; name: string }> {
+  const slug = overrides.slug ?? uniqueSlug("proj");
+  const name = overrides.name ?? `Project ${slug}`;
+  const res = await request(ctx.app.getHttpServer())
+    .post(`/api/v1/workspaces/${workspacePublicId}/projects`)
+    .set("Authorization", `Bearer ${ownerAccessToken}`)
+    .set("X-Workspace-Id", workspacePublicId)
+    .send({ name, slug })
+    .expect(201);
+  return res.body.data as { publicId: string; slug: string; name: string };
+}
+
+/**
+ * Performs the actual client-side half of the presigned-POST upload
+ * protocol (MODULE 1D ENGINEERING PLAN §1/§2) — builds the exact
+ * multipart/form-data body S3-compatible POST policies require (every
+ * policy field first, the file bytes last, field name "file") and POSTs
+ * directly to the storage service, never through the API. Returns the
+ * raw fetch Response so callers can assert on storage-level rejections
+ * (oversized, wrong key, expired policy) as well as success.
+ */
+export async function uploadBytesToPresignedInstruction(
+  instruction: { method: string; url: string; fields?: Record<string, string> },
+  bytes: Buffer,
+  contentType: string,
+  filename = "upload.bin",
+): Promise<Response> {
+  const form = new FormData();
+  for (const [key, value] of Object.entries(instruction.fields ?? {})) {
+    form.append(key, value);
+  }
+  form.append("file", new Blob([bytes], { type: contentType }), filename);
+  return fetch(instruction.url, { method: instruction.method, body: form });
+}
+
+// Minimal, real magic-byte-valid fixtures — small on purpose (mime
+// inspection only ever reads a bounded prefix; full-object checksum
+// still runs, but these stay tiny for test speed).
+export const PNG_BYTES = Buffer.concat([
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  Buffer.from("e2e-test-fixture-not-a-real-png-payload"),
+]);
+export const PDF_BYTES = Buffer.concat([Buffer.from("%PDF-1.4\n", "ascii"), Buffer.from("e2e-test-fixture-not-a-real-pdf-payload")]);
+export const EXECUTABLE_BYTES = Buffer.concat([Buffer.from([0x4d, 0x5a]), Buffer.from("e2e-test-fixture-fake-windows-pe-payload")]);
 
 export function extractToken(url: string): string {
   // \S+ (non-whitespace), not [^&]+ — these are plain-text email bodies

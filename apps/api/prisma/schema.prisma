@@ -79,6 +79,60 @@ enum ProjectStatus {
   ARCHIVED
 }
 
+// Module 1D: PENDING_UPLOAD/VERIFYING are transient — no direct DELETE
+// transition (see MODULE 1D ENGINEERING PLAN — FINAL APPROVAL CANDIDATE §3
+// lifecycle table). VERIFICATION_FAILED is the dedicated retryable state
+// (Safeguard 2) — deliberately distinct from REJECTED, which stays
+// terminal. QUARANTINED is reachable only via a real malware-scan
+// INFECTED result; the shipped NullMalwareScanProvider never produces one.
+enum MediaAssetStatus {
+  PENDING_UPLOAD
+  VERIFYING
+  ACTIVE
+  REJECTED
+  QUARANTINED
+  VERIFICATION_FAILED
+  ARCHIVED
+  DELETED
+}
+
+enum MediaAssetType {
+  IMAGE
+  AUDIO
+  VIDEO
+  DOCUMENT
+}
+
+// Independent of MediaAssetStatus by design — see MODULE 1D ENGINEERING
+// PLAN §6 "Malware-Scan Semantics": status answers "is this usable right
+// now", this answers "was this actually checked, and what was found".
+// NullMalwareScanProvider (the only implementation shipped in Module 1D)
+// only ever produces NOT_SCANNED — never CLEAN.
+enum MalwareScanStatus {
+  NOT_SCANNED
+  CLEAN
+  INFECTED
+  SCAN_FAILED
+}
+
+// Records which real-world storage service actually holds a given row's
+// bytes — a historical fact per row, independent of which StorageProvider
+// CODE implementation is active today. See MODULE 1D ENGINEERING PLAN §7.
+enum MediaStorageProviderIdentity {
+  MINIO
+  AWS_S3
+  CLOUDFLARE_R2
+  OTHER_S3_COMPATIBLE
+}
+
+// Only WORKSPACE_PRIVATE is ever set or read by any Module 1D code path —
+// reserved now so a future public-sharing feature doesn't require a
+// migration just to introduce the concept. See MODULE 1D ENGINEERING PLAN
+// §6 entity model.
+enum MediaAssetVisibility {
+  WORKSPACE_PRIVATE
+}
+
 enum AuditAction {
   LOGIN_SUCCESS
   LOGIN_FAILED
@@ -112,6 +166,19 @@ enum AuditAction {
   PROJECT_UPDATED
   PROJECT_ARCHIVED
   PROJECT_RESTORED
+  MEDIA_ASSET_UPLOAD_INTENT_CREATED
+  MEDIA_ASSET_VERIFICATION_CLAIMED
+  MEDIA_ASSET_ACTIVATED
+  MEDIA_ASSET_REJECTED
+  MEDIA_ASSET_QUARANTINED
+  MEDIA_ASSET_VERIFICATION_FAILED
+  MEDIA_ASSET_VERIFICATION_RETRIED
+  MEDIA_ASSET_VERSION_REPLACEMENT_STARTED
+  MEDIA_ASSET_ARCHIVED
+  MEDIA_ASSET_RESTORED
+  MEDIA_ASSET_DELETED
+  MEDIA_ASSET_METADATA_UPDATED
+  MEDIA_ASSET_DOWNLOAD_URL_ISSUED
 }
 
 model User {
@@ -155,6 +222,7 @@ model User {
   invitationsAccepted  WorkspaceInvitation[] @relation("InvitationAcceptedBy")
   ownedProjects        Project[]             @relation("ProjectOwner")
   createdProjects      Project[]             @relation("ProjectCreatedBy")
+  createdMediaAssets   MediaAsset[]          @relation("MediaAssetCreatedBy")
 
   @@map("users")
 }
@@ -357,6 +425,7 @@ model Workspace {
   projectSlugReservations ProjectSlugReservation[]
   sessionsLastActiveHere  UserSession[]              @relation("LastActiveWorkspace")
   auditLogs               AuditLog[]
+  mediaAssets             MediaAsset[]
 
   @@index([slug])
   @@index([status])
@@ -488,6 +557,7 @@ model Project {
   deletedAt  DateTime? @map("deleted_at")
 
   slugReservations ProjectSlugReservation[]
+  mediaAssets      MediaAsset[]
 
   @@index([workspaceId])
   @@index([slug])
@@ -511,4 +581,114 @@ model ProjectSlugReservation {
   @@unique([workspaceId, slug])
   @@unique([projectId, slug])
   @@map("project_slug_reservations")
+}
+
+// Module 1D: Media Asset Foundation. See MODULE 1D ENGINEERING PLAN —
+// FINAL APPROVAL CANDIDATE for the design this implements: claim/finalize
+// verification (no DB lock held across storage I/O), declared-vs-verified
+// field separation, append-only versioning, per-workspace-only duplicate
+// detection, and the retryable-verification state machine (Safeguard 2).
+//
+// `contentItemId` is deliberately a plain, unconstrained UUID column, not
+// a Prisma relation — the `content_items` table doesn't exist yet (no
+// Content module). A future migration adds the real FK once it does. See
+// plan §6.1 "content-item compatibility without requiring the Content
+// module."
+//
+// The two partial unique indexes this design requires (one ACTIVE row per
+// assetGroupId; at most one non-terminal replacement per assetGroupId)
+// cannot be expressed in Prisma's schema DSL — same limitation already
+// worked around in Module 1C (see workspace_invitations_pending_email_unique,
+// users_single_platform_owner). They are hand-written in this migration's
+// raw SQL alongside Prisma's generated CREATE TABLE statement. The plain
+// UNIQUE(asset_group_id, version_number) below (Safeguard 1) IS expressible
+// here and needs no hand-written SQL.
+model MediaAsset {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  projectId String?  @map("project_id") @db.Uuid
+  project   Project? @relation(fields: [projectId], references: [id])
+
+  // No @relation — see model-level comment above.
+  contentItemId String? @map("content_item_id") @db.Uuid
+
+  assetType MediaAssetType @map("asset_type")
+
+  originalFilename   String @map("original_filename")
+  normalizedFilename String @map("normalized_filename")
+
+  storageProviderIdentity MediaStorageProviderIdentity @map("storage_provider_identity")
+  bucket                  String
+  objectKey               String                       @unique @map("object_key")
+
+  // Declared: client-supplied at upload-intent time, never trusted alone.
+  declaredMimeType  String @map("declared_mime_type")
+  declaredSizeBytes BigInt @map("declared_size_bytes")
+
+  // Verified: server/provider-computed at finalize time, authoritative.
+  verifiedMimeType  String? @map("verified_mime_type")
+  verifiedSizeBytes BigInt? @map("verified_size_bytes")
+
+  extension String
+
+  // Declared vs verified checksum — see plan §6 "Checksum Mechanism".
+  expectedChecksumSha256 String? @map("expected_checksum_sha256")
+  verifiedChecksumSha256 String? @map("verified_checksum_sha256")
+
+  malwareScanStatus MalwareScanStatus @default(NOT_SCANNED) @map("malware_scan_status")
+
+  // Versioning — see plan §5. First version's own id is its assetGroupId.
+  assetGroupId String  @map("asset_group_id") @db.Uuid
+  versionNumber Int    @default(1) @map("version_number")
+
+  supersedesAssetId String?      @map("supersedes_asset_id") @db.Uuid
+  supersedesAsset   MediaAsset?  @relation("MediaAssetVersionChain", fields: [supersedesAssetId], references: [id])
+  supersededBy      MediaAsset[] @relation("MediaAssetVersionChain")
+
+  status     MediaAssetStatus     @default(PENDING_UPLOAD)
+  visibility MediaAssetVisibility @default(WORKSPACE_PRIVATE)
+
+  // Machine-readable reason, populated on REJECTED/QUARANTINED/
+  // VERIFICATION_FAILED — see plan §4/§9 (Safeguard 2).
+  rejectionReason String? @map("rejection_reason")
+
+  // Per-workspace-only duplicate flag — see plan §10 base round. Never a
+  // cross-workspace lookup; never physical object dedup.
+  duplicateOfAssetId String?      @map("duplicate_of_asset_id") @db.Uuid
+  duplicateOfAsset   MediaAsset?  @relation("MediaAssetDuplicate", fields: [duplicateOfAssetId], references: [id])
+  duplicatesOfThis   MediaAsset[] @relation("MediaAssetDuplicate")
+
+  // Claim/finalize race guard (plan §4) — also doubles as the
+  // retry-verification attempt guard (Safeguard 2): every retry gets a
+  // fresh id here, and a finalize that doesn't match the row's current
+  // verificationAttemptId is a stale/lost race, not applied.
+  verificationAttemptId String?   @map("verification_attempt_id") @db.Uuid
+  verificationStartedAt DateTime? @map("verification_started_at")
+  verifiedAt            DateTime? @map("verified_at")
+
+  presignedUrlExpiresAt DateTime? @map("presigned_url_expires_at")
+
+  metadata Json @default("{}")
+
+  createdById String @map("created_by") @db.Uuid
+  createdBy   User   @relation("MediaAssetCreatedBy", fields: [createdById], references: [id])
+
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+  archivedAt DateTime? @map("archived_at")
+  deletedAt  DateTime? @map("deleted_at")
+
+  // Safeguard 1: version numbers can never duplicate within one asset
+  // group, expressible directly (unlike the two partial indexes above).
+  @@unique([assetGroupId, versionNumber])
+  @@index([workspaceId])
+  @@index([projectId])
+  @@index([assetGroupId])
+  @@index([status])
+  @@index([workspaceId, verifiedChecksumSha256])
+  @@map("media_assets")
 }

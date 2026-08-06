@@ -4,8 +4,11 @@ import type { PermissionConstant } from "../../modules/rbac/permissions.constant
 export const REQUIRE_PERMISSION_KEY = "require_permission";
 
 /**
- * No endpoint in Module 1B.1's own inventory uses this — see
- * PermissionGuard for why. Built now as reusable infrastructure for 1C.
+ * Accepts one permission or several — several means ALL are required
+ * (Module 1D: version-replacement needs MEDIA_UPLOAD *and* MEDIA_MANAGE
+ * together, per MODULE 1D ENGINEERING PLAN §3). Always stored as an
+ * array internally so PermissionGuard has one shape to check regardless
+ * of how a call site invoked this.
  */
-export const RequirePermission = (permission: PermissionConstant): MethodDecorator =>
-  SetMetadata(REQUIRE_PERMISSION_KEY, permission);
+export const RequirePermission = (permission: PermissionConstant | PermissionConstant[]): MethodDecorator =>
+  SetMetadata(REQUIRE_PERMISSION_KEY, Array.isArray(permission) ? permission : [permission]);

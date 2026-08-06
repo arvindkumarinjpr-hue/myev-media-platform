@@ -22,8 +22,8 @@ export class PermissionGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const required = this.reflector.get<PermissionConstant | undefined>(REQUIRE_PERMISSION_KEY, context.getHandler());
-    if (!required) return true;
+    const required = this.reflector.get<PermissionConstant[] | undefined>(REQUIRE_PERMISSION_KEY, context.getHandler());
+    if (!required || required.length === 0) return true;
 
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
     if (!request.user) {
@@ -32,8 +32,9 @@ export class PermissionGuard implements CanActivate {
 
     const workspaceId = (request as Partial<WorkspaceScopedRequest>).workspace?.id ?? null;
     const granted = await this.permissionResolver.resolve(request.user.sub, workspaceId);
-    if (!granted.includes(required)) {
-      throw new ForbiddenException({ code: "PERMISSION_DENIED", message: `Missing required permission: ${required}.` });
+    const missing = required.filter((permission) => !granted.includes(permission));
+    if (missing.length > 0) {
+      throw new ForbiddenException({ code: "PERMISSION_DENIED", message: `Missing required permission(s): ${missing.join(", ")}.` });
     }
     return true;
   }
