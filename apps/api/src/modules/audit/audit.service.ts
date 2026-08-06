@@ -5,6 +5,11 @@ import { PrismaService } from "../../prisma/prisma.service";
 export interface AuditEventInput {
   action: AuditAction;
   actorUserId?: string | null;
+  // Module 1C Engineering Plan §2.B: every event from a workspace-scoped
+  // action populates this — including cross-workspace access attempts,
+  // scoped to whichever workspace was actually probed. Platform-level
+  // events (LOGIN_SUCCESS, etc.) correctly leave this unset.
+  workspaceId?: string | null;
   entityType?: string;
   entityId?: string;
   beforeState?: Record<string, unknown>;
@@ -59,6 +64,7 @@ export class AuditService {
     return {
       action: event.action,
       actorUserId: event.actorUserId ?? null,
+      workspaceId: event.workspaceId ?? null,
       entityType: event.entityType,
       entityId: event.entityId,
       // Masking: callers must never pass password/token values in

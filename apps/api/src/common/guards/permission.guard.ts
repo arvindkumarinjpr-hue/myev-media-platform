@@ -4,12 +4,15 @@ import { REQUIRE_PERMISSION_KEY } from "../decorators/require-permission.decorat
 import { PERMISSION_RESOLVER, type PermissionResolver } from "../../modules/rbac/permission-resolver.interface";
 import type { PermissionConstant } from "../../modules/rbac/permissions.constants";
 import type { AuthenticatedRequest } from "./session.guard";
+import type { WorkspaceScopedRequest } from "./workspace-context.guard";
 
 /**
  * Reusable RBAC enforcement (Module 1B.1 Engineering Plan §8). Requires
- * SessionGuard to have already run and populated `request.user` — apply
- * both guards together (SessionGuard first) on any future endpoint that
- * needs a specific permission, not just authentication.
+ * SessionGuard, then WorkspaceContextGuard, to have already run — the
+ * latter resolves and validates `request.workspace` (Module 1C), which
+ * this guard reads directly rather than re-parsing the `X-Workspace-Id`
+ * header itself. Any route using @RequirePermission must apply
+ * WorkspaceContextGuard ahead of this one.
  */
 @Injectable()
 export class PermissionGuard implements CanActivate {
@@ -27,7 +30,7 @@ export class PermissionGuard implements CanActivate {
       throw new UnauthorizedException({ code: "AUTH_TOKEN_INVALID", message: "Authentication required." });
     }
 
-    const workspaceId = (request.headers["x-workspace-id"] as string) ?? null;
+    const workspaceId = (request as Partial<WorkspaceScopedRequest>).workspace?.id ?? null;
     const granted = await this.permissionResolver.resolve(request.user.sub, workspaceId);
     if (!granted.includes(required)) {
       throw new ForbiddenException({ code: "PERMISSION_DENIED", message: `Missing required permission: ${required}.` });

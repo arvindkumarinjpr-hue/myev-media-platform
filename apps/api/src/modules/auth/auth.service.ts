@@ -10,6 +10,7 @@ import { AdaptiveProtectionService } from "../../common/rate-limit/adaptive-prot
 import { AuditService } from "../audit/audit.service";
 import { EMAIL_PROVIDER, type EmailProvider } from "../email/email-provider.interface";
 import { UsersService } from "../users/users.service";
+import { WorkspaceCacheService } from "../workspaces/workspace-cache.service";
 import type { AppConfig } from "../../config/configuration";
 import type { AccessTokenPayload } from "./access-token.payload";
 import { SessionsService, type SessionContext } from "./sessions.service";
@@ -55,6 +56,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly config: ConfigService<AppConfig, true>,
     @Inject(EMAIL_PROVIDER) private readonly emailProvider: EmailProvider,
+    private readonly workspaceCache: WorkspaceCacheService,
   ) {}
 
   async login(email: string, password: string, context: SessionContext): Promise<LoginResult> {
@@ -268,8 +270,37 @@ export class AuthService {
       await this.usersService.setPasswordWithinTransaction(tx, token.userId, newHash);
       await tx.userActionToken.update({ where: { id: token.id }, data: { status: "USED", usedAt: new Date() } });
 
+      let activatedMemberships: { workspaceId: string }[] = [];
+
       if (isActivation) {
         await tx.user.update({ where: { id: token.userId }, data: { status: "ACTIVE", activatedAt: new Date() } });
+
+        // Module 1C Engineering Plan §2.C′: activation is a user-level
+        // event — every PENDING_ACTIVATION membership this user holds,
+        // across every workspace they were invited to in the meantime,
+        // flips to ACTIVE together, in this same transaction. If anything
+        // below fails, Postgres rolls back the whole transaction: user
+        // status, every membership, and the token all stay exactly as they
+        // were — no partial activation is possible (the same correctness
+        // property Module 1B.1's transaction-rollback bug taught the hard
+        // way).
+        activatedMemberships = await tx.workspaceMember.findMany({
+          where: { userId: token.userId, status: "PENDING_ACTIVATION" },
+          select: { workspaceId: true },
+        });
+        await tx.workspaceMember.updateMany({
+          where: { userId: token.userId, status: "PENDING_ACTIVATION" },
+          data: { status: "ACTIVE", joinedAt: new Date() },
+        });
+        for (const membership of activatedMemberships) {
+          await this.audit.recordWithinTransaction(tx, {
+            action: "WORKSPACE_MEMBER_ACTIVATED",
+            actorUserId: token.userId,
+            workspaceId: membership.workspaceId,
+            entityType: "workspace_member",
+            entityId: token.userId,
+          });
+        }
       } else {
         await this.sessionsService.revokeAllForUserWithinTransaction(tx, token.userId, "PASSWORD_RESET");
       }
@@ -281,6 +312,10 @@ export class AuthService {
         entityId: token.userId,
         afterState: isActivation ? { status: "ACTIVE" } : undefined,
       });
+
+      return { activatedMemberships, userId: token.userId };
+    }).then(async ({ activatedMemberships, userId }) => {
+      await Promise.all(activatedMemberships.map((m) => this.workspaceCache.invalidateForMembershipChange(m.workspaceId, userId)));
     });
   }
 

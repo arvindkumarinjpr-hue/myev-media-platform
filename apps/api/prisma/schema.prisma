@@ -1,7 +1,14 @@
 // Module 1B.1: Identity & Access Core.
-// Workspace-scoped role ASSIGNMENT (workspace_members) is Module 1C's
-// responsibility — roles/permissions here are the platform-level catalog
-// and enforcement machinery only. See MODULE_1B1_ENGINEERING_PLAN §8.
+// Module 1C: Workspace Foundation — workspaces, membership, invitations,
+// projects, slug reservations, Platform Owner. See MODULE_1C_ENGINEERING
+// PLAN — IMPLEMENTATION-READY FINAL for the design this schema implements.
+//
+// Slug uniqueness/history (workspaces.slug, projects.slug) is intentionally
+// NOT expressed here as a `@unique` — Prisma's schema DSL cannot represent
+// the deferred composite foreign keys or partial unique indexes this design
+// requires (see prisma/migrations/<ts>_workspace_core/migration.sql and
+// .../platform_owner_flag/migration.sql for the hand-written raw SQL that
+// adds them after Prisma's generated CREATE TABLE statements).
 
 generator client {
   provider = "prisma-client-js"
@@ -47,6 +54,31 @@ enum TokenActionStatus {
   INVALIDATED
 }
 
+enum WorkspaceStatus {
+  ACTIVE
+  ARCHIVED
+  DELETED
+}
+
+enum WorkspaceMemberStatus {
+  PENDING_ACTIVATION
+  ACTIVE
+  SUSPENDED
+  REMOVED
+}
+
+enum WorkspaceInvitationStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
+}
+
+enum ProjectStatus {
+  ACTIVE
+  ARCHIVED
+}
+
 enum AuditAction {
   LOGIN_SUCCESS
   LOGIN_FAILED
@@ -59,6 +91,27 @@ enum AuditAction {
   ACCOUNT_LOCKED
   USER_CREATED
   ACCOUNT_ACTIVATED
+  ACCOUNT_ACTIVATION_TOKEN_ROTATED
+  WORKSPACE_CREATED
+  WORKSPACE_SETTINGS_UPDATED
+  WORKSPACE_ARCHIVED
+  WORKSPACE_RESTORED
+  WORKSPACE_DELETED
+  WORKSPACE_OWNERSHIP_TRANSFERRED
+  WORKSPACE_INVITATION_CREATED
+  WORKSPACE_INVITATION_REVOKED
+  WORKSPACE_MEMBER_PENDING_ACTIVATION
+  WORKSPACE_MEMBER_JOINED
+  WORKSPACE_MEMBER_ACTIVATED
+  WORKSPACE_MEMBER_ROLE_CHANGED
+  WORKSPACE_MEMBER_SUSPENDED
+  WORKSPACE_MEMBER_REMOVED
+  WORKSPACE_MEMBER_LEFT
+  WORKSPACE_MEMBER_ACTIVATION_RESENT
+  PROJECT_CREATED
+  PROJECT_UPDATED
+  PROJECT_ARCHIVED
+  PROJECT_RESTORED
 }
 
 model User {
@@ -68,6 +121,14 @@ model User {
   passwordHash String?    @map("password_hash")
   fullName     String     @map("full_name")
   status       UserStatus @default(PENDING_ACTIVATION)
+
+  // Module 1C: a single, global, platform-level authority flag — distinct
+  // from the workspace-scoped "Owner" role. Uniqueness (at most one
+  // non-deleted user) is enforced by a partial unique index added via raw
+  // SQL (see prisma/migrations/<ts>_platform_owner_flag/migration.sql),
+  // not by this column alone. Never set by any application code path other
+  // than the serialized bootstrap seed — see PlatformOwnerService.
+  isPlatformOwner Boolean @default(false) @map("is_platform_owner")
 
   createdById  String?  @map("created_by") @db.Uuid
   createdBy    User?    @relation("UserCreatedBy", fields: [createdById], references: [id])
@@ -85,6 +146,16 @@ model User {
   actionTokens    UserActionToken[]
   auditLogs       AuditLog[]
 
+  ownedWorkspaces      Workspace[]           @relation("WorkspaceOwner")
+  createdWorkspaces    Workspace[]           @relation("WorkspaceCreatedBy")
+  workspaceMemberships WorkspaceMember[]     @relation("WorkspaceMemberUser")
+  memberInvitesSent    WorkspaceMember[]     @relation("WorkspaceMemberInvitedBy")
+  invitationsSent      WorkspaceInvitation[] @relation("InvitationInvitedBy")
+  invitationsReceived  WorkspaceInvitation[] @relation("InvitationInvitedUser")
+  invitationsAccepted  WorkspaceInvitation[] @relation("InvitationAcceptedBy")
+  ownedProjects        Project[]             @relation("ProjectOwner")
+  createdProjects      Project[]             @relation("ProjectCreatedBy")
+
   @@map("users")
 }
 
@@ -94,7 +165,9 @@ model Role {
   description String?
   createdAt   DateTime @default(now()) @map("created_at")
 
-  rolePermissions RolePermission[]
+  rolePermissions      RolePermission[]
+  workspaceMembers     WorkspaceMember[]
+  workspaceInvitations WorkspaceInvitation[]
 
   @@map("roles")
 }
@@ -175,6 +248,13 @@ model UserSession {
   deviceFingerprint  String? @map("device_fingerprint")
   sessionFingerprint String? @map("session_fingerprint")
 
+  // Module 1C: convenience-only "last workspace" pointer. Never consulted
+  // for authorization — every request still re-validates real membership
+  // against the X-Workspace-Id header regardless of this value. See
+  // MODULE_1C_ENGINEERING PLAN §2.D.
+  lastActiveWorkspaceId String?    @map("last_active_workspace_id") @db.Uuid
+  lastActiveWorkspace   Workspace? @relation("LastActiveWorkspace", fields: [lastActiveWorkspaceId], references: [id])
+
   createdAt DateTime @default(now()) @map("created_at")
 
   @@index([userId])
@@ -210,8 +290,9 @@ model UserActionToken {
 // is structurally impossible through the Prisma client, not just forbidden
 // by convention.
 model AuditLog {
-  id          String  @id @default(uuid()) @db.Uuid
-  workspaceId String? @map("workspace_id") @db.Uuid
+  id          String     @id @default(uuid()) @db.Uuid
+  workspaceId String?    @map("workspace_id") @db.Uuid
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id])
 
   actorUserId String? @map("actor_user_id") @db.Uuid
   actor       User?   @relation(fields: [actorUserId], references: [id])
@@ -234,5 +315,200 @@ model AuditLog {
   @@index([action])
   @@index([createdAt])
   @@index([correlationId])
+  @@index([workspaceId])
   @@map("audit_logs")
+}
+
+// Module 1C: the tenancy boundary every workspace-scoped table hangs off.
+// `slug` is intentionally editable and NOT `@unique` here — permanent,
+// history-aware reservation lives in WorkspaceSlugReservation plus a
+// deferred composite foreign key added via raw SQL. See
+// MODULE_1C_ENGINEERING PLAN §1.
+model Workspace {
+  id       String          @id @default(uuid()) @db.Uuid
+  publicId String          @unique @default(uuid()) @map("public_id") @db.Uuid
+  name     String
+  slug     String
+  status   WorkspaceStatus @default(ACTIVE)
+
+  ownerId String @map("owner_id") @db.Uuid
+  owner   User   @relation("WorkspaceOwner", fields: [ownerId], references: [id])
+
+  createdById String @map("created_by") @db.Uuid
+  createdBy   User   @relation("WorkspaceCreatedBy", fields: [createdById], references: [id])
+
+  // Owner/Admin-editable regional/display preferences. Platform-configurable
+  // defaults (never hardcoded) applied at creation — see PlatformDefaults
+  // config and MODULE_1C_ENGINEERING PLAN §2.F.
+  settings Json @default("{}")
+
+  // Platform-controlled, NOT writable through any Module 1C workspace API.
+  featureFlags Json @default("{}") @map("feature_flags")
+
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+  archivedAt DateTime? @map("archived_at")
+  deletedAt  DateTime? @map("deleted_at")
+
+  members                 WorkspaceMember[]
+  invitations             WorkspaceInvitation[]
+  slugReservations        WorkspaceSlugReservation[]
+  projects                Project[]
+  projectSlugReservations ProjectSlugReservation[]
+  sessionsLastActiveHere  UserSession[]              @relation("LastActiveWorkspace")
+  auditLogs               AuditLog[]
+
+  @@index([slug])
+  @@index([status])
+  @@index([createdById])
+  @@map("workspaces")
+}
+
+// Module 1C: append-only ledger of every slug a workspace has ever held.
+// The global UNIQUE(slug) here — not a constraint on workspaces.slug
+// itself — is what makes reservation permanent and cross-workspace-
+// exclusive. Rows are never deleted or updated by application code in this
+// module. See MODULE_1C_ENGINEERING PLAN §1.
+model WorkspaceSlugReservation {
+  id          String    @id @default(uuid()) @db.Uuid
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  slug        String
+  createdAt   DateTime  @default(now()) @map("created_at")
+  // Never set by any Module 1C code path — reserved for a future,
+  // separately-approved release policy.
+  releasedAt  DateTime? @map("released_at")
+
+  @@unique([slug])
+  @@unique([workspaceId, slug])
+  @@map("workspace_slug_reservations")
+}
+
+// Module 1C: the real RBAC assignment table — deliberately deferred by
+// Module 1B.1. `status` includes PENDING_ACTIVATION for the new-user
+// invitation branch: a membership must never be ACTIVE while its user is
+// still PENDING_ACTIVATION. See MODULE_1C_ENGINEERING PLAN §2.C.
+model WorkspaceMember {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  userId String @map("user_id") @db.Uuid
+  user   User   @relation("WorkspaceMemberUser", fields: [userId], references: [id])
+
+  roleId String @map("role_id") @db.Uuid
+  role   Role   @relation(fields: [roleId], references: [id])
+
+  status WorkspaceMemberStatus @default(PENDING_ACTIVATION)
+
+  invitedById String? @map("invited_by") @db.Uuid
+  invitedBy   User?   @relation("WorkspaceMemberInvitedBy", fields: [invitedById], references: [id])
+
+  joinedAt  DateTime? @map("joined_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  @@unique([workspaceId, userId])
+  @@index([workspaceId])
+  @@index([userId])
+  @@index([status])
+  @@map("workspace_members")
+}
+
+// Module 1C. `invitedUserId` (nullable) + `invitedEmail` (always present,
+// audit/delivery snapshot) implement the corrected identity-binding model:
+// when an ACTIVE user exists at invitation-creation time, acceptance is
+// keyed to invitedUserId (immune to later email changes); when none exists,
+// the invitation stays bound to the email + opaque token. See
+// MODULE_1C_ENGINEERING PLAN §2.C″. The partial unique index on
+// (workspace_id, invited_email) WHERE status='PENDING' is added via raw SQL
+// (not representable in Prisma's schema DSL).
+model WorkspaceInvitation {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  invitedEmail  String  @map("invited_email")
+  invitedUserId String? @map("invited_user_id") @db.Uuid
+  invitedUser   User?   @relation("InvitationInvitedUser", fields: [invitedUserId], references: [id])
+
+  roleId String @map("role_id") @db.Uuid
+  role   Role   @relation(fields: [roleId], references: [id])
+
+  tokenHash String                    @unique @map("token_hash")
+  status    WorkspaceInvitationStatus @default(PENDING)
+
+  invitedById String @map("invited_by") @db.Uuid
+  invitedBy   User   @relation("InvitationInvitedBy", fields: [invitedById], references: [id])
+
+  acceptedById String? @map("accepted_by") @db.Uuid
+  acceptedBy   User?   @relation("InvitationAcceptedBy", fields: [acceptedById], references: [id])
+
+  expiresAt  DateTime  @map("expires_at")
+  acceptedAt DateTime? @map("accepted_at")
+  revokedAt  DateTime? @map("revoked_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  @@index([workspaceId])
+  @@index([invitedEmail])
+  @@index([status])
+  @@index([expiresAt])
+  @@map("workspace_invitations")
+}
+
+// Module 1C: foundation only — no project-level membership/role table.
+// `slug` is unique within a workspace, permanently reserved once used
+// (including after archive/delete), via ProjectSlugReservation + a deferred
+// composite foreign key, same pattern as Workspace. See
+// MODULE_1C_ENGINEERING PLAN §2.F / §1.
+model Project {
+  id       String        @id @default(uuid()) @db.Uuid
+  publicId String        @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  name   String
+  slug   String
+  status ProjectStatus @default(ACTIVE)
+
+  ownerId String? @map("owner_id") @db.Uuid
+  owner   User?   @relation("ProjectOwner", fields: [ownerId], references: [id])
+
+  createdById String @map("created_by") @db.Uuid
+  createdBy   User   @relation("ProjectCreatedBy", fields: [createdById], references: [id])
+
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+  archivedAt DateTime? @map("archived_at")
+  deletedAt  DateTime? @map("deleted_at")
+
+  slugReservations ProjectSlugReservation[]
+
+  @@index([workspaceId])
+  @@index([slug])
+  @@index([status])
+  @@index([ownerId])
+  @@map("projects")
+}
+
+// Module 1C: append-only ledger, scoped per workspace — the same slug
+// string may be reserved independently in two different workspaces, but
+// never twice within one. Rows are never deleted by application code.
+model ProjectSlugReservation {
+  id          String    @id @default(uuid()) @db.Uuid
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  projectId   String    @map("project_id") @db.Uuid
+  project     Project   @relation(fields: [projectId], references: [id])
+  slug        String
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@unique([workspaceId, slug])
+  @@unique([projectId, slug])
+  @@map("project_slug_reservations")
 }

@@ -29,6 +29,25 @@ export interface AppConfig {
     activationTokenTtlSeconds: number;
     passwordHistoryLimit: number;
   };
+  workspace: {
+    invitationTtlSeconds: number;
+    // Module 1C Engineering Plan §2.F′: platform-configurable, never
+    // hardcoded in application logic — these are only the out-of-box
+    // values of the env vars below, applied at workspace creation unless
+    // the request supplies a valid override.
+    platformDefaults: {
+      timezone: string;
+      locale: string;
+      currency: string;
+      dateFormat: string;
+    };
+    resendActivation: {
+      perUserLimit: number;
+      perUserWindowSeconds: number;
+      perWorkspaceLimit: number;
+      perWorkspaceWindowSeconds: number;
+    };
+  };
 }
 
 /**
@@ -70,5 +89,20 @@ export default (): AppConfig => ({
     resetTokenTtlSeconds: parseInt(process.env.RESET_TOKEN_TTL_SECONDS ?? "3600", 10), // 1 hour
     activationTokenTtlSeconds: parseInt(process.env.ACTIVATION_TOKEN_TTL_SECONDS ?? "604800", 10), // 7 days
     passwordHistoryLimit: parseInt(process.env.PASSWORD_HISTORY_LIMIT ?? "5", 10),
+  },
+  workspace: {
+    invitationTtlSeconds: parseInt(process.env.WORKSPACE_INVITATION_TTL_SECONDS ?? "604800", 10), // 7 days
+    platformDefaults: {
+      timezone: process.env.PLATFORM_DEFAULT_TIMEZONE ?? "UTC",
+      locale: process.env.PLATFORM_DEFAULT_LOCALE ?? "en-US",
+      currency: process.env.PLATFORM_DEFAULT_CURRENCY ?? "USD",
+      dateFormat: process.env.PLATFORM_DEFAULT_DATE_FORMAT ?? "YYYY-MM-DD",
+    },
+    resendActivation: {
+      perUserLimit: parseInt(process.env.RESEND_ACTIVATION_PER_USER_LIMIT ?? "5", 10),
+      perUserWindowSeconds: parseInt(process.env.RESEND_ACTIVATION_PER_USER_WINDOW_SECONDS ?? "3600", 10),
+      perWorkspaceLimit: parseInt(process.env.RESEND_ACTIVATION_PER_WORKSPACE_LIMIT ?? "10", 10),
+      perWorkspaceWindowSeconds: parseInt(process.env.RESEND_ACTIVATION_PER_WORKSPACE_WINDOW_SECONDS ?? "3600", 10),
+    },
   },
 });

@@ -1,50 +1,38 @@
-import * as argon2 from "argon2";
 import { PrismaClient } from "../generated/prisma";
 import { seedRbac } from "../src/modules/rbac/rbac.seed";
+import { seedPlatformOwner } from "../src/modules/platform-owner/platform-owner.seed";
 
 /**
- * Module 1B.1 Engineering Plan §18 decision #1: there is no HTTP endpoint
- * for user creation in Module 1B.1 — an Owner/Admin-gated endpoint is
- * deferred to Module 1C, once workspace-scoped Admin permission checks
- * are real. The very first user (who invites everyone else, once 1C
- * ships) can only be created here, directly in the database, as a
- * deliberate one-time bootstrap exception — created ACTIVE, not via the
- * PENDING_ACTIVATION/token flow, since there is no existing Admin to send
- * that invitation.
+ * Module 1B.1 Engineering Plan §18 decision #1 / Module 1C Engineering Plan
+ * §2A′: there is no HTTP endpoint for user creation, and no HTTP endpoint
+ * for granting Platform Owner authority. The very first user — who alone
+ * may create the first workspace — can only be created/promoted here,
+ * directly in the database, via seedPlatformOwner's serialized,
+ * decision-table-driven bootstrap. See platform-owner.seed.ts for the full
+ * fail-loudly-on-ambiguity logic this delegates to.
  */
 async function seedBootstrapOwner(prisma: PrismaClient): Promise<void> {
-  const email = (process.env.BOOTSTRAP_OWNER_EMAIL ?? "owner@myevmedia.com").toLowerCase();
-  const existing = await prisma.user.findUnique({ where: { email } });
-  if (existing) {
-    console.log(`Bootstrap owner already exists (${email}) — skipping.`);
-    return;
-  }
-
-  const password = process.env.BOOTSTRAP_OWNER_PASSWORD;
-  if (!password) {
-    console.log("BOOTSTRAP_OWNER_PASSWORD not set — skipping bootstrap owner creation.");
-    return;
-  }
-
-  const passwordHash = await argon2.hash(password, {
-    type: argon2.argon2id,
-    memoryCost: 19456,
-    timeCost: 2,
-    parallelism: 1,
+  const email = process.env.BOOTSTRAP_OWNER_EMAIL ?? "owner@myevmedia.com";
+  const outcome = await seedPlatformOwner(prisma, {
+    email,
+    password: process.env.BOOTSTRAP_OWNER_PASSWORD,
+    fullName: process.env.BOOTSTRAP_OWNER_NAME ?? "Platform Owner",
   });
 
-  const user = await prisma.user.create({
-    data: {
-      email,
-      fullName: process.env.BOOTSTRAP_OWNER_NAME ?? "Platform Owner",
-      status: "ACTIVE",
-      passwordHash,
-      activatedAt: new Date(),
-    },
-  });
-  await prisma.userPasswordHistory.create({ data: { userId: user.id, passwordHash } });
-
-  console.log(`Bootstrap owner created: ${email}`);
+  switch (outcome.kind) {
+    case "already_correct":
+      console.log(`Platform Owner already correctly set (${email}) — no-op.`);
+      break;
+    case "promoted":
+      console.log(`Existing user promoted to Platform Owner: ${email}`);
+      break;
+    case "created":
+      console.log(`Platform Owner created: ${email}`);
+      break;
+    case "skipped_no_password":
+      console.log("BOOTSTRAP_OWNER_PASSWORD not set — skipping Platform Owner bootstrap.");
+      break;
+  }
 }
 
 async function main(): Promise<void> {
