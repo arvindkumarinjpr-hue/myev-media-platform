@@ -1,9 +1,10 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Inject, Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import Redis from "ioredis";
 import type { DependencyStatus, ReadinessResponse } from "@myev/shared";
 import { PrismaService } from "../prisma/prisma.service";
 import type { AppConfig } from "../config/configuration";
+import { STORAGE_PROVIDER, type StorageProvider } from "../modules/storage/storage-provider.interface";
 
 @Injectable()
 export class HealthService {
@@ -12,6 +13,7 @@ export class HealthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService<AppConfig, true>,
+    @Inject(STORAGE_PROVIDER) private readonly storageProvider: StorageProvider,
   ) {}
 
   async checkReadiness(): Promise<ReadinessResponse> {
@@ -52,19 +54,11 @@ export class HealthService {
   }
 
   private async checkStorage(): Promise<DependencyStatus> {
-    const storage = this.config.get("storage", { infer: true });
-    const protocol = storage.useSsl ? "https" : "http";
-    const url = `${protocol}://${storage.endpoint}:${storage.port}/minio/health/live`;
-
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 2000);
-      const response = await fetch(url, { signal: controller.signal });
-      clearTimeout(timeout);
-      return response.ok ? "up" : "down";
-    } catch (error) {
-      this.logger.warn(`Storage (MinIO) health check failed: ${(error as Error).message}`);
-      return "down";
-    }
+    // Module 1D: routed through StorageProvider.healthCheck() instead of
+    // an inlined MinIO-specific fetch — this endpoint no longer knows or
+    // cares which storage provider is active.
+    const { healthy, detail } = await this.storageProvider.healthCheck();
+    if (!healthy && detail) this.logger.warn(`Storage health check failed: ${detail}`);
+    return healthy ? "up" : "down";
   }
 }
