@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { BadRequestException, ConflictException, Inject, Injectable, Logger, NotFoundException, OnModuleDestroy } from "@nestjs/common";
+import { BadRequestException, ConflictException, HttpException, HttpStatus, Inject, Injectable, Logger, NotFoundException, OnModuleDestroy } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { plainToInstance } from "class-transformer";
 import { validate } from "class-validator";
@@ -270,18 +270,45 @@ export class BackgroundJobsService implements OnModuleDestroy {
     // run twice for the same execution either.
     const queue = this.getQueue(job.queueName);
     await queue.remove(job.id).catch(() => undefined);
-    await queue.add(job.jobType, job.payloadMetadata as object, {
-      jobId: job.id,
-      attempts: 1,
-      removeOnComplete: { age: 3_600 },
-      removeOnFail: { age: 86_400 },
-    });
+    try {
+      await queue.add(job.jobType, job.payloadMetadata as object, {
+        jobId: job.id,
+        attempts: 1,
+        removeOnComplete: { age: 3_600 },
+        removeOnFail: { age: 86_400 },
+      });
+    } catch (dispatchError) {
+      // Same compensating pattern as the Worker's own automatic
+      // scheduleRetry (see its comment): the guarded Postgres write above
+      // already committed the row to QUEUED, so a synchronous dispatch
+      // failure here would otherwise leave it silently stuck — healthy-
+      // looking, but with no BullMQ entry that will ever pick it up.
+      // Compensate to a visible terminal state instead of leaving that gap.
+      this.logger.error({ err: dispatchError, jobId: job.publicId }, "retry dispatch failed after the Postgres retry-scheduling commit — compensating to dead-lettered");
+      await this.prisma.backgroundJob
+        .updateMany({
+          where: { id: job.id, status: "QUEUED" },
+          data: { status: "FAILED", failedAt: new Date(), deadLetteredAt: new Date(), errorCode: "RETRY_DISPATCH_FAILED", errorMessageSafe: "Failed to dispatch the retry to the queue." },
+        })
+        .catch(() => undefined);
+      throw new HttpException({ code: "RETRY_DISPATCH_FAILED", message: "Failed to dispatch the retry to the queue." }, HttpStatus.SERVICE_UNAVAILABLE);
+    }
 
     return this.get(workspaceId, jobPublicId);
   }
 
   private getQueue(queueName: string): Queue {
-    this.redisConnection ??= new Redis(this.config.get("redisUrl", { infer: true }), { maxRetriesPerRequest: null });
+    if (!this.redisConnection) {
+      this.redisConnection = new Redis(this.config.get("redisUrl", { infer: true }), { maxRetriesPerRequest: null });
+      // Same rationale as apps/worker's BullMqWorkerManager: an unhandled
+      // 'error' event on a bare Node EventEmitter crashes the process —
+      // without this, a transient Redis blip would take down the whole
+      // API process instead of letting ioredis's own automatic reconnect
+      // recover in place.
+      this.redisConnection.on("error", (error) => {
+        this.logger.error({ err: error }, "Redis connection error");
+      });
+    }
     let queue = this.queues.get(queueName);
     if (!queue) {
       queue = new Queue(queueName, { connection: this.redisConnection });

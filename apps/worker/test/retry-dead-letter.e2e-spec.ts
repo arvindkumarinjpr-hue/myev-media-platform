@@ -241,6 +241,85 @@ describe("Worker (e2e) — retry, backoff, and dead-letter", () => {
     }, 10_000);
   });
 
+  describe("crash-recovery: a stray delivery against an already-terminal row", () => {
+    it("is safely skipped — never re-executed, and the row is left completely untouched", async () => {
+      // Simulates BullMQ redelivering a job whose row has already reached
+      // a terminal, dead-lettered state — e.g. via BullMQ's own native
+      // stalled-job recovery finding a stale entry after a worker crash
+      // that happened AFTER this process's own dead-letter transition had
+      // already committed, but before it could inform BullMQ. The pickup
+      // guard (status must be QUEUED) must reject this exactly the same
+      // way it rejects any other duplicate delivery.
+      const row = await createRow({ maxAttempts: 3 });
+      const deadLetteredAt = new Date();
+      await prisma.backgroundJob.update({
+        where: { id: row.id },
+        data: { status: "FAILED", failedAt: deadLetteredAt, deadLetteredAt, errorCode: "PROCESSOR_ERROR", errorMessageSafe: "Job execution failed." },
+      });
+
+      const job = await queue.add(SYSTEM_PING_V1_MANIFEST.jobType, {}, { jobId: row.id });
+      const result = await job.waitUntilFinished(queueEvents, 5_000);
+      expect(result).toEqual({ skipped: true });
+
+      const after = await prisma.backgroundJob.findUniqueOrThrow({ where: { id: row.id } });
+      expect(after.status).toBe("FAILED");
+      expect(after.errorCode).toBe("PROCESSOR_ERROR");
+      expect(after.deadLetteredAt?.getTime()).toBe(deadLetteredAt.getTime());
+      expect(after.attempts).toBe(0);
+
+      // No history row at all — the guard rejected the delivery before
+      // ever writing anything.
+      const history = await historyFor(row.id);
+      expect(history).toHaveLength(0);
+    }, 10_000);
+  });
+
+  describe("Redis connection resilience", () => {
+    it("a Redis connection error does not crash the worker process (ioredis's own reconnect is allowed to recover instead)", async () => {
+      // Without an explicit .on('error', ...) listener on the raw ioredis
+      // client, Node's EventEmitter throws (crashing the whole process)
+      // the moment ANY 'error' event fires with zero listeners attached —
+      // exactly what an unreachable Redis endpoint produces immediately.
+      // This boots a second, fully isolated application instance pointed
+      // at a real host with nothing listening on that port (fast,
+      // deterministic ECONNREFUSED — not a DNS timeout) and asserts the
+      // process survives long enough to be cleanly torn down, proving the
+      // fix rather than asserting on log output.
+      const originalRedisUrl = process.env.REDIS_URL;
+      process.env.REDIS_URL = "redis://redis:1";
+      let brokenModuleRef: TestingModule | undefined;
+      try {
+        brokenModuleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+        await expect(brokenModuleRef.init()).resolves.toBeDefined();
+        // Give the doomed connection attempt(s) time to actually fail and
+        // emit 'error' — this is the moment an unhandled listener would
+        // have brought the process down.
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      } finally {
+        process.env.REDIS_URL = originalRedisUrl;
+        if (brokenModuleRef) {
+          // This instance's own WorkerHeartbeatService still wrote a row
+          // (Postgres was never the broken dependency here) — clean it up
+          // rather than leaving an orphaned heartbeat behind.
+          const brokenHeartbeat = brokenModuleRef.get(WorkerHeartbeatService);
+          await prisma.workerHeartbeat.deleteMany({ where: { workerId: brokenHeartbeat.workerId } });
+          // A genuine, separate finding from writing this test (noted in
+          // the Milestone 5 review, deliberately NOT fixed in production
+          // code here — it's an onApplicationShutdown/graceful-shutdown
+          // concern from Milestone 3, not a retry/dead-letter one):
+          // BullMqWorkerManager's own shutdown (worker.close() and
+          // connection.quit()) both wait for a graceful Redis handshake
+          // that a truly unreachable connection will never provide, so a
+          // full close() here can hang indefinitely. Bounded so THIS test
+          // doesn't hang — the module instance is abandoned (not leaked
+          // in any way that affects other tests; it never held a real
+          // Redis connection to begin with) if the race is lost.
+          await Promise.race([brokenModuleRef.close(), new Promise((resolve) => setTimeout(resolve, 3_000))]);
+        }
+      }
+    }, 15_000);
+  });
+
   it("reports a live WorkerHeartbeat row for this process", async () => {
     const row = await prisma.workerHeartbeat.findUnique({ where: { workerId: heartbeat.workerId } });
     expect(row).not.toBeNull();

@@ -85,6 +85,15 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
   onApplicationBootstrap(): void {
     // BullMQ requires this exact setting for its blocking commands.
     this.connection = new Redis(this.config.get("redisUrl", { infer: true }), { maxRetriesPerRequest: null });
+    // Node's EventEmitter throws (crashing the whole process) if an
+    // 'error' event fires with zero listeners attached — without this,
+    // a transient Redis blip (exactly the "Redis restart" scenario) would
+    // kill this entire worker process, dropping every in-flight job on
+    // it, rather than letting ioredis's own automatic reconnect (its
+    // default retryStrategy) recover in place as intended.
+    this.connection.on("error", (error) => {
+      this.logger.error({ err: error }, "Redis connection error");
+    });
 
     const queues = this.config.get("queues", { infer: true });
     const applicationVersion = this.config.get("applicationVersion", { infer: true });
@@ -294,28 +303,56 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
     }
 
     const queue = this.getQueue(job.queueName);
-    // Deliberately NOT the same jobId the just-finished attempt used
-    // (contrast with BackgroundJobsService.requestRetry's manual-retry
-    // path, which safely reuses the plain id — see its own comment for
-    // why that case is different). This call happens WHILE BullMQ is
-    // still awaiting this exact job's processor promise — process() is
-    // still executing, it hasn't returned/thrown yet — so BullMQ has not
-    // finalized the original delivery's state. Reusing (remove()+add() on)
-    // the same id here raced BullMQ's own internal bookkeeping for that
-    // id: BullMQ would go on to mark "the job with this id" failed
-    // AFTER this call returns and process() finally throws, and with the
-    // id reused, that finalization could land on the freshly-added
-    // delayed retry instead of the concluded original — corrupting the
-    // very thing this transaction just correctly scheduled. A distinct,
-    // deterministic suffix avoids the collision entirely; process()
-    // strips it back off to recover the real correlation key.
-    await queue.add(job.jobType, job.payloadMetadata as object, {
-      jobId: `${job.id}#retry${job.attempts}`,
-      delay: delayMs,
-      attempts: 1,
-      removeOnComplete: { age: 3_600 },
-      removeOnFail: { age: 86_400 },
-    });
+    try {
+      // Deliberately NOT the same jobId the just-finished attempt used
+      // (contrast with BackgroundJobsService.requestRetry's manual-retry
+      // path, which safely reuses the plain id — see its own comment for
+      // why that case is different). This call happens WHILE BullMQ is
+      // still awaiting this exact job's processor promise — process() is
+      // still executing, it hasn't returned/thrown yet — so BullMQ has not
+      // finalized the original delivery's state. Reusing (remove()+add() on)
+      // the same id here raced BullMQ's own internal bookkeeping for that
+      // id: BullMQ would go on to mark "the job with this id" failed
+      // AFTER this call returns and process() finally throws, and with the
+      // id reused, that finalization could land on the freshly-added
+      // delayed retry instead of the concluded original — corrupting the
+      // very thing this transaction just correctly scheduled. A distinct,
+      // deterministic suffix avoids the collision entirely; process()
+      // strips it back off to recover the real correlation key.
+      await queue.add(job.jobType, job.payloadMetadata as object, {
+        jobId: `${job.id}#retry${job.attempts}`,
+        delay: delayMs,
+        attempts: 1,
+        removeOnComplete: { age: 3_600 },
+        removeOnFail: { age: 86_400 },
+      });
+    } catch (dispatchError) {
+      // The Postgres write above already committed (row is QUEUED) — a
+      // synchronous dispatch failure here (Redis unreachable, connection
+      // reset, etc.) would otherwise leave that row silently stuck QUEUED
+      // forever, indistinguishable from a healthy pending job, with no
+      // BullMQ entry that will ever redeliver it. Compensate by moving it
+      // to a visible, terminal, dead-lettered state instead — a human can
+      // manually retry once the queue is reachable again via the API's
+      // own requestRetry(). This does NOT close the gap for a genuine
+      // process crash in this exact window (nothing can run compensating
+      // code if the process itself is gone) — that residual risk is the
+      // known, inherent limitation of not yet having a transactional
+      // outbox (Milestone 8), not something this catch block can fix.
+      this.logger.error(
+        { jobId: job.id, jobType: job.jobType, err: dispatchError },
+        "retry dispatch failed after the Postgres retry-scheduling commit — compensating to dead-lettered",
+      );
+      await this.prisma.backgroundJob
+        .updateMany({
+          where: { id: job.id, status: "QUEUED" },
+          data: { status: "FAILED", failedAt: new Date(), deadLetteredAt: new Date(), errorCode: "RETRY_DISPATCH_FAILED", errorMessageSafe: "Failed to dispatch the scheduled retry to the queue." },
+        })
+        .catch((compensationError: unknown) => {
+          this.logger.error({ jobId: job.id, err: compensationError }, "compensating dead-letter write also failed — row remains stuck QUEUED");
+        });
+      throw dispatchError;
+    }
   }
 
   private async transitionTerminal(

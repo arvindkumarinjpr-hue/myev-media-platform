@@ -288,4 +288,32 @@ describe("Background jobs (e2e)", () => {
       await waitForStatus(ctx, workspace.publicId, ownerAccessToken, row.publicId, ["COMPLETED", "FAILED", "TIMED_OUT"]);
     });
   });
+
+  describe("Redis connection resilience", () => {
+    it("a Redis connection error does not crash the API process (mirrors the identical fix in apps/worker's BullMqWorkerManager)", async () => {
+      // Same rationale and technique as apps/worker's equivalent test:
+      // an unhandled 'error' event on a bare ioredis client crashes the
+      // whole process. BackgroundJobsService's redisConnection is created
+      // LAZILY (only once getQueue() is first called), so simply booting
+      // this second instance does not exercise it — the point here is
+      // only to prove the listener is attached at construction, not to
+      // also prove a live dispatch survives (that would risk hanging on
+      // ioredis's own maxRetriesPerRequest:null "queue offline commands
+      // forever" behavior against a host that will never come back,
+      // which is a test-reliability concern, not a product one).
+      const originalRedisUrl = process.env.REDIS_URL;
+      process.env.REDIS_URL = "redis://redis:1";
+      let brokenCtx: E2eApp | undefined;
+      try {
+        brokenCtx = await bootstrapE2eApp();
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      } finally {
+        process.env.REDIS_URL = originalRedisUrl;
+        if (brokenCtx) {
+          await brokenCtx.redis.quit().catch(() => undefined);
+          await brokenCtx.app.close();
+        }
+      }
+    }, 10_000);
+  });
 });

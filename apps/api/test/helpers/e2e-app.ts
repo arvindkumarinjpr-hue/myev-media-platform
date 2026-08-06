@@ -34,6 +34,13 @@ export async function bootstrapE2eApp(): Promise<E2eApp> {
   const prisma = app.get(PrismaService);
   const passwordHashService = app.get(PasswordHashService);
   const redis = new Redis(process.env.REDIS_URL ?? "redis://redis:6379");
+  // An unhandled 'error' event on a bare ioredis client crashes the whole
+  // process (Node's default EventEmitter behavior) — harmless whenever
+  // REDIS_URL is valid (the normal case), but load-bearing for any test
+  // that deliberately points this helper at an unreachable Redis to
+  // exercise connection-failure resilience (e.g. background-jobs.e2e-
+  // spec.ts's "Redis connection resilience" suite).
+  redis.on("error", () => undefined);
 
   return { app, prisma, passwordHashService, redis };
 }
