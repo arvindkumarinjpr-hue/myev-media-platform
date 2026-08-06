@@ -51,6 +51,16 @@ export const PERMISSIONS = {
   ANALYTICS_VIEW: "ANALYTICS_VIEW",
   ANALYTICS_EXPORT: "ANALYTICS_EXPORT",
 
+  // Module 1D: absent from the frozen AI_CONTENT_ROLE_PERMISSION_MATRIX_V1.0.md's
+  // formal Permission Categories — only informal prose exists ("Manage
+  // Media", "Manage Thumbnails" under Video Editor's responsibilities).
+  // Added following the same "Missing constant identified" precedent as
+  // Module 1C's WORKSPACE_ARCHIVE. See MODULE 1D ENGINEERING PLAN §8.
+  MEDIA_VIEW: "MEDIA_VIEW",
+  MEDIA_UPLOAD: "MEDIA_UPLOAD",
+  MEDIA_MANAGE: "MEDIA_MANAGE",
+  MEDIA_DELETE: "MEDIA_DELETE",
+
   USER_MANAGE: "USER_MANAGE",
   ROLE_MANAGE: "ROLE_MANAGE",
   SETTINGS_MANAGE: "SETTINGS_MANAGE",
@@ -75,6 +85,7 @@ export const PERMISSION_CATEGORIES: Record<string, PermissionConstant[]> = {
   SEO: [PERMISSIONS.SEO_EDIT, PERMISSIONS.SEO_SCORE, PERMISSIONS.SEO_APPROVE],
   Publishing: [PERMISSIONS.PUBLISH_CREATE, PERMISSIONS.PUBLISH_EXECUTE, PERMISSIONS.PUBLISH_CANCEL],
   Analytics: [PERMISSIONS.ANALYTICS_VIEW, PERMISSIONS.ANALYTICS_EXPORT],
+  Media: [PERMISSIONS.MEDIA_VIEW, PERMISSIONS.MEDIA_UPLOAD, PERMISSIONS.MEDIA_MANAGE, PERMISSIONS.MEDIA_DELETE],
   Administration: [PERMISSIONS.USER_MANAGE, PERMISSIONS.ROLE_MANAGE, PERMISSIONS.SETTINGS_MANAGE, PERMISSIONS.AUDIT_VIEW],
 };
 
@@ -125,6 +136,11 @@ export const ROLE_PERMISSIONS: Record<string, PermissionConstant[]> = {
     // "Cannot: Transfer Ownership" note. WORKSPACE_ARCHIVE added in Module
     // 1C, kept out of this list on purpose (Module 1C Engineering Plan §2.A:
     // archive/restore is Owner-only, not Administrator-accessible).
+    // Module 1D final RBAC map §8: full media footprint.
+    PERMISSIONS.MEDIA_VIEW,
+    PERMISSIONS.MEDIA_UPLOAD,
+    PERMISSIONS.MEDIA_MANAGE,
+    PERMISSIONS.MEDIA_DELETE,
   ],
   "Content Manager": [
     PERMISSIONS.PROJECT_VIEW,
@@ -141,8 +157,23 @@ export const ROLE_PERMISSIONS: Record<string, PermissionConstant[]> = {
     PERMISSIONS.VIDEO_APPROVE,
     PERMISSIONS.PUBLISH_CREATE,
     PERMISSIONS.ANALYTICS_VIEW,
+    // Module 1D final RBAC map §8: full media footprint.
+    PERMISSIONS.MEDIA_VIEW,
+    PERMISSIONS.MEDIA_UPLOAD,
+    PERMISSIONS.MEDIA_MANAGE,
+    PERMISSIONS.MEDIA_DELETE,
   ],
-  "Content Writer": [PERMISSIONS.RESEARCH_RUN, PERMISSIONS.BLOG_CREATE, PERMISSIONS.BLOG_EDIT, PERMISSIONS.KP_VIEW],
+  "Content Writer": [
+    PERMISSIONS.RESEARCH_RUN,
+    PERMISSIONS.BLOG_CREATE,
+    PERMISSIONS.BLOG_EDIT,
+    PERMISSIONS.KP_VIEW,
+    // Module 1D final RBAC map §8: view + upload only — no manage/delete,
+    // and no "own uploads only" exception (the current RBAC model has no
+    // ownership-scope concept at all; see plan §8).
+    PERMISSIONS.MEDIA_VIEW,
+    PERMISSIONS.MEDIA_UPLOAD,
+  ],
   "SEO Specialist": [
     PERMISSIONS.RESEARCH_RUN,
     PERMISSIONS.SEO_EDIT,
@@ -150,14 +181,34 @@ export const ROLE_PERMISSIONS: Record<string, PermissionConstant[]> = {
     PERMISSIONS.SEO_APPROVE,
     PERMISSIONS.BLOG_EDIT,
     PERMISSIONS.ANALYTICS_VIEW,
+    // Module 1D final RBAC map §8: view + upload only.
+    PERMISSIONS.MEDIA_VIEW,
+    PERMISSIONS.MEDIA_UPLOAD,
   ],
-  "Video Editor": [PERMISSIONS.VIDEO_CREATE, PERMISSIONS.VIDEO_RENDER, PERMISSIONS.VIDEO_EDIT],
+  "Video Editor": [
+    PERMISSIONS.VIDEO_CREATE,
+    PERMISSIONS.VIDEO_RENDER,
+    PERMISSIONS.VIDEO_EDIT,
+    // Module 1D final RBAC map §8: view + upload + manage (matches this
+    // role's explicit "Manage Media"/"Manage Thumbnails" prose in the
+    // frozen matrix) — no delete.
+    PERMISSIONS.MEDIA_VIEW,
+    PERMISSIONS.MEDIA_UPLOAD,
+    PERMISSIONS.MEDIA_MANAGE,
+  ],
   Publisher: [
     PERMISSIONS.PUBLISH_CREATE,
     PERMISSIONS.PUBLISH_EXECUTE,
     PERMISSIONS.PUBLISH_CANCEL,
     PERMISSIONS.BLOG_PUBLISH,
     PERMISSIONS.VIDEO_PUBLISH,
+    // Module 1D final RBAC map §8: view only.
+    PERMISSIONS.MEDIA_VIEW,
   ],
-  Analyst: [PERMISSIONS.ANALYTICS_VIEW, PERMISSIONS.ANALYTICS_EXPORT],
+  Analyst: [
+    PERMISSIONS.ANALYTICS_VIEW,
+    PERMISSIONS.ANALYTICS_EXPORT,
+    // Module 1D final RBAC map §8: view only.
+    PERMISSIONS.MEDIA_VIEW,
+  ],
 };

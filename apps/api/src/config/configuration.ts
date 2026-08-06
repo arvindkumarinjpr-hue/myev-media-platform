@@ -48,6 +48,34 @@ export interface AppConfig {
       perWorkspaceWindowSeconds: number;
     };
   };
+  media: {
+    // Which real-world service Module 1D's storage bytes live in — see
+    // MODULE 1D ENGINEERING PLAN §7 "Storage Provider Identity". Stamped
+    // onto every media_assets row created while this config is active.
+    storageProviderIdentity: string;
+    // FRD §21.1 per-asset-type ceilings — the frozen requirement, unchanged.
+    maxSizeBytes: {
+      image: number;
+      audio: number;
+      video: number;
+      document: number;
+    };
+    // ACR (approved): Module 1D's synchronous verification ceiling. The
+    // EFFECTIVE per-type max is min(maxSizeBytes[type], this) — only VIDEO
+    // is ever actually constrained by it, since Image/Audio/Document's FRD
+    // maxima all sit comfortably under the default.
+    syncChecksumMaxBytes: number;
+    mimeInspectionBytes: number;
+    uploadUrlTtlSeconds: number;
+    downloadUrlTtlSeconds: number;
+    verificationStaleAfterSeconds: number;
+    storageOperationTimeoutSeconds: number;
+    checksumTimeoutSeconds: number;
+    maxVerificationDurationSeconds: number;
+    uploadIntent: { limit: number; windowSeconds: number };
+    downloadUrl: { limit: number; windowSeconds: number };
+    retryVerification: { limit: number; windowSeconds: number };
+  };
 }
 
 /**
@@ -103,6 +131,37 @@ export default (): AppConfig => ({
       perUserWindowSeconds: parseInt(process.env.RESEND_ACTIVATION_PER_USER_WINDOW_SECONDS ?? "3600", 10),
       perWorkspaceLimit: parseInt(process.env.RESEND_ACTIVATION_PER_WORKSPACE_LIMIT ?? "10", 10),
       perWorkspaceWindowSeconds: parseInt(process.env.RESEND_ACTIVATION_PER_WORKSPACE_WINDOW_SECONDS ?? "3600", 10),
+    },
+  },
+  media: {
+    storageProviderIdentity: process.env.STORAGE_PROVIDER_IDENTITY ?? "MINIO",
+    maxSizeBytes: {
+      image: parseInt(process.env.MEDIA_MAX_SIZE_IMAGE_BYTES ?? "26214400", 10), // 25MB
+      audio: parseInt(process.env.MEDIA_MAX_SIZE_AUDIO_BYTES ?? "104857600", 10), // 100MB
+      video: parseInt(process.env.MEDIA_MAX_SIZE_VIDEO_BYTES ?? "2147483648", 10), // 2GB (frozen FRD ceiling)
+      document: parseInt(process.env.MEDIA_MAX_SIZE_DOCUMENT_BYTES ?? "20971520", 10), // 20MB
+    },
+    // ACR approved 2026-08-06: 500MB default synchronous verification
+    // ceiling. Full 2GB VIDEO support is deferred to Queue Engine.
+    syncChecksumMaxBytes: parseInt(process.env.MEDIA_SYNC_CHECKSUM_MAX_BYTES ?? "524288000", 10),
+    mimeInspectionBytes: parseInt(process.env.MEDIA_MIME_INSPECTION_BYTES ?? "4096", 10),
+    uploadUrlTtlSeconds: parseInt(process.env.MEDIA_UPLOAD_URL_TTL_SECONDS ?? "900", 10), // 15 min
+    downloadUrlTtlSeconds: parseInt(process.env.MEDIA_DOWNLOAD_URL_TTL_SECONDS ?? "300", 10), // 5 min
+    verificationStaleAfterSeconds: parseInt(process.env.MEDIA_VERIFICATION_STALE_AFTER_SECONDS ?? "600", 10), // 10 min
+    storageOperationTimeoutSeconds: parseInt(process.env.MEDIA_STORAGE_OPERATION_TIMEOUT_SECONDS ?? "10", 10),
+    checksumTimeoutSeconds: parseInt(process.env.MEDIA_CHECKSUM_TIMEOUT_SECONDS ?? "120", 10),
+    maxVerificationDurationSeconds: parseInt(process.env.MEDIA_MAX_VERIFICATION_DURATION_SECONDS ?? "180", 10),
+    uploadIntent: {
+      limit: parseInt(process.env.MEDIA_UPLOAD_INTENT_RATE_LIMIT ?? "30", 10),
+      windowSeconds: parseInt(process.env.MEDIA_UPLOAD_INTENT_RATE_WINDOW_SECONDS ?? "3600", 10),
+    },
+    downloadUrl: {
+      limit: parseInt(process.env.MEDIA_DOWNLOAD_URL_RATE_LIMIT ?? "120", 10),
+      windowSeconds: parseInt(process.env.MEDIA_DOWNLOAD_URL_RATE_WINDOW_SECONDS ?? "3600", 10),
+    },
+    retryVerification: {
+      limit: parseInt(process.env.MEDIA_RETRY_VERIFICATION_RATE_LIMIT ?? "10", 10),
+      windowSeconds: parseInt(process.env.MEDIA_RETRY_VERIFICATION_RATE_WINDOW_SECONDS ?? "3600", 10),
     },
   },
 });
