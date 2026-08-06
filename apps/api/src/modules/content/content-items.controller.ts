@@ -5,8 +5,8 @@ import { CurrentWorkspace } from "../../common/decorators/current-workspace.deco
 import { SessionGuard } from "../../common/guards/session.guard";
 import { WorkspaceContextGuard, type WorkspaceContext } from "../../common/guards/workspace-context.guard";
 import type { AuthenticatedRequest } from "../../common/guards/session.guard";
-import type { ContentItem, ContentItemStatus } from "../../../generated/prisma";
-import { ContentItemsService, type ContentActor } from "./content-items.service";
+import type { ContentItemStatus } from "../../../generated/prisma";
+import { ContentItemsService, type ContentActor, type ContentItemWithPublicRefs } from "./content-items.service";
 import { CreateContentItemDto } from "./dto/create-content-item.dto";
 import { UpdateContentItemDto } from "./dto/update-content-item.dto";
 import { CreateContentVersionDto } from "./dto/create-content-version.dto";
@@ -15,14 +15,19 @@ import { UpdateContentItemProjectDto } from "./dto/update-content-item-project.d
 import { UpdateContentItemSeriesDto } from "./dto/update-content-item-series.dto";
 import { UpdateContentItemFeaturedMediaDto } from "./dto/update-content-item-featured-media.dto";
 
-function serializeItem(item: ContentItem) {
+// projectId/seriesId/featuredMediaAssetId below are each the related
+// resource's PUBLIC id, resolved via the `project`/`series`/
+// `featuredMediaAsset` relations every ContentItemsService method
+// includes — never item.projectId etc. directly, which are internal FKs
+// and must never reach a client.
+function serializeItem(item: ContentItemWithPublicRefs) {
   return {
     publicId: item.publicId,
-    projectId: item.projectId,
+    projectId: item.project?.publicId ?? null,
     contentType: item.contentType,
     title: item.title,
-    seriesId: item.seriesId,
-    featuredMediaAssetId: item.featuredMediaAssetId,
+    seriesId: item.series?.publicId ?? null,
+    featuredMediaAssetId: item.featuredMediaAsset?.publicId ?? null,
     status: item.status,
     archivedFromStatus: item.archivedFromStatus,
     metadata: item.metadata,

@@ -6,13 +6,16 @@ import { SessionGuard } from "../../common/guards/session.guard";
 import { WorkspaceContextGuard, type WorkspaceContext } from "../../common/guards/workspace-context.guard";
 import { PermissionGuard } from "../../common/guards/permission.guard";
 import { PERMISSIONS } from "../rbac/permissions.constants";
-import type { ContentSeries } from "../../../generated/prisma";
 import { ContentSeriesService } from "./content-series.service";
 import { CreateContentSeriesDto } from "./dto/create-content-series.dto";
 import { UpdateContentSeriesDto } from "./dto/update-content-series.dto";
 
-function serializeSeries(series: ContentSeries) {
-  return { publicId: series.publicId, projectId: series.projectId, name: series.name, createdAt: series.createdAt, updatedAt: series.updatedAt };
+// projectId here is the related project's PUBLIC id (via the `project`
+// relation, resolved by every ContentSeriesService query that returns to
+// this controller) — never series.projectId itself, which is the
+// internal FK and must never reach a client.
+function serializeSeries(series: { publicId: string; project: { publicId: string } | null; name: string; createdAt: Date; updatedAt: Date }) {
+  return { publicId: series.publicId, projectId: series.project?.publicId ?? null, name: series.name, createdAt: series.createdAt, updatedAt: series.updatedAt };
 }
 
 @Controller("api/v1/workspaces/:workspaceId/content-series")

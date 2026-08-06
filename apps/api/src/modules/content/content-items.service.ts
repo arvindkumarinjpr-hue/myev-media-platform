@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { Prisma, type ContentItem, type ContentItemStatus } from "../../../generated/prisma";
+import { Prisma, type ContentItemStatus } from "../../../generated/prisma";
 import { PrismaService } from "../../prisma/prisma.service";
 import { AuditService } from "../audit/audit.service";
 import type { AppConfig } from "../../config/configuration";
@@ -27,6 +27,18 @@ export interface ContentActor {
   publicId: string;
   internalId: string;
 }
+
+// projectId/seriesId/featuredMediaAssetId are all INTERNAL FKs — never
+// client-facing. Every query whose result is ultimately returned to the
+// controller includes these three relations' publicId alongside the raw
+// row, so the controller serializer never has to (and never accidentally
+// does) leak an internal id.
+const WITH_PUBLIC_REFS = {
+  project: { select: { publicId: true } },
+  series: { select: { publicId: true } },
+  featuredMediaAsset: { select: { publicId: true } },
+} satisfies Prisma.ContentItemInclude;
+export type ContentItemWithPublicRefs = Prisma.ContentItemGetPayload<{ include: typeof WITH_PUBLIC_REFS }>;
 
 interface LockedContentItemRow {
   id: string;
@@ -109,7 +121,7 @@ export class ContentItemsService {
   // deferred constraint trigger permits the null in between; it is never
   // observable past commit.
   // ---------------------------------------------------------------------
-  async create(workspace: { id: string }, actor: ContentActor, dto: CreateContentItemDto, context: RequestContext): Promise<ContentItem> {
+  async create(workspace: { id: string }, actor: ContentActor, dto: CreateContentItemDto, context: RequestContext): Promise<ContentItemWithPublicRefs> {
     if (!isSupportedContentType(dto.contentType)) {
       throw new BadRequestException({ code: "CONTENT_TYPE_NOT_SUPPORTED", message: `Content type ${dto.contentType} is not yet supported.` });
     }
@@ -155,7 +167,7 @@ export class ContentItemsService {
       });
 
       // Step 3: link.
-      const item = await tx.contentItem.update({ where: { id: itemId }, data: { currentVersionId: version.id } });
+      const item = await tx.contentItem.update({ where: { id: itemId }, data: { currentVersionId: version.id }, include: WITH_PUBLIC_REFS });
 
       // Step 4: audit.
       await this.audit.recordWithinTransaction(tx, {
@@ -189,7 +201,7 @@ export class ContentItemsService {
     workspace: { id: string },
     actor: ContentActor,
     filters: { projectId?: string; seriesId?: string; status?: ContentItemStatus; contentType?: string },
-  ): Promise<ContentItem[]> {
+  ): Promise<ContentItemWithPublicRefs[]> {
     const viewableTypes = await this.permissions.getViewableContentTypes(actor.publicId, workspace.id);
     if (viewableTypes.length === 0) {
       throw new ForbiddenException({ code: "PERMISSION_DENIED", message: "Missing required permission to view any content type." });
@@ -223,6 +235,7 @@ export class ContentItemsService {
         ...(seriesInternalId ? { seriesId: seriesInternalId } : {}),
         ...(filters.status ? { status: filters.status } : {}),
       },
+      include: WITH_PUBLIC_REFS,
       orderBy: { createdAt: "desc" },
     });
   }
@@ -234,8 +247,13 @@ export class ContentItemsService {
    * that a content item of some specific, unauthorized type exists at
    * this id (Module 1E Engineering Plan §6).
    */
-  private async resolveForAction(workspaceId: string, actor: ContentActor, itemPublicId: string, action: ContentPermissionAction): Promise<ContentItem> {
-    const item = await this.prisma.contentItem.findFirst({ where: { publicId: itemPublicId, workspaceId, deletedAt: null } });
+  private async resolveForAction(
+    workspaceId: string,
+    actor: ContentActor,
+    itemPublicId: string,
+    action: ContentPermissionAction,
+  ): Promise<ContentItemWithPublicRefs> {
+    const item = await this.prisma.contentItem.findFirst({ where: { publicId: itemPublicId, workspaceId, deletedAt: null }, include: WITH_PUBLIC_REFS });
     if (!item) throw new NotFoundException({ code: "CONTENT_ITEM_NOT_FOUND", message: "Content item not found." });
 
     const allowed = await this.permissions.can(actor.publicId, workspaceId, action, item.contentType);
@@ -244,11 +262,17 @@ export class ContentItemsService {
     return item;
   }
 
-  async findOne(workspace: { id: string }, actor: ContentActor, itemPublicId: string): Promise<ContentItem> {
+  async findOne(workspace: { id: string }, actor: ContentActor, itemPublicId: string): Promise<ContentItemWithPublicRefs> {
     return this.resolveForAction(workspace.id, actor, itemPublicId, "view");
   }
 
-  async update(workspace: { id: string }, actor: ContentActor, itemPublicId: string, dto: UpdateContentItemDto, context: RequestContext): Promise<ContentItem> {
+  async update(
+    workspace: { id: string },
+    actor: ContentActor,
+    itemPublicId: string,
+    dto: UpdateContentItemDto,
+    context: RequestContext,
+  ): Promise<ContentItemWithPublicRefs> {
     const item = await this.resolveForAction(workspace.id, actor, itemPublicId, "edit");
     const beforeState = { title: item.title };
 
@@ -258,6 +282,7 @@ export class ContentItemsService {
         title: dto.title ?? undefined,
         metadata: dto.metadata !== undefined ? (dto.metadata as Prisma.InputJsonValue) : undefined,
       },
+      include: WITH_PUBLIC_REFS,
     });
 
     await this.audit.record({
@@ -286,7 +311,7 @@ export class ContentItemsService {
     itemPublicId: string,
     dto: CreateContentVersionDto,
     context: RequestContext,
-  ): Promise<ContentItem> {
+  ): Promise<ContentItemWithPublicRefs> {
     const item = await this.resolveForAction(workspace.id, actor, itemPublicId, "edit");
     // item.contentType is guaranteed supported — create() gates it and
     // nothing in this module ever produces an unsupported-type row.
@@ -314,7 +339,7 @@ export class ContentItemsService {
           createdById: actor.internalId,
         },
       });
-      const updated = await tx.contentItem.update({ where: { id: locked.id }, data: { currentVersionId: version.id } });
+      const updated = await tx.contentItem.update({ where: { id: locked.id }, data: { currentVersionId: version.id }, include: WITH_PUBLIC_REFS });
 
       await this.audit.recordWithinTransaction(tx, {
         action: "CONTENT_VERSION_CREATED",
@@ -333,7 +358,7 @@ export class ContentItemsService {
   // ---------------------------------------------------------------------
   // Editorial lifecycle transitions.
   // ---------------------------------------------------------------------
-  async start(workspace: { id: string }, actor: ContentActor, itemPublicId: string, context: RequestContext): Promise<ContentItem> {
+  async start(workspace: { id: string }, actor: ContentActor, itemPublicId: string, context: RequestContext): Promise<ContentItemWithPublicRefs> {
     const item = await this.resolveForAction(workspace.id, actor, itemPublicId, "edit");
     return this.prisma.$transaction(async (tx) => {
       const [locked] = await tx.$queryRaw<LockedContentItemRow[]>`
@@ -343,7 +368,7 @@ export class ContentItemsService {
       if (locked.status !== "DRAFT") {
         throw new ConflictException({ code: "CONTENT_ITEM_INVALID_TRANSITION", message: `Cannot start from status ${locked.status}.` });
       }
-      const updated = await tx.contentItem.update({ where: { id: locked.id }, data: { status: "IN_PROGRESS" } });
+      const updated = await tx.contentItem.update({ where: { id: locked.id }, data: { status: "IN_PROGRESS" }, include: WITH_PUBLIC_REFS });
       await this.audit.recordWithinTransaction(tx, {
         action: "CONTENT_ITEM_STARTED",
         actorUserId: actor.internalId,
@@ -362,7 +387,7 @@ export class ContentItemsService {
     itemPublicId: string,
     dto: SubmitForReviewDto,
     context: RequestContext,
-  ): Promise<ContentItem> {
+  ): Promise<ContentItemWithPublicRefs> {
     const item = await this.resolveForAction(workspace.id, actor, itemPublicId, "edit");
     const comment = this.normalizeOptionalComment(dto.comment);
 
@@ -380,7 +405,7 @@ export class ContentItemsService {
         throw new ConflictException({ code: "CONTENT_ITEM_HAS_NO_VERSION", message: "Content item has no current version." });
       }
 
-      const updated = await tx.contentItem.update({ where: { id: locked.id }, data: { status: "REVIEW" } });
+      const updated = await tx.contentItem.update({ where: { id: locked.id }, data: { status: "REVIEW" }, include: WITH_PUBLIC_REFS });
       await tx.contentReviewEvent.create({
         data: {
           id: randomUUID(),
@@ -405,7 +430,13 @@ export class ContentItemsService {
     });
   }
 
-  async approve(workspace: { id: string }, actor: ContentActor, itemPublicId: string, dto: ApproveContentDto, context: RequestContext): Promise<ContentItem> {
+  async approve(
+    workspace: { id: string },
+    actor: ContentActor,
+    itemPublicId: string,
+    dto: ApproveContentDto,
+    context: RequestContext,
+  ): Promise<ContentItemWithPublicRefs> {
     const item = await this.resolveForAction(workspace.id, actor, itemPublicId, "approve");
     const comment = this.normalizeOptionalComment(dto.comment);
 
@@ -421,7 +452,7 @@ export class ContentItemsService {
         throw new ConflictException({ code: "CONTENT_ITEM_HAS_NO_VERSION", message: "Content item has no current version." });
       }
 
-      const updated = await tx.contentItem.update({ where: { id: locked.id }, data: { status: "APPROVED" } });
+      const updated = await tx.contentItem.update({ where: { id: locked.id }, data: { status: "APPROVED" }, include: WITH_PUBLIC_REFS });
       await tx.contentReviewEvent.create({
         data: {
           id: randomUUID(),
@@ -446,7 +477,13 @@ export class ContentItemsService {
     });
   }
 
-  async reject(workspace: { id: string }, actor: ContentActor, itemPublicId: string, dto: RejectContentDto, context: RequestContext): Promise<ContentItem> {
+  async reject(
+    workspace: { id: string },
+    actor: ContentActor,
+    itemPublicId: string,
+    dto: RejectContentDto,
+    context: RequestContext,
+  ): Promise<ContentItemWithPublicRefs> {
     const item = await this.resolveForAction(workspace.id, actor, itemPublicId, "approve");
     const comment = dto.comment.trim();
     const maxLength = this.config.get("content", { infer: true }).reviewCommentMaxLength;
@@ -469,7 +506,7 @@ export class ContentItemsService {
         throw new ConflictException({ code: "CONTENT_ITEM_HAS_NO_VERSION", message: "Content item has no current version." });
       }
 
-      const updated = await tx.contentItem.update({ where: { id: locked.id }, data: { status: "IN_PROGRESS" } });
+      const updated = await tx.contentItem.update({ where: { id: locked.id }, data: { status: "IN_PROGRESS" }, include: WITH_PUBLIC_REFS });
       await tx.contentReviewEvent.create({
         data: {
           id: randomUUID(),
@@ -494,7 +531,7 @@ export class ContentItemsService {
     });
   }
 
-  async archive(workspace: { id: string }, actor: ContentActor, itemPublicId: string, context: RequestContext): Promise<ContentItem> {
+  async archive(workspace: { id: string }, actor: ContentActor, itemPublicId: string, context: RequestContext): Promise<ContentItemWithPublicRefs> {
     const item = await this.resolveForAction(workspace.id, actor, itemPublicId, "edit");
     return this.prisma.$transaction(async (tx) => {
       const [locked] = await tx.$queryRaw<LockedContentItemRow[]>`
@@ -507,6 +544,7 @@ export class ContentItemsService {
       const updated = await tx.contentItem.update({
         where: { id: locked.id },
         data: { status: "ARCHIVED", archivedFromStatus: locked.status, archivedAt: new Date() },
+        include: WITH_PUBLIC_REFS,
       });
       await this.audit.recordWithinTransaction(tx, {
         action: "CONTENT_ITEM_ARCHIVED",
@@ -521,7 +559,7 @@ export class ContentItemsService {
     });
   }
 
-  async restore(workspace: { id: string }, actor: ContentActor, itemPublicId: string, context: RequestContext): Promise<ContentItem> {
+  async restore(workspace: { id: string }, actor: ContentActor, itemPublicId: string, context: RequestContext): Promise<ContentItemWithPublicRefs> {
     const item = await this.resolveForAction(workspace.id, actor, itemPublicId, "edit");
     return this.prisma.$transaction(async (tx) => {
       const [locked] = await tx.$queryRaw<LockedContentItemRow[]>`
@@ -534,6 +572,7 @@ export class ContentItemsService {
       const updated = await tx.contentItem.update({
         where: { id: locked.id },
         data: { status: locked.archivedFromStatus, archivedFromStatus: null, archivedAt: null },
+        include: WITH_PUBLIC_REFS,
       });
       await this.audit.recordWithinTransaction(tx, {
         action: "CONTENT_ITEM_RESTORED",
@@ -591,7 +630,7 @@ export class ContentItemsService {
     itemPublicId: string,
     dto: UpdateContentItemSeriesDto,
     context: RequestContext,
-  ): Promise<ContentItem> {
+  ): Promise<ContentItemWithPublicRefs> {
     const item = await this.resolveForAction(workspace.id, actor, itemPublicId, "edit");
 
     let targetSeriesInternalId: string | null = null;
@@ -638,7 +677,7 @@ export class ContentItemsService {
         }
       }
 
-      const updated = await tx.contentItem.update({ where: { id: lockedItem.id }, data: { seriesId: targetSeriesInternalId } });
+      const updated = await tx.contentItem.update({ where: { id: lockedItem.id }, data: { seriesId: targetSeriesInternalId }, include: WITH_PUBLIC_REFS });
       await this.audit.recordWithinTransaction(tx, {
         action: "CONTENT_ITEM_SERIES_CHANGED",
         actorUserId: actor.internalId,
@@ -666,7 +705,7 @@ export class ContentItemsService {
     itemPublicId: string,
     dto: UpdateContentItemProjectDto,
     context: RequestContext,
-  ): Promise<ContentItem> {
+  ): Promise<ContentItemWithPublicRefs> {
     // Step 1: pre-resolve item + current series.
     const item = await this.resolveForAction(workspace.id, actor, itemPublicId, "edit");
 
@@ -715,7 +754,11 @@ export class ContentItemsService {
       }
 
       // Step 6: update.
-      const updated = await tx.contentItem.update({ where: { id: lockedItem.id }, data: { projectId: targetProjectInternalId } });
+      const updated = await tx.contentItem.update({
+        where: { id: lockedItem.id },
+        data: { projectId: targetProjectInternalId },
+        include: WITH_PUBLIC_REFS,
+      });
 
       // Step 7: audit.
       await this.audit.recordWithinTransaction(tx, {
@@ -748,7 +791,7 @@ export class ContentItemsService {
     itemPublicId: string,
     dto: UpdateContentItemFeaturedMediaDto,
     context: RequestContext,
-  ): Promise<ContentItem> {
+  ): Promise<ContentItemWithPublicRefs> {
     const item = await this.resolveForAction(workspace.id, actor, itemPublicId, "edit");
 
     if (dto.mediaAssetId === null) {
@@ -758,7 +801,7 @@ export class ContentItemsService {
         `;
         if (!lockedItem || lockedItem.deletedAt) throw new NotFoundException({ code: "CONTENT_ITEM_NOT_FOUND", message: "Content item not found." });
 
-        const updated = await tx.contentItem.update({ where: { id: lockedItem.id }, data: { featuredMediaAssetId: null } });
+        const updated = await tx.contentItem.update({ where: { id: lockedItem.id }, data: { featuredMediaAssetId: null }, include: WITH_PUBLIC_REFS });
         await this.audit.recordWithinTransaction(tx, {
           action: "CONTENT_ITEM_UPDATED",
           actorUserId: actor.internalId,
@@ -801,7 +844,11 @@ export class ContentItemsService {
         await tx.mediaAsset.update({ where: { id: lockedMedia.id }, data: { contentItemId: lockedItem.id } });
       }
 
-      const updated = await tx.contentItem.update({ where: { id: lockedItem.id }, data: { featuredMediaAssetId: lockedMedia.id } });
+      const updated = await tx.contentItem.update({
+        where: { id: lockedItem.id },
+        data: { featuredMediaAssetId: lockedMedia.id },
+        include: WITH_PUBLIC_REFS,
+      });
       await this.audit.recordWithinTransaction(tx, {
         action: "CONTENT_ITEM_UPDATED",
         actorUserId: actor.internalId,

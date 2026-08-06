@@ -1,5 +1,5 @@
 import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
-import { Prisma, type ContentSeries } from "../../../generated/prisma";
+import { Prisma } from "../../../generated/prisma";
 import { PrismaService } from "../../prisma/prisma.service";
 import { AuditService } from "../audit/audit.service";
 import type { CreateContentSeriesDto } from "./dto/create-content-series.dto";
@@ -8,6 +8,13 @@ import type { UpdateContentSeriesDto } from "./dto/update-content-series.dto";
 interface RequestContext {
   ipAddress?: string;
 }
+
+// project.projectId is the INTERNAL FK — never client-facing. Every query
+// that returns a series to a controller includes the related project's
+// publicId alongside it, so the controller never has to (and never
+// accidentally does) leak the internal id.
+const WITH_PROJECT_PUBLIC_ID = { project: { select: { publicId: true } } } satisfies Prisma.ContentSeriesInclude;
+type ContentSeriesWithProjectPublicId = Prisma.ContentSeriesGetPayload<{ include: typeof WITH_PROJECT_PUBLIC_ID }>;
 
 interface LockedSeriesRow {
   id: string;
@@ -40,7 +47,12 @@ export class ContentSeriesService {
     private readonly audit: AuditService,
   ) {}
 
-  async create(workspace: { id: string }, actorUserId: string, dto: CreateContentSeriesDto, context: RequestContext): Promise<ContentSeries> {
+  async create(
+    workspace: { id: string },
+    actorUserId: string,
+    dto: CreateContentSeriesDto,
+    context: RequestContext,
+  ): Promise<ContentSeriesWithProjectPublicId> {
     let projectInternalId: string | null = null;
     if (dto.projectId) {
       const project = await this.prisma.project.findFirst({ where: { publicId: dto.projectId, workspaceId: workspace.id, deletedAt: null } });
@@ -50,6 +62,7 @@ export class ContentSeriesService {
 
     const created = await this.prisma.contentSeries.create({
       data: { workspaceId: workspace.id, projectId: projectInternalId, name: dto.name, createdById: actorUserId },
+      include: WITH_PROJECT_PUBLIC_ID,
     });
 
     await this.audit.record({
@@ -64,7 +77,7 @@ export class ContentSeriesService {
     return created;
   }
 
-  async list(workspaceId: string, filters: { projectId?: string }): Promise<ContentSeries[]> {
+  async list(workspaceId: string, filters: { projectId?: string }): Promise<ContentSeriesWithProjectPublicId[]> {
     let projectInternalId: string | undefined;
     if (filters.projectId) {
       const project = await this.prisma.project.findFirst({ where: { publicId: filters.projectId, workspaceId } });
@@ -73,19 +86,29 @@ export class ContentSeriesService {
     }
     return this.prisma.contentSeries.findMany({
       where: { workspaceId, deletedAt: null, ...(projectInternalId ? { projectId: projectInternalId } : {}) },
+      include: WITH_PROJECT_PUBLIC_ID,
       orderBy: { createdAt: "asc" },
     });
   }
 
-  async findOne(workspaceId: string, seriesPublicId: string): Promise<ContentSeries> {
-    const series = await this.prisma.contentSeries.findFirst({ where: { publicId: seriesPublicId, workspaceId, deletedAt: null } });
+  async findOne(workspaceId: string, seriesPublicId: string): Promise<ContentSeriesWithProjectPublicId> {
+    const series = await this.prisma.contentSeries.findFirst({
+      where: { publicId: seriesPublicId, workspaceId, deletedAt: null },
+      include: WITH_PROJECT_PUBLIC_ID,
+    });
     if (!series) throw new NotFoundException({ code: "CONTENT_SERIES_NOT_FOUND", message: "Content series not found." });
     return series;
   }
 
-  async update(workspaceId: string, seriesPublicId: string, actorUserId: string, dto: UpdateContentSeriesDto, context: RequestContext): Promise<ContentSeries> {
+  async update(
+    workspaceId: string,
+    seriesPublicId: string,
+    actorUserId: string,
+    dto: UpdateContentSeriesDto,
+    context: RequestContext,
+  ): Promise<ContentSeriesWithProjectPublicId> {
     const series = await this.findOne(workspaceId, seriesPublicId);
-    const updated = await this.prisma.contentSeries.update({ where: { id: series.id }, data: { name: dto.name } });
+    const updated = await this.prisma.contentSeries.update({ where: { id: series.id }, data: { name: dto.name }, include: WITH_PROJECT_PUBLIC_ID });
 
     await this.audit.record({
       action: "CONTENT_SERIES_UPDATED",
