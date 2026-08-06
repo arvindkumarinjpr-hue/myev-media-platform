@@ -65,6 +65,19 @@ export const PERMISSIONS = {
   ROLE_MANAGE: "ROLE_MANAGE",
   SETTINGS_MANAGE: "SETTINGS_MANAGE",
   AUDIT_VIEW: "AUDIT_VIEW",
+
+  // Module 1E: absent from the frozen AI_CONTENT_ROLE_PERMISSION_MATRIX_V1.0.md's
+  // formal Permission Categories. BLOG_VIEW/VIDEO_VIEW are the content-type
+  // read gates that ContentPermissionResolver checks dynamically against a
+  // content item's actual contentType (existing BLOG_*/VIDEO_* constants are
+  // all write/workflow actions with no plain read permission among them).
+  // CONTENT_SERIES_MANAGE is the single gate for series CRUD, type-agnostic
+  // since a series can span both content types. Added following the same
+  // "Missing constant identified" precedent as Module 1C's WORKSPACE_ARCHIVE
+  // and Module 1D's MEDIA_*. See MODULE 1E ENGINEERING PLAN §7 (RBAC mapping).
+  BLOG_VIEW: "BLOG_VIEW",
+  VIDEO_VIEW: "VIDEO_VIEW",
+  CONTENT_SERIES_MANAGE: "CONTENT_SERIES_MANAGE",
 } as const;
 
 export type PermissionConstant = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -87,6 +100,7 @@ export const PERMISSION_CATEGORIES: Record<string, PermissionConstant[]> = {
   Analytics: [PERMISSIONS.ANALYTICS_VIEW, PERMISSIONS.ANALYTICS_EXPORT],
   Media: [PERMISSIONS.MEDIA_VIEW, PERMISSIONS.MEDIA_UPLOAD, PERMISSIONS.MEDIA_MANAGE, PERMISSIONS.MEDIA_DELETE],
   Administration: [PERMISSIONS.USER_MANAGE, PERMISSIONS.ROLE_MANAGE, PERMISSIONS.SETTINGS_MANAGE, PERMISSIONS.AUDIT_VIEW],
+  Content: [PERMISSIONS.BLOG_VIEW, PERMISSIONS.VIDEO_VIEW, PERMISSIONS.CONTENT_SERIES_MANAGE],
 };
 
 /**
@@ -141,6 +155,10 @@ export const ROLE_PERMISSIONS: Record<string, PermissionConstant[]> = {
     PERMISSIONS.MEDIA_UPLOAD,
     PERMISSIONS.MEDIA_MANAGE,
     PERMISSIONS.MEDIA_DELETE,
+    // Module 1E final RBAC map §7: full content footprint.
+    PERMISSIONS.BLOG_VIEW,
+    PERMISSIONS.VIDEO_VIEW,
+    PERMISSIONS.CONTENT_SERIES_MANAGE,
   ],
   "Content Manager": [
     PERMISSIONS.PROJECT_VIEW,
@@ -162,6 +180,10 @@ export const ROLE_PERMISSIONS: Record<string, PermissionConstant[]> = {
     PERMISSIONS.MEDIA_UPLOAD,
     PERMISSIONS.MEDIA_MANAGE,
     PERMISSIONS.MEDIA_DELETE,
+    // Module 1E final RBAC map §7: full content footprint.
+    PERMISSIONS.BLOG_VIEW,
+    PERMISSIONS.VIDEO_VIEW,
+    PERMISSIONS.CONTENT_SERIES_MANAGE,
   ],
   "Content Writer": [
     PERMISSIONS.RESEARCH_RUN,
@@ -173,6 +195,9 @@ export const ROLE_PERMISSIONS: Record<string, PermissionConstant[]> = {
     // ownership-scope concept at all; see plan §8).
     PERMISSIONS.MEDIA_VIEW,
     PERMISSIONS.MEDIA_UPLOAD,
+    // Module 1E final RBAC map §7: blog content only — no video read access,
+    // no series management.
+    PERMISSIONS.BLOG_VIEW,
   ],
   "SEO Specialist": [
     PERMISSIONS.RESEARCH_RUN,
@@ -184,6 +209,10 @@ export const ROLE_PERMISSIONS: Record<string, PermissionConstant[]> = {
     // Module 1D final RBAC map §8: view + upload only.
     PERMISSIONS.MEDIA_VIEW,
     PERMISSIONS.MEDIA_UPLOAD,
+    // Module 1E final RBAC map §7: both content types (SEO spans blog and
+    // video), no series management.
+    PERMISSIONS.BLOG_VIEW,
+    PERMISSIONS.VIDEO_VIEW,
   ],
   "Video Editor": [
     PERMISSIONS.VIDEO_CREATE,
@@ -195,6 +224,9 @@ export const ROLE_PERMISSIONS: Record<string, PermissionConstant[]> = {
     PERMISSIONS.MEDIA_VIEW,
     PERMISSIONS.MEDIA_UPLOAD,
     PERMISSIONS.MEDIA_MANAGE,
+    // Module 1E final RBAC map §7: video content only — no blog read
+    // access, no series management.
+    PERMISSIONS.VIDEO_VIEW,
   ],
   Publisher: [
     PERMISSIONS.PUBLISH_CREATE,
@@ -204,11 +236,19 @@ export const ROLE_PERMISSIONS: Record<string, PermissionConstant[]> = {
     PERMISSIONS.VIDEO_PUBLISH,
     // Module 1D final RBAC map §8: view only.
     PERMISSIONS.MEDIA_VIEW,
+    // Module 1E final RBAC map §7: both content types (publishes either),
+    // no series management.
+    PERMISSIONS.BLOG_VIEW,
+    PERMISSIONS.VIDEO_VIEW,
   ],
   Analyst: [
     PERMISSIONS.ANALYTICS_VIEW,
     PERMISSIONS.ANALYTICS_EXPORT,
     // Module 1D final RBAC map §8: view only.
     PERMISSIONS.MEDIA_VIEW,
+    // Module 1E final RBAC map §7: deliberately excluded — no raw draft
+    // content access. Analytics on published content does not require
+    // BLOG_VIEW/VIDEO_VIEW since those gate the editorial content_items
+    // resource, not aggregate analytics.
   ],
 };
