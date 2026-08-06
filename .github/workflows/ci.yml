@@ -102,6 +102,12 @@ jobs:
       NODE_ENV: development
       PORT: "4000"
       LOG_LEVEL: error
+      # Module 1C: the single Platform Owner can only be created via the
+      # seed script (no HTTP endpoint) — the e2e helper loginAsPlatformOwner()
+      # reads these same two vars to log in as whatever the seed step below
+      # just created.
+      BOOTSTRAP_OWNER_EMAIL: owner@myevmedia.com
+      BOOTSTRAP_OWNER_PASSWORD: ci-only-owner-password-do-not-use-elsewhere-123
       # No MinIO service container in CI — nothing in Module 1B.1's scope
       # (auth-only) touches storage. /health/ready degrades gracefully
       # (reports storage: "down", still returns a response) rather than
@@ -130,6 +136,10 @@ jobs:
       - name: Apply database migrations
         working-directory: apps/api
         run: pnpm exec prisma migrate deploy
+
+      - name: Seed RBAC catalog and Platform Owner
+        working-directory: apps/api
+        run: pnpm exec ts-node --transpile-only prisma/seed.ts
 
       - name: Run E2E suite
         working-directory: apps/api
