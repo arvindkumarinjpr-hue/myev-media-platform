@@ -12,6 +12,7 @@ import { WorkspacesModule } from "./modules/workspaces/workspaces.module";
 import { WorkspaceMembersModule } from "./modules/workspace-members/workspace-members.module";
 import { ProjectsModule } from "./modules/projects/projects.module";
 import { MediaAssetsModule } from "./modules/media-assets/media-assets.module";
+import { ContentModule } from "./modules/content/content.module";
 import type { AppConfig } from "./config/configuration";
 
 @Module({
@@ -43,6 +44,7 @@ import type { AppConfig } from "./config/configuration";
     WorkspaceMembersModule,
     ProjectsModule,
     MediaAssetsModule,
+    ContentModule,
   ],
 })
 export class AppModule {}
