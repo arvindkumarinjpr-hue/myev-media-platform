@@ -1,7 +1,6 @@
-import { IsIn, IsInt, IsOptional, IsPositive, IsString, IsUUID, Matches, MaxLength, MinLength } from "class-validator";
+import { IsIn, IsInt, IsOptional, IsPositive, IsString, IsUUID, MaxLength, MinLength } from "class-validator";
 
 const ASSET_TYPES = ["IMAGE", "AUDIO", "VIDEO", "DOCUMENT"] as const;
-const CHECKSUM_PATTERN = /^[0-9a-fA-F]{64}$/;
 
 export class CreateUploadIntentDto {
   @IsIn(ASSET_TYPES)
@@ -25,9 +24,13 @@ export class CreateUploadIntentDto {
   @IsPositive()
   declaredSizeBytes!: number;
 
+  // Format (exactly 64 hex, case normalized) is validated and normalized
+  // in MediaAssetsService, not here — a DTO-level @Matches would reject
+  // with class-validator's generic shape, short-circuiting before the
+  // service's own MEDIA_ASSET_INVALID_CHECKSUM_FORMAT code ever runs.
   @IsOptional()
   @IsString()
-  @Matches(CHECKSUM_PATTERN, { message: "expectedChecksumSha256 must be exactly 64 hexadecimal characters." })
+  @MaxLength(256)
   expectedChecksumSha256?: string;
 }
 
@@ -49,10 +52,14 @@ export class CreateVersionUploadIntentDto {
   @IsPositive()
   declaredSizeBytes!: number;
 
+  // Format (exactly 64 hex, case normalized) is validated and normalized
+  // in MediaAssetsService, not here — a DTO-level @Matches would reject
+  // with class-validator's generic shape, short-circuiting before the
+  // service's own MEDIA_ASSET_INVALID_CHECKSUM_FORMAT code ever runs.
   @IsOptional()
   @IsString()
-  @Matches(CHECKSUM_PATTERN, { message: "expectedChecksumSha256 must be exactly 64 hexadecimal characters." })
+  @MaxLength(256)
   expectedChecksumSha256?: string;
 }
 
-export { ASSET_TYPES, CHECKSUM_PATTERN };
+export { ASSET_TYPES };

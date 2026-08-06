@@ -1,6 +1,5 @@
 import {
   bootstrapE2eApp,
-  createActiveUserAndLogin,
   createProjectAsOwner,
   createWorkspaceAsOwner,
   EXECUTABLE_BYTES,
@@ -392,10 +391,18 @@ describe("Media assets (e2e)", () => {
         const [r1, r2] = await Promise.all([confirm(), confirm()]);
         const statuses = [r1.status, r2.status].sort((a, b) => a - b);
         // One request completes the verification (200, ACTIVE); the other
-        // is rejected at the claim step before it ever reaches storage.
+        // is rejected at the claim step before it ever reaches storage —
+        // as MEDIA_ASSET_VERIFICATION_IN_PROGRESS if its claim attempt
+        // lands while the winner is still VERIFYING, or
+        // MEDIA_ASSET_ALREADY_CONFIRMED if the winner's whole
+        // claim->verify->finalize cycle (fast for a tiny local file over
+        // a local network) already completed by the time it lands — both
+        // prove the identical safety property (single winner, no double
+        // processing), just observed at a different point in a race whose
+        // exact timing isn't controlled here.
         expect(statuses).toEqual([200, 409]);
         const loser = r1.status === 409 ? r1 : r2;
-        expect(loser.body.code).toBe("MEDIA_ASSET_VERIFICATION_IN_PROGRESS");
+        expect(["MEDIA_ASSET_VERIFICATION_IN_PROGRESS", "MEDIA_ASSET_ALREADY_CONFIRMED"]).toContain(loser.body.code);
 
         const winner = r1.status === 200 ? r1 : r2;
         expect(winner.body.data.status).toBe("ACTIVE");
@@ -807,7 +814,13 @@ describe("Media assets (e2e)", () => {
         const statuses = [r1.status, r2.status].sort((a, b) => a - b);
         expect(statuses).toEqual([200, 409]);
         const loser = r1.status === 409 ? r1 : r2;
-        expect(loser.body.code).toBe("MEDIA_ASSET_VERIFICATION_IN_PROGRESS");
+        // MEDIA_ASSET_VERIFICATION_IN_PROGRESS if the loser's claim lands
+        // mid-VERIFYING; MEDIA_ASSET_NOT_RETRYABLE if the winner's cycle
+        // already completed to ACTIVE first (retry's claim only accepts
+        // VERIFICATION_FAILED as a starting status, so a since-activated
+        // row falls into the generic not-retryable branch) — same
+        // underlying race as the confirm() test above.
+        expect(["MEDIA_ASSET_VERIFICATION_IN_PROGRESS", "MEDIA_ASSET_NOT_RETRYABLE"]).toContain(loser.body.code);
       },
       20_000,
     );

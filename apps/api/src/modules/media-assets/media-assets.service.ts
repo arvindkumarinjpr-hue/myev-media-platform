@@ -96,11 +96,21 @@ const ASSET_ROW_COLUMNS = `
   created_by AS "createdById"
 `;
 
+// `partial` carries whatever was determined before a non-success outcome
+// was reached — e.g. a checksum-mismatch rejection still knows the real
+// computed checksum, useful for audit/debugging (plan §3: "the true
+// checksum is still recorded"). Never used to imply the outcome passed.
+interface PartialVerification {
+  verifiedMimeType?: string;
+  verifiedSizeBytes?: number;
+  verifiedChecksumSha256?: string;
+}
+
 type VerificationOutcome =
   | { kind: "success"; verifiedMimeType: string; verifiedSizeBytes: number; verifiedChecksumSha256: string; malwareScanStatus: MalwareScanStatus }
-  | { kind: "rejected"; reason: string }
-  | { kind: "quarantined"; reason: string }
-  | { kind: "retryable"; reason: string };
+  | ({ kind: "rejected"; reason: string } & PartialVerification)
+  | ({ kind: "quarantined"; reason: string } & PartialVerification)
+  | ({ kind: "retryable"; reason: string } & PartialVerification);
 
 @Injectable()
 export class MediaAssetsService {
@@ -554,12 +564,12 @@ export class MediaAssetsService {
 
       const executableHit = matchesExecutableSignature(prefix);
       if (executableHit) {
-        return { kind: "rejected", reason: `executable_signature_detected` };
+        return { kind: "rejected", reason: `executable_signature_detected`, verifiedSizeBytes: reportedSize };
       }
       const sniff = sniffMimeType(prefix);
       const verifiedMimeType = resolveVerifiedMimeType(sniff, row.assetType);
       if (!verifiedMimeType) {
-        return { kind: "rejected", reason: "mime_mismatch_or_unrecognized_format" };
+        return { kind: "rejected", reason: "mime_mismatch_or_unrecognized_format", verifiedSizeBytes: reportedSize };
       }
 
       let verifiedChecksumSha256: string;
@@ -570,10 +580,12 @@ export class MediaAssetsService {
         );
       } catch (error) {
         this.logger.debug({ event: "MEDIA_ASSET_VERIFICATION_STEP_FAILED", step: "computeSha256", assetId: row.id, error: (error as Error).message });
-        return { kind: "retryable", reason: "checksum_timeout_or_stream_interrupted" };
+        return { kind: "retryable", reason: "checksum_timeout_or_stream_interrupted", verifiedMimeType, verifiedSizeBytes: reportedSize };
       }
       if (row.expectedChecksumSha256 && row.expectedChecksumSha256 !== verifiedChecksumSha256) {
-        return { kind: "rejected", reason: "checksum_mismatch" };
+        // The real checksum is recorded even on rejection — useful for
+        // audit/debugging (plan §3), never treated as if it "passed".
+        return { kind: "rejected", reason: "checksum_mismatch", verifiedMimeType, verifiedSizeBytes: reportedSize, verifiedChecksumSha256 };
       }
 
       let scanResult: { status: MalwareScanStatus };
@@ -581,16 +593,34 @@ export class MediaAssetsService {
         scanResult = await this.malwareScan.scan({ key: row.objectKey });
       } catch (error) {
         this.logger.debug({ event: "MEDIA_ASSET_VERIFICATION_STEP_FAILED", step: "malwareScan", assetId: row.id, error: (error as Error).message });
-        return { kind: "retryable", reason: "malware_scan_provider_outage" };
+        return {
+          kind: "retryable",
+          reason: "malware_scan_provider_outage",
+          verifiedMimeType,
+          verifiedSizeBytes: reportedSize,
+          verifiedChecksumSha256,
+        };
       }
       if (scanResult.status === "INFECTED") {
-        return { kind: "quarantined", reason: "malware_infected" };
+        return {
+          kind: "quarantined",
+          reason: "malware_infected",
+          verifiedMimeType,
+          verifiedSizeBytes: reportedSize,
+          verifiedChecksumSha256,
+        };
       }
       if (scanResult.status === "SCAN_FAILED") {
         // Transient scan-provider outage — retryable, not permanent
         // (Safeguard 2). Never silently treated as equivalent to a clean
         // pass either.
-        return { kind: "retryable", reason: "malware_scan_failed" };
+        return {
+          kind: "retryable",
+          reason: "malware_scan_failed",
+          verifiedMimeType,
+          verifiedSizeBytes: reportedSize,
+          verifiedChecksumSha256,
+        };
       }
 
       return {
@@ -697,7 +727,16 @@ export class MediaAssetsService {
           ipAddress: context.ipAddress,
         });
       } else if (outcome.kind === "rejected") {
-        await tx.mediaAsset.update({ where: { id: current.id }, data: { status: "REJECTED", rejectionReason: outcome.reason } });
+        await tx.mediaAsset.update({
+          where: { id: current.id },
+          data: {
+            status: "REJECTED",
+            rejectionReason: outcome.reason,
+            verifiedMimeType: outcome.verifiedMimeType,
+            verifiedSizeBytes: outcome.verifiedSizeBytes !== undefined ? BigInt(outcome.verifiedSizeBytes) : undefined,
+            verifiedChecksumSha256: outcome.verifiedChecksumSha256,
+          },
+        });
         await this.audit.recordWithinTransaction(tx, {
           action: "MEDIA_ASSET_REJECTED",
           actorUserId: userId,
@@ -710,7 +749,14 @@ export class MediaAssetsService {
       } else if (outcome.kind === "quarantined") {
         await tx.mediaAsset.update({
           where: { id: current.id },
-          data: { status: "QUARANTINED", malwareScanStatus: "INFECTED", rejectionReason: outcome.reason },
+          data: {
+            status: "QUARANTINED",
+            malwareScanStatus: "INFECTED",
+            rejectionReason: outcome.reason,
+            verifiedMimeType: outcome.verifiedMimeType,
+            verifiedSizeBytes: outcome.verifiedSizeBytes !== undefined ? BigInt(outcome.verifiedSizeBytes) : undefined,
+            verifiedChecksumSha256: outcome.verifiedChecksumSha256,
+          },
         });
         await this.audit.recordWithinTransaction(tx, {
           action: "MEDIA_ASSET_QUARANTINED",
@@ -722,7 +768,16 @@ export class MediaAssetsService {
         });
       } else {
         // retryable
-        await tx.mediaAsset.update({ where: { id: current.id }, data: { status: "VERIFICATION_FAILED", rejectionReason: outcome.reason } });
+        await tx.mediaAsset.update({
+          where: { id: current.id },
+          data: {
+            status: "VERIFICATION_FAILED",
+            rejectionReason: outcome.reason,
+            verifiedMimeType: outcome.verifiedMimeType,
+            verifiedSizeBytes: outcome.verifiedSizeBytes !== undefined ? BigInt(outcome.verifiedSizeBytes) : undefined,
+            verifiedChecksumSha256: outcome.verifiedChecksumSha256,
+          },
+        });
         await this.audit.recordWithinTransaction(tx, {
           action: "MEDIA_ASSET_VERIFICATION_FAILED",
           actorUserId: userId,
@@ -764,11 +819,20 @@ export class MediaAssetsService {
   // Read/write CRUD surface.
   // ---------------------------------------------------------------------
   async list(workspaceId: string, filters: { projectId?: string; assetType?: MediaAssetType; status?: MediaAssetStatus }) {
+    // filters.projectId is the project's PUBLIC id (client-facing); the
+    // row's own projectId column is the internal FK — must resolve one to
+    // the other, never compare them directly.
+    let projectInternalId: string | undefined;
+    if (filters.projectId) {
+      const project = await this.prisma.project.findFirst({ where: { publicId: filters.projectId, workspaceId } });
+      if (!project) throw new NotFoundException({ code: "PROJECT_NOT_FOUND", message: "Project not found." });
+      projectInternalId = project.id;
+    }
     return this.prisma.mediaAsset.findMany({
       where: {
         workspaceId,
         deletedAt: null,
-        ...(filters.projectId ? { projectId: filters.projectId } : {}),
+        ...(projectInternalId ? { projectId: projectInternalId } : {}),
         ...(filters.assetType ? { assetType: filters.assetType } : {}),
         status: filters.status ?? { notIn: ["DELETED", "REJECTED"] },
       },
