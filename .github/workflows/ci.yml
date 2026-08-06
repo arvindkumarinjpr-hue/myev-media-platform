@@ -174,10 +174,45 @@ jobs:
         working-directory: apps/api
         run: pnpm exec ts-node --transpile-only prisma/seed.ts
 
+      # Runs first, and alone: it boots its own self-contained Worker
+      # instance internally (Test.createTestingModule). Running it
+      # concurrently with the standalone background Worker started below
+      # would put two competing consumers on the same SYSTEM queue —
+      # exactly the race that made this suite flaky in local verification
+      # (whichever instance BullMQ dispatches a given job to "wins",
+      # non-deterministically, and the loser's assertions fail).
+      - name: Run Worker E2E suite
+        working-directory: apps/worker
+        run: pnpm test:e2e
+
+      # apps/api's own e2e suite (background-jobs.e2e-spec.ts, Module 1F)
+      # enqueues real jobs and waits for a real Worker to complete them —
+      # nothing else in this job runs one, unlike a developer's local
+      # Docker Compose stack where apps/worker is always already running.
+      # Backgrounded + disowned so it survives past this step's own shell;
+      # torn down for free when the runner is destroyed at job end. Started
+      # only now (after the Worker E2E suite above has already finished)
+      # to avoid the two-consumer race described there.
+      - name: Start Worker (background)
+        working-directory: apps/worker
+        run: |
+          nohup pnpm exec ts-node --transpile-only src/main.ts > /tmp/worker.log 2>&1 &
+          disown
+          for i in $(seq 1 30); do
+            if grep -q "BullMQ worker listening" /tmp/worker.log 2>/dev/null; then
+              echo "Worker is listening."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Worker did not start in time." >&2
+          cat /tmp/worker.log
+          exit 1
+
       - name: Run E2E suite
         working-directory: apps/api
         run: pnpm test:e2e
 
-      - name: Run Worker E2E suite
-        working-directory: apps/worker
-        run: pnpm test:e2e
+      - name: Show backgrounded Worker log (always, for debugging)
+        if: always()
+        run: cat /tmp/worker.log || true

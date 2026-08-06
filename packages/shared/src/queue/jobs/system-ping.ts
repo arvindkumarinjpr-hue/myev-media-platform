@@ -1,4 +1,4 @@
-import { IsOptional, IsString } from "class-validator";
+import { IsInt, IsOptional, IsString, Max, Min } from "class-validator";
 import type { ProcessorManifest } from "../processor-manifest";
 
 /**
@@ -12,6 +12,16 @@ export class SystemPingPayload {
   @IsOptional()
   @IsString()
   echo?: string;
+
+  // Optional artificial delay, purely so tests have a real window to
+  // request cancellation on a still-running job — system.ping otherwise
+  // completes instantly, which would make the cooperative-cancellation
+  // pathway impossible to exercise end-to-end.
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(30_000)
+  delayMs?: number;
 }
 
 export class SystemPingResult {
@@ -30,7 +40,7 @@ export const SYSTEM_PING_V1_MANIFEST: ProcessorManifest<SystemPingPayload, Syste
   payloadDto: SystemPingPayload,
   resultDto: SystemPingResult,
   idempotent: true,
-  cancelable: false,
+  cancelable: true,
   supportsRetry: true,
   defaultRetryPolicy: { maxAttempts: 3, backoffBaseMs: 30_000 },
   timeout: 5_000,
