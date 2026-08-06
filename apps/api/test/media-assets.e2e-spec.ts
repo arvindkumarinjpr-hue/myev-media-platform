@@ -968,7 +968,7 @@ describe("Media assets (e2e)", () => {
           .set("Authorization", `Bearer ${owner.accessToken}`)
           .set("X-Workspace-Id", ws.publicId)
           .expect(200);
-        expect(getRes.body.data.projectId).toBeTruthy();
+        expect(getRes.body.data.projectId).toBe(project.publicId);
 
         const listRes = await request(ctx.app.getHttpServer())
           .get(`/api/v1/workspaces/${ws.publicId}/assets?projectId=${project.publicId}`)
@@ -997,6 +997,131 @@ describe("Media assets (e2e)", () => {
           declaredSizeBytes: PNG_BYTES.length,
           projectId: projectInB.publicId,
         })
+        .expect(404);
+    });
+
+    /**
+     * DEFECT-1D-001 regression coverage: MediaAsset.projectId is the
+     * internal FK — every response path that returns asset data must
+     * expose the related project's PUBLIC id instead, never the raw
+     * internal database id, and must never break on a null project.
+     * Covers all 6 affected response paths in one walk so a single
+     * project-scoped, then null-project, asset proves the fix end to end
+     * rather than duplicating setup per endpoint.
+     */
+    it(
+      "every asset response path returns the project's public id, never the internal id, and null stays null",
+      async () => {
+        const owner = await loginAsPlatformOwner(ctx);
+        const ws = await createWorkspaceAsOwner(ctx, owner.accessToken);
+        const project = await createProjectAsOwner(ctx, owner.accessToken, ws.publicId);
+        const projectInternalId = (await ctx.prisma.project.findUniqueOrThrow({ where: { publicId: project.publicId } })).id;
+        const auth = { Authorization: `Bearer ${owner.accessToken}`, "X-Workspace-Id": ws.publicId };
+
+        const { assetPublicId } = await uploadAndConfirm(
+          ctx,
+          owner.accessToken,
+          ws.publicId,
+          {
+            assetType: "IMAGE",
+            originalFilename: "photo.png",
+            declaredMimeType: "image/png",
+            declaredSizeBytes: PNG_BYTES.length,
+            projectId: project.publicId,
+          },
+          PNG_BYTES,
+        );
+
+        const responses: Record<string, unknown> = {};
+
+        // 1. Single-asset response.
+        const getRes = await request(ctx.app.getHttpServer()).get(`/api/v1/workspaces/${ws.publicId}/assets/${assetPublicId}`).set(auth).expect(200);
+        responses.findOne = getRes.body.data;
+
+        // 2. List response.
+        const listRes = await request(ctx.app.getHttpServer()).get(`/api/v1/workspaces/${ws.publicId}/assets`).set(auth).expect(200);
+        const listed = listRes.body.data.find((a: { publicId: string }) => a.publicId === assetPublicId);
+        responses.list = listed;
+
+        // 3. Metadata-update response (re-affirms the same project).
+        const patchRes = await request(ctx.app.getHttpServer())
+          .patch(`/api/v1/workspaces/${ws.publicId}/assets/${assetPublicId}`)
+          .set(auth)
+          .send({ projectId: project.publicId })
+          .expect(200);
+        responses.updateMetadata = patchRes.body.data;
+
+        // 4. Archive response.
+        const archiveRes = await request(ctx.app.getHttpServer()).post(`/api/v1/workspaces/${ws.publicId}/assets/${assetPublicId}/archive`).set(auth).expect(200);
+        responses.archive = archiveRes.body.data;
+
+        // 5. Restore response.
+        const restoreRes = await request(ctx.app.getHttpServer()).post(`/api/v1/workspaces/${ws.publicId}/assets/${assetPublicId}/restore`).set(auth).expect(200);
+        responses.restore = restoreRes.body.data;
+
+        // 6. Soft-delete response.
+        const deleteRes = await request(ctx.app.getHttpServer()).delete(`/api/v1/workspaces/${ws.publicId}/assets/${assetPublicId}`).set(auth).expect(200);
+        responses.softDelete = deleteRes.body.data;
+
+        for (const [responsePath, data] of Object.entries(responses)) {
+          const body = data as { projectId: string };
+          expect({ responsePath, projectId: body.projectId }).toEqual({ responsePath, projectId: project.publicId });
+          // The internal database id must never appear anywhere in the
+          // response, under any field.
+          expect(JSON.stringify(body)).not.toContain(projectInternalId);
+        }
+
+        // 7. No-project asset: every response path returns projectId: null.
+        const { assetPublicId: noProjectAssetId } = await uploadAndConfirm(
+          ctx,
+          owner.accessToken,
+          ws.publicId,
+          { assetType: "IMAGE", originalFilename: "no-project.png", declaredMimeType: "image/png", declaredSizeBytes: PNG_BYTES.length },
+          PNG_BYTES,
+        );
+        const noProjectGet = await request(ctx.app.getHttpServer()).get(`/api/v1/workspaces/${ws.publicId}/assets/${noProjectAssetId}`).set(auth).expect(200);
+        expect(noProjectGet.body.data.projectId).toBeNull();
+        const noProjectList = await request(ctx.app.getHttpServer()).get(`/api/v1/workspaces/${ws.publicId}/assets`).set(auth).expect(200);
+        const noProjectListed = noProjectList.body.data.find((a: { publicId: string }) => a.publicId === noProjectAssetId);
+        expect(noProjectListed.projectId).toBeNull();
+      },
+      30_000,
+    );
+
+    it("cross-workspace isolation: an asset's returned project public id never matches a different workspace's project", async () => {
+      const owner = await loginAsPlatformOwner(ctx);
+      const wsA = await createWorkspaceAsOwner(ctx, owner.accessToken);
+      const wsB = await createWorkspaceAsOwner(ctx, owner.accessToken);
+      const projectInA = await createProjectAsOwner(ctx, owner.accessToken, wsA.publicId);
+      const projectInB = await createProjectAsOwner(ctx, owner.accessToken, wsB.publicId);
+
+      const { assetPublicId } = await uploadAndConfirm(
+        ctx,
+        owner.accessToken,
+        wsA.publicId,
+        {
+          assetType: "IMAGE",
+          originalFilename: "photo.png",
+          declaredMimeType: "image/png",
+          declaredSizeBytes: PNG_BYTES.length,
+          projectId: projectInA.publicId,
+        },
+        PNG_BYTES,
+      );
+
+      const getRes = await request(ctx.app.getHttpServer())
+        .get(`/api/v1/workspaces/${wsA.publicId}/assets/${assetPublicId}`)
+        .set("Authorization", `Bearer ${owner.accessToken}`)
+        .set("X-Workspace-Id", wsA.publicId)
+        .expect(200);
+      expect(getRes.body.data.projectId).toBe(projectInA.publicId);
+      expect(getRes.body.data.projectId).not.toBe(projectInB.publicId);
+
+      // The asset itself is not visible at all from the other workspace.
+      await request(ctx.app.getHttpServer())
+        .get(`/api/v1/workspaces/${wsB.publicId}/assets/${assetPublicId}`)
+        .set("Authorization", `Bearer ${owner.accessToken}`)
+        .set("X-Workspace-Id", wsB.publicId)
         .expect(404);
     });
   });
