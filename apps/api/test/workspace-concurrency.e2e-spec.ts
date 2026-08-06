@@ -269,12 +269,23 @@ describe("Workspace concurrency (e2e)", () => {
     // the loser's transaction blocks on that lock, then — once the winner
     // commits — re-reads the row, observes status=ACCEPTED, and is
     // rejected right there, before ever attempting user.create() or
-    // workspaceMember.create(). The response body's `source` field is
-    // in-code instrumentation proving exactly that: `"invitation_lock"`
-    // means the post-lock status re-check rejected the request;
-    // `"unique_constraint_fallback"` would mean a downstream P2002 catch
-    // did instead (which, for a same-token race, should now be
-    // structurally unreachable — the lock closes it first).
+    // workspaceMember.create().
+    //
+    // Production cleanup: an earlier version of this fix exposed which
+    // internal path rejected the loser via a `source` field on the 409
+    // response body, purely to prove the lock (not the fallback unique
+    // constraint) was doing the rejecting. That field was removed from
+    // the public API contract — it's an implementation detail, not
+    // something a client should ever branch on — and the same diagnostic
+    // now lives only in a structured log line inside accept()/joinAsActive().
+    // These tests no longer assert which internal mechanism rejected the
+    // loser; they assert the externally observable contract instead: one
+    // request succeeds, the other gets a clean 409 with no Prisma
+    // internals leaked, and — most importantly — the DB state proves no
+    // double-write ever happened (exactly one membership, one accepted
+    // invitation, no duplicated audit events, no duplicated token). That
+    // last set of invariants is what actually matters to a caller, and it
+    // holds regardless of which of the two code paths did the rejecting.
 
     it(
       "new/PENDING_ACTIVATION-user branch: one request succeeds, the loser gets a clean 409, no duplicate state, no 500",
@@ -306,15 +317,12 @@ describe("Workspace concurrency (e2e)", () => {
 
         const loser = r1.status === 409 ? r1 : r2;
         expect(loser.body.code).toBe("INVITATION_ALREADY_ACCEPTED");
-        // Proves the loser was rejected by the invitation-row lock's
-        // post-lock status re-check, not by falling through to the
-        // tx.user.create() unique-constraint catch — the winner's commit
-        // (which flips status to ACCEPTED) is what the loser's blocked
-        // transaction observes the instant it acquires the lock.
-        expect(loser.body.source).toBe("invitation_lock");
         // No Prisma internals (constraint names, stack traces, "Invalid
-        // `tx.user.create()` invocation", etc.) ever reach the client.
+        // `tx.user.create()` invocation", etc.) ever reach the client, and
+        // the response carries no internal-mechanism field either — just
+        // the public code/message contract.
         expect(JSON.stringify(loser.body)).not.toMatch(/prisma|constraint|invocation/i);
+        expect(loser.body.source).toBeUndefined();
 
         const wsRow = await ctx.prisma.workspace.findFirstOrThrow({ where: { publicId: ws.publicId } });
         const user = await ctx.prisma.user.findFirstOrThrow({ where: { email } });
@@ -381,11 +389,8 @@ describe("Workspace concurrency (e2e)", () => {
 
         const loser = r1.status === 409 ? r1 : r2;
         expect(loser.body.code).toBe("INVITATION_ALREADY_ACCEPTED");
-        // Same proof as the new-user branch: the loser never reached
-        // joinAsActive()'s tx.workspaceMember.create() at all — it was
-        // rejected by the post-lock status re-check in accept() itself.
-        expect(loser.body.source).toBe("invitation_lock");
         expect(JSON.stringify(loser.body)).not.toMatch(/prisma|constraint|invocation/i);
+        expect(loser.body.source).toBeUndefined();
 
         const wsRow = await ctx.prisma.workspace.findFirstOrThrow({ where: { publicId: ws.publicId } });
         const memberships = await ctx.prisma.workspaceMember.findMany({ where: { workspaceId: wsRow.id, userId: member.userId } });

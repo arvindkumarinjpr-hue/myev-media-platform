@@ -5,6 +5,7 @@ import {
   GoneException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
   UnauthorizedException,
 } from "@nestjs/common";
@@ -67,6 +68,8 @@ interface LockedInvitationRow {
 
 @Injectable()
 export class InvitationsService {
+  private readonly logger = new Logger(InvitationsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly tokenService: TokenService,
@@ -260,10 +263,19 @@ export class InvitationsService {
         throw new NotFoundException({ code: "INVITATION_INVALID", message: "This invitation link is invalid." });
       }
       if (invitation.status === "ACCEPTED") {
+        // Diagnostic only — never on the public response body. This is the
+        // signal that regression tests previously asserted via a `source`
+        // field on the API contract; that field was removed for
+        // production (Module 1C.1 production cleanup) and this log line
+        // is now the only place the distinction is observable.
+        this.logger.debug({
+          event: "INVITATION_ACCEPTANCE_REJECTED",
+          reason: "invitation_lock",
+          invitationId: invitation.id,
+        });
         throw new ConflictException({
           code: "INVITATION_ALREADY_ACCEPTED",
           message: "This invitation has already been accepted.",
-          source: "invitation_lock",
         });
       }
       if (invitation.status === "REVOKED") {
@@ -333,10 +345,15 @@ export class InvitationsService {
           })
           .catch((error) => {
             if (isExpectedUniqueViolation(error, ["email"])) {
+              this.logger.debug({
+                event: "INVITATION_ACCEPTANCE_REJECTED",
+                reason: "unique_constraint_fallback",
+                invitationId: invitation.id,
+                constraint: "users.email",
+              });
               throw new ConflictException({
                 code: "INVITATION_ALREADY_ACCEPTED",
                 message: "This invitation has already been accepted.",
-                source: "unique_constraint_fallback",
               });
             }
             throw error;
@@ -358,10 +375,15 @@ export class InvitationsService {
         })
         .catch((error) => {
           if (isExpectedUniqueViolation(error, ["workspace_id", "user_id"])) {
+            this.logger.debug({
+              event: "INVITATION_ACCEPTANCE_REJECTED",
+              reason: "unique_constraint_fallback",
+              invitationId: invitation.id,
+              constraint: "workspace_members.workspace_id_user_id",
+            });
             throw new ConflictException({
               code: "INVITATION_ALREADY_ACCEPTED",
               message: "This invitation has already been accepted.",
-              source: "unique_constraint_fallback",
             });
           }
           throw error;
@@ -502,10 +524,15 @@ export class InvitationsService {
         })
         .catch((error) => {
           if (isExpectedUniqueViolation(error, ["workspace_id", "user_id"])) {
+            this.logger.debug({
+              event: "INVITATION_ACCEPTANCE_REJECTED",
+              reason: "unique_constraint_fallback",
+              invitationId: invitation.id,
+              constraint: "workspace_members.workspace_id_user_id",
+            });
             throw new ConflictException({
               code: "INVITATION_ALREADY_ACCEPTED",
               message: "This invitation has already been accepted.",
-              source: "unique_constraint_fallback",
             });
           }
           throw error;
