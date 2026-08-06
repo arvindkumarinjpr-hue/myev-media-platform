@@ -65,6 +65,33 @@ export async function teardownE2eApp({ app, redis, prisma }: E2eApp): Promise<vo
   await prisma.$transaction(async (tx) => {
     await tx.auditLog.deleteMany({ where: { OR: [{ actorUserId: { in: testUserIds } }, { workspaceId: { in: testWorkspaceIds } }] } });
     await tx.workspaceInvitation.deleteMany({ where: { workspaceId: { in: testWorkspaceIds } } });
+
+    // Module 1E: content_items <-> content_versions and content_items <->
+    // media_assets are both mutual RESTRICT cycles (current_version_id /
+    // featured_media_asset_id point one way, content_item_id points the
+    // other), and none of those composite FKs are deferrable — unlike
+    // Module 1C's genuinely-circular slug reservations, no Module 1E
+    // relationship is ever satisfied for the first time in the same
+    // statement as its counterpart, so deferring was never warranted for
+    // normal operation. Teardown still has to break the cycle by hand:
+    // null out every outgoing FK from content_items in the SAME update
+    // that sets deleted_at, so the deferred current-version-required
+    // trigger (which fires at commit, re-reading the row fresh) sees a
+    // deleted row and never raises.
+    const testContentItems = await tx.contentItem.findMany({ where: { workspaceId: { in: testWorkspaceIds } }, select: { id: true } });
+    const testContentItemIds = testContentItems.map((c) => c.id);
+    if (testContentItemIds.length > 0) {
+      await tx.contentItem.updateMany({
+        where: { id: { in: testContentItemIds } },
+        data: { currentVersionId: null, featuredMediaAssetId: null, seriesId: null, deletedAt: new Date() },
+      });
+      await tx.contentReviewEvent.deleteMany({ where: { contentItemId: { in: testContentItemIds } } });
+      await tx.mediaAsset.updateMany({ where: { contentItemId: { in: testContentItemIds } }, data: { contentItemId: null } });
+      await tx.contentVersion.deleteMany({ where: { contentItemId: { in: testContentItemIds } } });
+      await tx.contentItem.deleteMany({ where: { id: { in: testContentItemIds } } });
+    }
+    await tx.contentSeries.deleteMany({ where: { workspaceId: { in: testWorkspaceIds } } });
+
     // Module 1D: media_assets.workspace_id/project_id/created_by are all
     // RESTRICT FKs — must go before the workspace/project/user rows they
     // reference. supersedes_asset_id/duplicate_of_asset_id are
@@ -131,6 +158,20 @@ export async function createWorkspaceAsOwner(
     .send({ name, slug })
     .expect(201);
   return res.body.data as { publicId: string; slug: string; name: string };
+}
+
+/**
+ * Adds `userId` to `workspaceId` as an ACTIVE member with `roleName`,
+ * directly via Prisma — bypassing the invite/email/activation flow
+ * entirely. That flow is already covered by workspace-membership.e2e-
+ * spec.ts; Module 1E's RBAC tests need a fast, direct way to get a user
+ * into a workspace under one of the 8 roles, not a re-test of invitations.
+ */
+export async function addActiveMemberWithRole(ctx: E2eApp, workspaceId: string, userId: string, roleName: string): Promise<void> {
+  const role = await ctx.prisma.role.findUniqueOrThrow({ where: { name: roleName } });
+  await ctx.prisma.workspaceMember.create({
+    data: { workspaceId, userId, roleId: role.id, status: "ACTIVE", joinedAt: new Date() },
+  });
 }
 
 export async function createProjectAsOwner(
