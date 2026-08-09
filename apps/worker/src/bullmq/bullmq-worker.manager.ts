@@ -83,7 +83,6 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
   ) {}
 
   onApplicationBootstrap(): void {
-    process.stderr.write(`[LIFECYCLE] BullMqWorkerManager.onApplicationBootstrap START t=${Date.now()}\n`);
     // BullMQ requires this exact setting for its blocking commands.
     this.connection = new Redis(this.config.get("redisUrl", { infer: true }), { maxRetriesPerRequest: null });
     // Node's EventEmitter throws (crashing the whole process) if an
@@ -112,7 +111,6 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
       this.workers.push(worker);
       this.logger.info({ queueName }, "BullMQ worker listening");
     }
-    process.stderr.write(`[LIFECYCLE] BullMqWorkerManager.onApplicationBootstrap END t=${Date.now()}\n`);
   }
 
   private async process(job: Job, queueName: string, processorVersion: string): Promise<unknown> {
