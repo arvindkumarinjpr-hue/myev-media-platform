@@ -216,6 +216,22 @@ jobs:
           # usage) to see EXACTLY what the process is blocked on, rather
           # than continuing to guess from the outside.
           NODE_OPTIONS: --report-on-signal --report-directory=/tmp
+          # A previous /proc-level diagnostic (kernel wchan/stack, this
+          # same run's earlier commit) showed the process's main thread
+          # parked in ep_poll with every thread pool worker idle in
+          # futex_do_wait and near-zero cumulative CPU across a full 90s
+          # wait — genuinely blocked, not slow. Prisma's query engine
+          # does its own native (Rust) connection handling, invisible to
+          # Node's own libuv/DNS layers, so a Node-level DNS-order flag
+          # wouldn't necessarily reach it either way. Overriding to the
+          # literal loopback address bypasses hostname resolution (and
+          # any IPv6-first / Happy-Eyeballs stall against a container
+          # that only binds IPv4) at every layer — Node's own net/dns,
+          # ioredis, and Prisma's native engine alike — without touching
+          # the job-level DATABASE_URL/REDIS_URL the already-passing
+          # Worker E2E (jest) step above depends on.
+          DATABASE_URL: postgresql://myev:myev_ci_password@127.0.0.1:5432/myev_media_test?schema=public
+          REDIS_URL: redis://127.0.0.1:6379
         run: |
           nohup pnpm exec ts-node --transpile-only src/main.ts > /tmp/worker.log 2>&1 &
           WORKER_PID=$!
