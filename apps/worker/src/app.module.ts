@@ -9,6 +9,7 @@ import { QueueRegistryModule } from "./queue/queue-registry.module";
 import { HeartbeatModule } from "./heartbeat/heartbeat.module";
 import { BullMqModule } from "./bullmq/bullmq.module";
 import { SchedulerModule } from "./scheduler/scheduler.module";
+import { EventsModule } from "./events/events.module";
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { SchedulerModule } from "./scheduler/scheduler.module";
     HeartbeatModule,
     BullMqModule,
     SchedulerModule,
+    EventsModule,
   ],
 })
 export class AppModule {}
