@@ -7,6 +7,7 @@ import { AppModule } from "../src/app.module";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { WorkerHeartbeatService } from "../src/heartbeat/worker-heartbeat.service";
 import { BullMqWorkerManager } from "../src/bullmq/bullmq-worker.manager";
+import { SchedulerTickManager } from "../src/scheduler/scheduler-tick.manager";
 import type { BackgroundJob, BackgroundJobHistory } from "../../api/generated/prisma";
 
 /**
@@ -353,6 +354,33 @@ describe("Worker (e2e) — retry, backoff, and dead-letter", () => {
           };
           await Promise.all((brokenInternals.workers ?? []).map((worker) => worker.close(true)));
           brokenInternals.connection?.disconnect();
+
+          // Module 1F Milestone 7 added SchedulerTickManager to this same
+          // AppModule (this test predates it, Milestone 5) — its own
+          // onApplicationBootstrap() also opens a connection against
+          // whatever REDIS_URL was set above, and its onApplicationShutdown()
+          // shares the identical DEFECT-1F-001 characteristic just
+          // documented for BullMqWorkerManager: awaiting tickWorker.close()
+          // against an unreachable connection never resolves. Proven via a
+          // direct instrumented run (FINAL SHUTDOWN OWNERSHIP REPORT): the
+          // shutdown hook chain reaches SchedulerTickManager fine and even
+          // cancels its background registration-retry timer, but then hangs
+          // indefinitely on this exact await, leaving `connection` (and the
+          // tickWorker/tickQueue built on it) never disconnected — the
+          // observed leak (continuing "Redis connection error" /
+          // "scheduler tick worker error" logs, and Jest's own "Cannot log
+          // after tests are done" warning bleeding into whichever later
+          // test happens to be running when the abandoned connection's own
+          // reconnect attempts fire). Mirrors the BullMqWorkerManager
+          // handling immediately above for exactly the same reason.
+          const brokenScheduler = brokenModuleRef.get(SchedulerTickManager);
+          const brokenSchedulerInternals = brokenScheduler as unknown as {
+            tickWorker?: { close: (force?: boolean) => Promise<void> };
+            connection?: { disconnect: () => void };
+          };
+          await brokenSchedulerInternals.tickWorker?.close(true);
+          brokenSchedulerInternals.connection?.disconnect();
+
           await Promise.race([brokenModuleRef.close(), new Promise((resolve) => setTimeout(resolve, 3_000))]);
         }
       }
