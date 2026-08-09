@@ -117,6 +117,12 @@ export async function teardownE2eApp({ app, redis, prisma }: E2eApp): Promise<vo
       await tx.backgroundJob.deleteMany({ where: { id: { in: testBackgroundJobIds } } });
     }
 
+    // Module 1F Milestone 7: workspace-scoped scheduled_jobs only —
+    // platform-level (workspace_id IS NULL) schedules are created under
+    // the real seeded Platform Owner (not a testUserIds-tracked account)
+    // and are cleaned up explicitly by whichever test suite creates them.
+    await tx.scheduledJob.deleteMany({ where: { workspaceId: { in: testWorkspaceIds } } });
+
     await tx.projectSlugReservation.deleteMany({ where: { workspaceId: { in: testWorkspaceIds } } });
     await tx.project.deleteMany({ where: { workspaceId: { in: testWorkspaceIds } } });
     await tx.workspaceMember.deleteMany({ where: { OR: [{ userId: { in: testUserIds } }, { workspaceId: { in: testWorkspaceIds } }] } });

@@ -275,6 +275,19 @@ enum AuditAction {
   JOB_CANCELLATION_REQUESTED
   JOB_CANCELLED
   JOB_RETRY_REQUESTED
+  // Module 1F Milestone 7 (Scheduler Foundation), Revision 3 §11: only
+  // user-initiated CRUD on a schedule's own definition is audited — the
+  // per-occurrence firing of a schedule (SCHEDULE_TRIGGERED/SKIPPED, and
+  // the system-initiated auto-disable on a permanently-invalid schedule
+  // definition, §7) is deliberately excluded, mirroring the identical
+  // reasoning already applied to background jobs above: no human actor,
+  // operational telemetry (structured logs + the resulting
+  // background_jobs/job_history trail), not a business event.
+  SCHEDULE_CREATED
+  SCHEDULE_UPDATED
+  SCHEDULE_ENABLED
+  SCHEDULE_DISABLED
+  SCHEDULE_DELETED
 }
 
 model User {
@@ -324,6 +337,8 @@ model User {
   createdContentSeries   ContentSeries[]       @relation("ContentSeriesCreatedBy")
   contentReviewEvents    ContentReviewEvent[]
   createdBackgroundJobs  BackgroundJob[]       @relation("BackgroundJobCreatedBy")
+  createdScheduledJobs   ScheduledJob[]        @relation("ScheduledJobCreatedBy")
+  updatedScheduledJobs   ScheduledJob[]        @relation("ScheduledJobUpdatedBy")
 
   @@map("users")
 }
@@ -532,6 +547,7 @@ model Workspace {
   contentReviewEvents     ContentReviewEvent[]
   backgroundJobs          BackgroundJob[]
   domainEvents            DomainEvent[]
+  scheduledJobs           ScheduledJob[]
 
   @@index([slug])
   @@index([status])
@@ -1111,7 +1127,22 @@ model BackgroundJob {
 
   history BackgroundJobHistory[]
 
-  @@unique([workspaceId, idempotencyKey])
+  // DEFECT-1F-003: idempotency uniqueness is enforced by two migration-only
+  // PARTIAL unique indexes, not representable in Prisma's schema DSL (no
+  // previewFeatures enable filtered/partial index support here) — see
+  // migrations/20260806180000_defect_1f003_platform_idempotency:
+  //   background_jobs_workspace_idempotency_unique
+  //     ON (workspace_id, idempotency_key) WHERE workspace_id IS NOT NULL
+  //     AND idempotency_key IS NOT NULL
+  //   background_jobs_platform_idempotency_unique
+  //     ON (idempotency_key) WHERE workspace_id IS NULL
+  //     AND idempotency_key IS NOT NULL
+  // A single non-partial @@unique([workspaceId, idempotencyKey]) (the
+  // original Milestone 1/6 design) does NOT deduplicate platform-level
+  // rows (workspace_id IS NULL) under standard SQL NULL semantics — that
+  // was DEFECT-1F-003. Do not reintroduce it; `prisma migrate dev`/`db
+  // push` must never be run against this model without `--create-only`
+  // or they will attempt to "correct" this intentional schema/DB drift.
   @@index([workspaceId])
   @@index([status])
   @@index([jobType])
@@ -1165,6 +1196,93 @@ model WorkerHeartbeat {
 
   @@index([lastHeartbeatAt])
   @@map("worker_heartbeats")
+}
+
+// Module 1F Milestone 7 (Scheduler Foundation), Revision 3 §3. Reserved
+// for future strategies — exactly one implemented today, mirroring the
+// same "declare the concept, ship one value" pattern already used for
+// ProcessorManifest.schemaVersion and the frozen missed-run policy.
+enum ScheduleIdempotencyStrategy {
+  SCHEDULE_TICK_TIMESTAMP
+}
+
+// Module 1F Milestone 7 (Scheduler Foundation), Revision 3 §2/§3. A
+// persistent, optimistically-versioned recurring/one-off schedule
+// definition — the source of truth SchedulerTickManager's own scan
+// (apps/worker) reads from; BullMQ/Redis holds no business state for
+// this table at all (Revision 3 §5). Every dispatched occurrence still
+// becomes an ordinary `background_jobs` row via the identical
+// row-then-BullMQ pattern every other job in this system already uses —
+// this table's own rows are never themselves executed directly.
+model ScheduledJob {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  // Nullable — mirrors BackgroundJob.workspaceId exactly: NOT NULL for a
+  // workspace-owned schedule, NULL only for a genuine platform-level one.
+  // Managed exclusively through the two structurally separate route
+  // surfaces (Revision 3 §3/§4) — never accepted from a request body.
+  workspaceId String?    @map("workspace_id") @db.Uuid
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id])
+
+  // Registry key this schedule dispatches — validated against the live
+  // ProcessorManifest registry at write time, not an FK (same reasoning
+  // as BackgroundJob.jobType: the registry is a bootstrap-time construct).
+  jobType         String @map("job_type")
+  payloadMetadata Json   @default("{}") @map("payload_metadata")
+
+  // The authoritative schedule definition (Revision 3 §5) — nextRunAt
+  // below is a cache derived from these two fields, never the reverse.
+  // Both validated (cron-parser / IANA) at Create and Update time, using
+  // the identical evaluation path SchedulerTickManager itself uses.
+  cronExpression String @map("cron_expression")
+  timezone       String @default("UTC")
+
+  enabled Boolean @default(true)
+
+  // Cache only, for efficient due-schedule scanning — self-healing per
+  // Revision 3 §5: always recomputed fresh from (cronExpression,
+  // timezone, now()) at create, at update, and at every claim; never
+  // trusted as authoritative, never incremented from its own stale value.
+  nextRunAt DateTime? @map("next_run_at")
+  // Set on every claim, regardless of outcome — "this occurrence was
+  // dispatched," not "this occurrence succeeded."
+  lastRunAt DateTime? @map("last_run_at")
+
+  // Present, intentionally unpopulated in Milestone 7 (Revision 3 §6) —
+  // deferred to the future milestone that integrates the Event Bus /
+  // execution-lifecycle signals these two fields actually need.
+  lastSuccessAt DateTime? @map("last_success_at")
+  lastFailureAt DateTime? @map("last_failure_at")
+
+  // Populated only by the permanent-failure auto-disable path (Revision 3
+  // §7) — curated text only, mirrors BackgroundJob.errorCode/
+  // errorMessageSafe's own established shape. Cleared by a successful
+  // Update, never by Enable alone.
+  lastErrorCode        String? @map("last_error_code")
+  lastErrorMessageSafe String? @map("last_error_message_safe")
+
+  idempotencyStrategy ScheduleIdempotencyStrategy @default(SCHEDULE_TICK_TIMESTAMP) @map("idempotency_strategy")
+
+  // Optimistic-concurrency counter (Revision 3 §4) — incremented on every
+  // mutation to this row, human-initiated (the API's Update) or
+  // system-initiated (a scan's own claim, or the auto-disable path).
+  version Int @default(1)
+
+  createdById String? @map("created_by") @db.Uuid
+  createdBy   User?   @relation("ScheduledJobCreatedBy", fields: [createdById], references: [id])
+  updatedById String? @map("updated_by") @db.Uuid
+  updatedBy   User?   @relation("ScheduledJobUpdatedBy", fields: [updatedById], references: [id])
+
+  deletedAt DateTime? @map("deleted_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([workspaceId])
+  @@index([enabled])
+  @@index([jobType])
+  @@map("scheduled_jobs")
 }
 
 // Transactional outbox (Module 1F Engineering Plan §11) — the mechanism

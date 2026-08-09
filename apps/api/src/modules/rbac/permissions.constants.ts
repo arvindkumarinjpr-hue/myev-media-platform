@@ -89,6 +89,21 @@ export const PERMISSIONS = {
   // BLOG_VIEW/VIDEO_VIEW/CONTENT_SERIES_MANAGE.
   JOB_VIEW: "JOB_VIEW",
   JOB_MANAGE: "JOB_MANAGE",
+
+  // Module 1F Milestone 7 (Scheduler Foundation), Revision 3 §5/§12:
+  // absent from the frozen AI_CONTENT_ROLE_PERMISSION_MATRIX_V1.0.md's
+  // formal Permission Categories, same as JOB_VIEW/JOB_MANAGE above —
+  // scheduled jobs are the identical category of platform/system-level
+  // infrastructure (workspace-scoped schedule *management*, not business
+  // content), so these sit alongside JOB_VIEW/JOB_MANAGE under
+  // Administration, following the same "Missing constant identified"
+  // precedent. These two constants govern *workspace-scoped* schedule
+  // routes only — they never imply, and are never checked for,
+  // platform-level (workspaceId: null) authority, which is gated
+  // exclusively by PlatformOwnerGuard, entirely independent of this
+  // permission system (Revision 3 §3/§12).
+  SYSTEM_SCHEDULES_VIEW: "SYSTEM_SCHEDULES_VIEW",
+  SYSTEM_SCHEDULES_MANAGE: "SYSTEM_SCHEDULES_MANAGE",
 } as const;
 
 export type PermissionConstant = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -117,6 +132,8 @@ export const PERMISSION_CATEGORIES: Record<string, PermissionConstant[]> = {
     PERMISSIONS.AUDIT_VIEW,
     PERMISSIONS.JOB_VIEW,
     PERMISSIONS.JOB_MANAGE,
+    PERMISSIONS.SYSTEM_SCHEDULES_VIEW,
+    PERMISSIONS.SYSTEM_SCHEDULES_MANAGE,
   ],
   Content: [PERMISSIONS.BLOG_VIEW, PERMISSIONS.VIDEO_VIEW, PERMISSIONS.CONTENT_SERIES_MANAGE],
 };
@@ -168,6 +185,12 @@ export const ROLE_PERMISSIONS: Record<string, PermissionConstant[]> = {
     // other role gets job visibility or control.
     PERMISSIONS.JOB_VIEW,
     PERMISSIONS.JOB_MANAGE,
+    // Module 1F Milestone 7 final RBAC map: schedule *management* is the
+    // identical operational/system tier as background jobs above —
+    // Administrator-and-up only, workspace-scoped only (never platform-
+    // level authority, which PlatformOwnerGuard alone gates).
+    PERMISSIONS.SYSTEM_SCHEDULES_VIEW,
+    PERMISSIONS.SYSTEM_SCHEDULES_MANAGE,
     // Deliberately excluded: WORKSPACE_CREATE/DELETE/ARCHIVE, ROLE_MANAGE,
     // SETTINGS_MANAGE — Owner-exclusive per FR-WS-001 and the Matrix's
     // "Cannot: Transfer Ownership" note. WORKSPACE_ARCHIVE added in Module

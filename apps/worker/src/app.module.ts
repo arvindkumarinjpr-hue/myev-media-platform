@@ -8,6 +8,7 @@ import { PrismaModule } from "./prisma/prisma.module";
 import { QueueRegistryModule } from "./queue/queue-registry.module";
 import { HeartbeatModule } from "./heartbeat/heartbeat.module";
 import { BullMqModule } from "./bullmq/bullmq.module";
+import { SchedulerModule } from "./scheduler/scheduler.module";
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { BullMqModule } from "./bullmq/bullmq.module";
     QueueRegistryModule,
     HeartbeatModule,
     BullMqModule,
+    SchedulerModule,
   ],
 })
 export class AppModule {}

@@ -258,6 +258,9 @@ importers:
       class-validator:
         specifier: ^0.14.1
         version: 0.14.4
+      cron-parser:
+        specifier: ^5.7.0
+        version: 5.7.0
       reflect-metadata:
         specifier: ^0.2.2
         version: 0.2.2

@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "class-validator": "^0.14.1",
+    "cron-parser": "^5.7.0",
     "reflect-metadata": "^0.2.2"
   },
   "devDependencies": {

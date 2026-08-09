@@ -14,6 +14,10 @@ export interface WorkerConfig {
   // QueueRegistryBuilder.freeze in @myev/shared).
   queues: QueueName[];
   heartbeatIntervalMs: number;
+  // Module 1F Milestone 7 (Scheduler Foundation), Revision 3 §13 —
+  // approved defaults, configuration-backed rather than hardcoded inline.
+  schedulerTickIntervalMs: number;
+  schedulerBatchSize: number;
 }
 
 export class WorkerConfigError extends Error {
@@ -63,5 +67,7 @@ export default function configuration(): WorkerConfig {
     applicationVersion: process.env.WORKER_APPLICATION_VERSION ?? "0.1.0",
     queues: parseQueues(process.env.WORKER_QUEUES),
     heartbeatIntervalMs: parseInt(process.env.WORKER_HEARTBEAT_INTERVAL_MS ?? "15000", 10),
+    schedulerTickIntervalMs: parseInt(process.env.SCHEDULER_TICK_INTERVAL_MS ?? "60000", 10),
+    schedulerBatchSize: parseInt(process.env.SCHEDULER_BATCH_SIZE ?? "100", 10),
   };
 }
