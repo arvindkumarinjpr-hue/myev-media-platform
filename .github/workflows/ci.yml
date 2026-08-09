@@ -148,6 +148,18 @@ jobs:
       - name: Install dependencies (frozen lockfile)
         run: pnpm install --frozen-lockfile
 
+      # apps/worker's own e2e suite (ts-jest) requires @myev/shared's
+      # COMPILED dist output, not its raw TS source: its package.json
+      # main/types point at ./dist, and Node's native TS type-stripping
+      # refuses to run on a dependency required from inside
+      # node_modules — apps/worker/Dockerfile's own "build" stage
+      # already does this same step before compiling apps/worker for
+      # exactly this reason. The "Lint, Typecheck, Test, Build" job
+      # above runs a full `pnpm build`, but that happens on a separate,
+      # ephemeral runner whose artifacts don't carry over to this job.
+      - name: Build packages/shared
+        run: pnpm --filter @myev/shared build
+
       - name: Start MinIO
         run: |
           docker run -d --name minio \
