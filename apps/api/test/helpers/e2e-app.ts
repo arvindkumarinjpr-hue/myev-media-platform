@@ -34,6 +34,13 @@ export async function bootstrapE2eApp(): Promise<E2eApp> {
   const prisma = app.get(PrismaService);
   const passwordHashService = app.get(PasswordHashService);
   const redis = new Redis(process.env.REDIS_URL ?? "redis://redis:6379");
+  // An unhandled 'error' event on a bare ioredis client crashes the whole
+  // process (Node's default EventEmitter behavior) — harmless whenever
+  // REDIS_URL is valid (the normal case), but load-bearing for any test
+  // that deliberately points this helper at an unreachable Redis to
+  // exercise connection-failure resilience (e.g. background-jobs.e2e-
+  // spec.ts's "Redis connection resilience" suite).
+  redis.on("error", () => undefined);
 
   return { app, prisma, passwordHashService, redis };
 }
@@ -98,6 +105,24 @@ export async function teardownE2eApp({ app, redis, prisma }: E2eApp): Promise<vo
     // self-referential SET NULL, so plain deleteMany (no explicit
     // unlinking pass) is safe here.
     await tx.mediaAsset.deleteMany({ where: { OR: [{ workspaceId: { in: testWorkspaceIds } }, { createdById: { in: testUserIds } }] } });
+
+    // Module 1F: background_jobs.workspace_id is a plain (non-cascading)
+    // FK, same RESTRICT-by-default behavior as media_assets above —
+    // job_history rows must go first (they RESTRICT-reference
+    // background_jobs), then the jobs themselves, before the workspace.
+    const testBackgroundJobs = await tx.backgroundJob.findMany({ where: { workspaceId: { in: testWorkspaceIds } }, select: { id: true } });
+    const testBackgroundJobIds = testBackgroundJobs.map((j) => j.id);
+    if (testBackgroundJobIds.length > 0) {
+      await tx.backgroundJobHistory.deleteMany({ where: { backgroundJobId: { in: testBackgroundJobIds } } });
+      await tx.backgroundJob.deleteMany({ where: { id: { in: testBackgroundJobIds } } });
+    }
+
+    // Module 1F Milestone 7: workspace-scoped scheduled_jobs only —
+    // platform-level (workspace_id IS NULL) schedules are created under
+    // the real seeded Platform Owner (not a testUserIds-tracked account)
+    // and are cleaned up explicitly by whichever test suite creates them.
+    await tx.scheduledJob.deleteMany({ where: { workspaceId: { in: testWorkspaceIds } } });
+
     await tx.projectSlugReservation.deleteMany({ where: { workspaceId: { in: testWorkspaceIds } } });
     await tx.project.deleteMany({ where: { workspaceId: { in: testWorkspaceIds } } });
     await tx.workspaceMember.deleteMany({ where: { OR: [{ userId: { in: testUserIds } }, { workspaceId: { in: testWorkspaceIds } }] } });

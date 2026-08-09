@@ -5,8 +5,9 @@ name: myev-media
 #     network only. Nothing here binds them publicly, even for "convenience".
 #   - web/api host ports are chosen to avoid colliding with the other
 #     project stack already running locally on 3000/3001/5432/6379.
-#   - worker is scaffolded with zero BullMQ job processors (Module 1A scope
-#     per plan point 8) — it only proves it can start and reach Redis.
+#   - worker runs as a NestJS application context (no HTTP listener) since
+#     Module 1F — it processes the queue(s) named in WORKER_QUEUES and
+#     reports liveness via the worker_heartbeats table, not a health port.
 #   - Mailpit added in Module 1B.1: local-dev-only SMTP capture for
 #     password-reset/activation email, per the approved Engineering Plan
 #     §10 ("Mailpit locally, no production vendor selected"). Its web UI
@@ -150,13 +151,22 @@ services:
     environment:
       NODE_ENV: production
       LOG_LEVEL: info
+      DATABASE_URL: postgresql://myev:myev_dev_password@postgres:5432/myev_media?schema=public
       REDIS_URL: redis://redis:6379
+      # This worker instance's own queue selection — Module 1F Engineering
+      # Plan's bijective bootstrap validation is scoped to exactly this
+      # set. SYSTEM only for now: the sole job type Module 1F itself owns
+      # (system.ping.v1) lives on the SYSTEM queue.
+      WORKER_QUEUES: SYSTEM
+      WORKER_APPLICATION_VERSION: "0.1.0"
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
     networks:
       - myev-internal
-    # No `ports:` — the worker has no HTTP surface in Module 1A.
+    # No `ports:` — the worker has no HTTP surface.
 
 networks:
   myev-internal:

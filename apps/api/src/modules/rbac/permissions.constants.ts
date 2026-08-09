@@ -78,6 +78,32 @@ export const PERMISSIONS = {
   BLOG_VIEW: "BLOG_VIEW",
   VIDEO_VIEW: "VIDEO_VIEW",
   CONTENT_SERIES_MANAGE: "CONTENT_SERIES_MANAGE",
+
+  // Module 1F: absent from the frozen AI_CONTENT_ROLE_PERMISSION_MATRIX_V1.0.md's
+  // formal Permission Categories — background jobs are platform/system-level
+  // infrastructure (DB Design §5.12), not workspace business content, so
+  // these sit alongside USER_MANAGE/ROLE_MANAGE/SETTINGS_MANAGE/AUDIT_VIEW
+  // under Administration rather than getting their own category. Added
+  // following the same "Missing constant identified" precedent as Module
+  // 1C's WORKSPACE_ARCHIVE, Module 1D's MEDIA_*, and Module 1E's
+  // BLOG_VIEW/VIDEO_VIEW/CONTENT_SERIES_MANAGE.
+  JOB_VIEW: "JOB_VIEW",
+  JOB_MANAGE: "JOB_MANAGE",
+
+  // Module 1F Milestone 7 (Scheduler Foundation), Revision 3 §5/§12:
+  // absent from the frozen AI_CONTENT_ROLE_PERMISSION_MATRIX_V1.0.md's
+  // formal Permission Categories, same as JOB_VIEW/JOB_MANAGE above —
+  // scheduled jobs are the identical category of platform/system-level
+  // infrastructure (workspace-scoped schedule *management*, not business
+  // content), so these sit alongside JOB_VIEW/JOB_MANAGE under
+  // Administration, following the same "Missing constant identified"
+  // precedent. These two constants govern *workspace-scoped* schedule
+  // routes only — they never imply, and are never checked for,
+  // platform-level (workspaceId: null) authority, which is gated
+  // exclusively by PlatformOwnerGuard, entirely independent of this
+  // permission system (Revision 3 §3/§12).
+  SYSTEM_SCHEDULES_VIEW: "SYSTEM_SCHEDULES_VIEW",
+  SYSTEM_SCHEDULES_MANAGE: "SYSTEM_SCHEDULES_MANAGE",
 } as const;
 
 export type PermissionConstant = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -99,7 +125,16 @@ export const PERMISSION_CATEGORIES: Record<string, PermissionConstant[]> = {
   Publishing: [PERMISSIONS.PUBLISH_CREATE, PERMISSIONS.PUBLISH_EXECUTE, PERMISSIONS.PUBLISH_CANCEL],
   Analytics: [PERMISSIONS.ANALYTICS_VIEW, PERMISSIONS.ANALYTICS_EXPORT],
   Media: [PERMISSIONS.MEDIA_VIEW, PERMISSIONS.MEDIA_UPLOAD, PERMISSIONS.MEDIA_MANAGE, PERMISSIONS.MEDIA_DELETE],
-  Administration: [PERMISSIONS.USER_MANAGE, PERMISSIONS.ROLE_MANAGE, PERMISSIONS.SETTINGS_MANAGE, PERMISSIONS.AUDIT_VIEW],
+  Administration: [
+    PERMISSIONS.USER_MANAGE,
+    PERMISSIONS.ROLE_MANAGE,
+    PERMISSIONS.SETTINGS_MANAGE,
+    PERMISSIONS.AUDIT_VIEW,
+    PERMISSIONS.JOB_VIEW,
+    PERMISSIONS.JOB_MANAGE,
+    PERMISSIONS.SYSTEM_SCHEDULES_VIEW,
+    PERMISSIONS.SYSTEM_SCHEDULES_MANAGE,
+  ],
   Content: [PERMISSIONS.BLOG_VIEW, PERMISSIONS.VIDEO_VIEW, PERMISSIONS.CONTENT_SERIES_MANAGE],
 };
 
@@ -145,6 +180,17 @@ export const ROLE_PERMISSIONS: Record<string, PermissionConstant[]> = {
     PERMISSIONS.ANALYTICS_EXPORT,
     PERMISSIONS.USER_MANAGE,
     PERMISSIONS.AUDIT_VIEW,
+    // Module 1F final RBAC map: background jobs are an operational/system
+    // concern, same tier as AUDIT_VIEW — Administrator-and-up only, no
+    // other role gets job visibility or control.
+    PERMISSIONS.JOB_VIEW,
+    PERMISSIONS.JOB_MANAGE,
+    // Module 1F Milestone 7 final RBAC map: schedule *management* is the
+    // identical operational/system tier as background jobs above —
+    // Administrator-and-up only, workspace-scoped only (never platform-
+    // level authority, which PlatformOwnerGuard alone gates).
+    PERMISSIONS.SYSTEM_SCHEDULES_VIEW,
+    PERMISSIONS.SYSTEM_SCHEDULES_MANAGE,
     // Deliberately excluded: WORKSPACE_CREATE/DELETE/ARCHIVE, ROLE_MANAGE,
     // SETTINGS_MANAGE — Owner-exclusive per FR-WS-001 and the Matrix's
     // "Cannot: Transfer Ownership" note. WORKSPACE_ARCHIVE added in Module

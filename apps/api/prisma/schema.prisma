@@ -171,6 +171,40 @@ enum ContentReviewAction {
   REJECTED
 }
 
+// Module 1F: System Services Foundation. The 9 categories from the frozen
+// QUEUE_AND_BACKGROUND_JOB_ENGINE_V1.0.md §3, verbatim — a closed set,
+// never a free string. Many job types multiplex within one category queue
+// via BullMQ's own job.name field; this column is the category, not the
+// job type. Module 1F itself only registers real processors for
+// MAINTENANCE/SYSTEM — the other 7 exist so future modules can enqueue
+// into them immediately without redefining the category.
+enum QueueName {
+  CRITICAL
+  REALTIME
+  AI
+  MEDIA
+  PUBLISHING
+  ANALYTICS
+  MAINTENANCE
+  NOTIFICATION
+  SYSTEM
+}
+
+// Module 1F: exactly FRD Appendix A's frozen 5-value Job Status enum,
+// reused verbatim — the same enum ai_jobs uses (DB Design §24.8), since
+// background_jobs is the same category of generic-execution entity, not
+// publishing_jobs' richer domain-specific one. CANCELLED/SCHEDULED/
+// RETRYING/DEAD_LETTERED are deliberately NOT added here — see the
+// BackgroundJob model comment for how each is represented instead,
+// without extending this frozen enum (would require an ACR).
+enum BackgroundJobStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  TIMED_OUT
+}
+
 enum AuditAction {
   LOGIN_SUCCESS
   LOGIN_FAILED
@@ -231,6 +265,29 @@ enum AuditAction {
   CONTENT_SERIES_CREATED
   CONTENT_SERIES_UPDATED
   CONTENT_SERIES_DELETED
+  // Module 1F: only user-initiated actions on a background job are
+  // audited — a job silently completing/failing on its own has no human
+  // actor and is operational telemetry (job_history + structured logs),
+  // not a business event, mirroring exactly the reasoning already applied
+  // to distributed-lock events (never audited either). Webhook/
+  // notification audit actions are added in their own later migrations,
+  // when those tables exist.
+  JOB_CANCELLATION_REQUESTED
+  JOB_CANCELLED
+  JOB_RETRY_REQUESTED
+  // Module 1F Milestone 7 (Scheduler Foundation), Revision 3 §11: only
+  // user-initiated CRUD on a schedule's own definition is audited — the
+  // per-occurrence firing of a schedule (SCHEDULE_TRIGGERED/SKIPPED, and
+  // the system-initiated auto-disable on a permanently-invalid schedule
+  // definition, §7) is deliberately excluded, mirroring the identical
+  // reasoning already applied to background jobs above: no human actor,
+  // operational telemetry (structured logs + the resulting
+  // background_jobs/job_history trail), not a business event.
+  SCHEDULE_CREATED
+  SCHEDULE_UPDATED
+  SCHEDULE_ENABLED
+  SCHEDULE_DISABLED
+  SCHEDULE_DELETED
 }
 
 model User {
@@ -279,6 +336,9 @@ model User {
   createdContentVersions ContentVersion[]      @relation("ContentVersionCreatedBy")
   createdContentSeries   ContentSeries[]       @relation("ContentSeriesCreatedBy")
   contentReviewEvents    ContentReviewEvent[]
+  createdBackgroundJobs  BackgroundJob[]       @relation("BackgroundJobCreatedBy")
+  createdScheduledJobs   ScheduledJob[]        @relation("ScheduledJobCreatedBy")
+  updatedScheduledJobs   ScheduledJob[]        @relation("ScheduledJobUpdatedBy")
 
   @@map("users")
 }
@@ -485,6 +545,9 @@ model Workspace {
   contentItems            ContentItem[]
   contentSeries           ContentSeries[]
   contentReviewEvents     ContentReviewEvent[]
+  backgroundJobs          BackgroundJob[]
+  domainEvents            DomainEvent[]
+  scheduledJobs           ScheduledJob[]
 
   @@index([slug])
   @@index([status])
@@ -951,4 +1014,324 @@ model ContentReviewEvent {
   @@index([contentItemId])
   @@index([workspaceId])
   @@map("content_review_events")
+}
+
+// Module 1F: System Services Foundation. Reserved strictly for non-AI,
+// non-publishing SYSTEM MAINTENANCE work (DB Design §5.12, ADR-005) —
+// never a generic tracking table for future ai_jobs/publishing_jobs,
+// which bring their own dedicated tables when their owning modules ship.
+// `status` draws only from BackgroundJobStatus's frozen 5 values — see
+// that enum's comment for exactly how CANCELLED/SCHEDULED/RETRYING/
+// DEAD_LETTERED are represented without extending it:
+//   - SCHEDULED (not yet due)  -> status=QUEUED from creation,
+//     scheduledAt in the future; BullMQ's native delay handles
+//     dispatch-eligibility.
+//   - RETRYING                -> status stays QUEUED/RUNNING
+//     (Queue Engine §4's own internal->external mapping); recorded as a
+//     job_history transition, attempts incremented.
+//   - CANCEL_REQUESTED        -> status unchanged, cancellationRequestedAt
+//     set; workers check this cooperatively.
+//   - CANCELLED               -> terminal status=FAILED,
+//     errorCode='JOB_CANCELLED_BY_USER', cancelledAt set — the exact
+//     pattern Queue Engine §4 already established for Publishing's
+//     PUBLISH_CANCELLED_BY_USER.
+//   - DEAD_LETTERED           -> terminal status=FAILED, deadLetteredAt
+//     set — a marker, not a new status.
+model BackgroundJob {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  // Nullable — mirrors AuditLog.workspaceId exactly, not a blanket
+  // exception to "every business entity requires workspace_id" (this
+  // table sits in DB Design §5.12's platform-level System group).
+  // NOT NULL whenever a job is workspace-triggered; null only for
+  // genuine platform-level system jobs.
+  workspaceId String?    @map("workspace_id") @db.Uuid
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id])
+
+  // Full versioned registry key, e.g. "system.ping.v1" — see
+  // ProcessorManifest (Module 1F Engineering Plan §4). Not an FK; the
+  // registry is a compile-time/bootstrap-time construct, not a DB table.
+  jobType   String    @map("job_type")
+  queueName QueueName @map("queue_name")
+
+  // Dispatch-layer pointer only — never authoritative (ADR-007: Postgres
+  // is the source of truth, this row is, Redis/BullMQ state is
+  // rebuildable from it).
+  bullmqJobId String? @map("bullmq_job_id")
+
+  status BackgroundJobStatus @default(QUEUED)
+
+  payloadMetadata Json  @default("{}") @map("payload_metadata")
+  resultMetadata  Json? @map("result_metadata")
+  progress        Int?
+
+  attempts    Int @default(0)
+  maxAttempts Int @default(3) @map("max_attempts")
+
+  // Scoped per-workspace via the composite unique below — see Module 1F
+  // Engineering Plan §7. NULL means no dedup was requested for this job.
+  idempotencyKey String? @map("idempotency_key")
+
+  scheduledAt DateTime? @map("scheduled_at")
+
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+  failedAt    DateTime? @map("failed_at")
+
+  // Set the moment a cancellation is requested, independent of whether
+  // the job has actually stopped yet — workers/schedulers check this
+  // cooperatively (Engineering Plan §9). Never a status value.
+  cancellationRequestedAt DateTime? @map("cancellation_requested_at")
+  cancelledAt             DateTime? @map("cancelled_at")
+  deadLetteredAt          DateTime? @map("dead_lettered_at")
+
+  errorCode        String? @map("error_code")
+  // Always curated text — never a raw stack trace. The raw error goes
+  // only to structured logs, keyed by correlationId.
+  errorMessageSafe String? @map("error_message_safe")
+
+  // Seeded from the triggering request's X-Request-ID at enqueue time
+  // (or generated for system-triggered jobs); propagated through every
+  // job_history row and structured log line for this job. Architectural
+  // metadata only — does not participate in status/transition logic.
+  correlationId String @map("correlation_id")
+
+  // Enables future workflow chaining / parent-child execution graphs.
+  // Plain self-FK, deliberately NOT the workspace-safe composite pattern
+  // used elsewhere (e.g. content_items -> project): workspaceId is
+  // nullable here, which would silently exempt platform-level jobs from
+  // that composite check anyway (MATCH SIMPLE semantics), and Module 1F
+  // implements no cascading-cancellation or dependency-gating logic on
+  // this column at all — purely reserved metadata for future
+  // orchestration. A future module that builds real orchestration logic
+  // can add a stricter constraint then, driven by a real design.
+  parentJobId String?         @map("parent_job_id") @db.Uuid
+  parentJob   BackgroundJob?  @relation("BackgroundJobParent", fields: [parentJobId], references: [id])
+  childJobs   BackgroundJob[] @relation("BackgroundJobParent")
+
+  // Identifies exactly which deployed processor implementation executed
+  // this job — distinct from jobType's own .v{n} contract-version suffix.
+  // Written when execution begins (RUNNING transition), never at enqueue
+  // time. Sourced from the same applicationVersion WorkerHeartbeat
+  // already reports — not a second, independently-maintained version
+  // string. Purely additive metadata: no lifecycle, retry, or versioning
+  // rule depends on it.
+  processorVersion String? @map("processor_version")
+
+  createdById String? @map("created_by") @db.Uuid
+  createdBy   User?   @relation("BackgroundJobCreatedBy", fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  history BackgroundJobHistory[]
+
+  // DEFECT-1F-003: idempotency uniqueness is enforced by two migration-only
+  // PARTIAL unique indexes, not representable in Prisma's schema DSL (no
+  // previewFeatures enable filtered/partial index support here) — see
+  // migrations/20260806180000_defect_1f003_platform_idempotency:
+  //   background_jobs_workspace_idempotency_unique
+  //     ON (workspace_id, idempotency_key) WHERE workspace_id IS NOT NULL
+  //     AND idempotency_key IS NOT NULL
+  //   background_jobs_platform_idempotency_unique
+  //     ON (idempotency_key) WHERE workspace_id IS NULL
+  //     AND idempotency_key IS NOT NULL
+  // A single non-partial @@unique([workspaceId, idempotencyKey]) (the
+  // original Milestone 1/6 design) does NOT deduplicate platform-level
+  // rows (workspace_id IS NULL) under standard SQL NULL semantics — that
+  // was DEFECT-1F-003. Do not reintroduce it; `prisma migrate dev`/`db
+  // push` must never be run against this model without `--create-only`
+  // or they will attempt to "correct" this intentional schema/DB drift.
+  @@index([workspaceId])
+  @@index([status])
+  @@index([jobType])
+  @@index([queueName])
+  @@index([parentJobId])
+  @@index([correlationId])
+  @@map("background_jobs")
+}
+
+// Append-only, mirrors publishing_history's established pattern exactly.
+// Carries the finer engine-internal states (RESERVED/RETRYING/
+// WAITING_DEPENDENCY/EXPIRED/ARCHIVED, Queue Engine §4) that never become
+// BackgroundJob.status values themselves.
+model BackgroundJobHistory {
+  id String @id @default(uuid()) @db.Uuid
+
+  backgroundJobId String        @map("background_job_id") @db.Uuid
+  backgroundJob   BackgroundJob @relation(fields: [backgroundJobId], references: [id])
+
+  // Nullable — the very first transition (job creation) has no "from".
+  fromStatus BackgroundJobStatus? @map("from_status")
+  toStatus   BackgroundJobStatus  @map("to_status")
+
+  occurredAt DateTime @default(now()) @map("occurred_at")
+  // Safe-redacted only — same discipline as BackgroundJob.errorMessageSafe.
+  detail     Json?
+
+  @@index([backgroundJobId])
+  @@map("job_history")
+}
+
+// Operational infrastructure, not a business entity — no workspace_id,
+// no soft delete, short retention. Complements (does not replace) BullMQ's
+// own native job-level stalled-job detection: BullMQ already requeues a
+// job whose worker died mid-processing via its own lock+lockRenewTime
+// mechanism (Queue Engine §11's "Worker Crash -> requeue via heartbeat
+// timeout" refers to that library-native behavior). This table is a
+// separate, process-level visibility layer — dashboards, worker-crash
+// alerting, version-rollout tracking, capacity planning — never a job
+// action trigger.
+model WorkerHeartbeat {
+  workerId String @id @map("worker_id") @db.Uuid
+
+  hostname           String
+  processId          Int    @map("process_id")
+  applicationVersion String @map("application_version")
+  queueAssignments   Json   @map("queue_assignments")
+
+  startedAt       DateTime @map("started_at")
+  lastHeartbeatAt DateTime @map("last_heartbeat_at")
+
+  @@index([lastHeartbeatAt])
+  @@map("worker_heartbeats")
+}
+
+// Module 1F Milestone 7 (Scheduler Foundation), Revision 3 §3. Reserved
+// for future strategies — exactly one implemented today, mirroring the
+// same "declare the concept, ship one value" pattern already used for
+// ProcessorManifest.schemaVersion and the frozen missed-run policy.
+enum ScheduleIdempotencyStrategy {
+  SCHEDULE_TICK_TIMESTAMP
+}
+
+// Module 1F Milestone 7 (Scheduler Foundation), Revision 3 §2/§3. A
+// persistent, optimistically-versioned recurring/one-off schedule
+// definition — the source of truth SchedulerTickManager's own scan
+// (apps/worker) reads from; BullMQ/Redis holds no business state for
+// this table at all (Revision 3 §5). Every dispatched occurrence still
+// becomes an ordinary `background_jobs` row via the identical
+// row-then-BullMQ pattern every other job in this system already uses —
+// this table's own rows are never themselves executed directly.
+model ScheduledJob {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  // Nullable — mirrors BackgroundJob.workspaceId exactly: NOT NULL for a
+  // workspace-owned schedule, NULL only for a genuine platform-level one.
+  // Managed exclusively through the two structurally separate route
+  // surfaces (Revision 3 §3/§4) — never accepted from a request body.
+  workspaceId String?    @map("workspace_id") @db.Uuid
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id])
+
+  // Registry key this schedule dispatches — validated against the live
+  // ProcessorManifest registry at write time, not an FK (same reasoning
+  // as BackgroundJob.jobType: the registry is a bootstrap-time construct).
+  jobType         String @map("job_type")
+  payloadMetadata Json   @default("{}") @map("payload_metadata")
+
+  // The authoritative schedule definition (Revision 3 §5) — nextRunAt
+  // below is a cache derived from these two fields, never the reverse.
+  // Both validated (cron-parser / IANA) at Create and Update time, using
+  // the identical evaluation path SchedulerTickManager itself uses.
+  cronExpression String @map("cron_expression")
+  timezone       String @default("UTC")
+
+  enabled Boolean @default(true)
+
+  // Cache only, for efficient due-schedule scanning — self-healing per
+  // Revision 3 §5: always recomputed fresh from (cronExpression,
+  // timezone, now()) at create, at update, and at every claim; never
+  // trusted as authoritative, never incremented from its own stale value.
+  nextRunAt DateTime? @map("next_run_at")
+  // Set on every claim, regardless of outcome — "this occurrence was
+  // dispatched," not "this occurrence succeeded."
+  lastRunAt DateTime? @map("last_run_at")
+
+  // Present, intentionally unpopulated in Milestone 7 (Revision 3 §6) —
+  // deferred to the future milestone that integrates the Event Bus /
+  // execution-lifecycle signals these two fields actually need.
+  lastSuccessAt DateTime? @map("last_success_at")
+  lastFailureAt DateTime? @map("last_failure_at")
+
+  // Populated only by the permanent-failure auto-disable path (Revision 3
+  // §7) — curated text only, mirrors BackgroundJob.errorCode/
+  // errorMessageSafe's own established shape. Cleared by a successful
+  // Update, never by Enable alone.
+  lastErrorCode        String? @map("last_error_code")
+  lastErrorMessageSafe String? @map("last_error_message_safe")
+
+  idempotencyStrategy ScheduleIdempotencyStrategy @default(SCHEDULE_TICK_TIMESTAMP) @map("idempotency_strategy")
+
+  // Optimistic-concurrency counter (Revision 3 §4) — incremented on every
+  // mutation to this row, human-initiated (the API's Update) or
+  // system-initiated (a scan's own claim, or the auto-disable path).
+  version Int @default(1)
+
+  createdById String? @map("created_by") @db.Uuid
+  createdBy   User?   @relation("ScheduledJobCreatedBy", fields: [createdById], references: [id])
+  updatedById String? @map("updated_by") @db.Uuid
+  updatedBy   User?   @relation("ScheduledJobUpdatedBy", fields: [updatedById], references: [id])
+
+  deletedAt DateTime? @map("deleted_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([workspaceId])
+  @@index([enabled])
+  @@index([jobType])
+  @@map("scheduled_jobs")
+}
+
+// Transactional outbox (Module 1F Engineering Plan §11) — the mechanism
+// that avoids dual-write inconsistency between a Postgres business write
+// and a Redis/BullMQ enqueue. Every state change that must emit an event
+// writes a row here in the SAME transaction as its business write; a
+// separate outbox-relay process polls undispatched rows (SELECT ... FOR
+// UPDATE SKIP LOCKED, competing-consumers-safe) and enqueues them,
+// marking dispatchedAt afterward. A crash between the enqueue and that
+// mark means at-least-once delivery — every consumer must be idempotent
+// (see ProcessedEvent) and order-tolerant (BullMQ does not guarantee
+// strict cross-worker delivery ordering).
+model DomainEvent {
+  id String @id @default(uuid()) @db.Uuid
+
+  eventType    String @map("event_type")
+  eventVersion Int    @map("event_version")
+
+  workspaceId String?    @map("workspace_id") @db.Uuid
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id])
+
+  correlationId String? @map("correlation_id")
+  causationId   String? @map("causation_id")
+
+  payload Json
+
+  occurredAt   DateTime  @default(now()) @map("occurred_at")
+  // NULL = not yet relayed to BullMQ. See the hand-written partial index
+  // in this migration's raw SQL for the relay's actual poll query.
+  dispatchedAt DateTime? @map("dispatched_at")
+
+  consumers ProcessedEvent[]
+
+  @@index([workspaceId])
+  @@index([correlationId])
+  @@map("domain_events")
+}
+
+// Consumer-side idempotency for at-least-once event delivery (Engineering
+// Plan §11) — the same mechanism family as BackgroundJob's idempotencyKey.
+model ProcessedEvent {
+  id String @id @default(uuid()) @db.Uuid
+
+  eventId String      @map("event_id") @db.Uuid
+  event   DomainEvent @relation(fields: [eventId], references: [id])
+
+  consumerName String   @map("consumer_name")
+  processedAt  DateTime @default(now()) @map("processed_at")
+
+  @@unique([eventId, consumerName])
+  @@map("processed_events")
 }

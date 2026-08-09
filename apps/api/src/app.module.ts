@@ -13,6 +13,8 @@ import { WorkspaceMembersModule } from "./modules/workspace-members/workspace-me
 import { ProjectsModule } from "./modules/projects/projects.module";
 import { MediaAssetsModule } from "./modules/media-assets/media-assets.module";
 import { ContentModule } from "./modules/content/content.module";
+import { BackgroundJobsModule } from "./modules/background-jobs/background-jobs.module";
+import { SchedulesModule } from "./modules/schedules/schedules.module";
 import type { AppConfig } from "./config/configuration";
 
 @Module({
@@ -45,6 +47,8 @@ import type { AppConfig } from "./config/configuration";
     ProjectsModule,
     MediaAssetsModule,
     ContentModule,
+    BackgroundJobsModule,
+    SchedulesModule,
   ],
 })
 export class AppModule {}

@@ -37,6 +37,9 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Verify internal workspace packages import cleanly at runtime
+        run: pnpm verify:packages
+
   docker-validate:
     name: Docker Compose Config & Build
     runs-on: ubuntu-latest
@@ -126,6 +129,10 @@ jobs:
       STORAGE_ACCESS_KEY: myev_minio_admin
       STORAGE_SECRET_KEY: myev_minio_dev_password
       STORAGE_BUCKET: myev-media-test
+      # Module 1F: apps/worker's own e2e suite runs in this same job
+      # (shares the Postgres/Redis service containers above).
+      WORKER_QUEUES: SYSTEM
+      WORKER_APPLICATION_VERSION: ci-e2e
     steps:
       - uses: actions/checkout@v4
 
@@ -140,6 +147,18 @@ jobs:
 
       - name: Install dependencies (frozen lockfile)
         run: pnpm install --frozen-lockfile
+
+      # apps/worker's own e2e suite (ts-jest) requires @myev/shared's
+      # COMPILED dist output, not its raw TS source: its package.json
+      # main/types point at ./dist, and Node's native TS type-stripping
+      # refuses to run on a dependency required from inside
+      # node_modules — apps/worker/Dockerfile's own "build" stage
+      # already does this same step before compiling apps/worker for
+      # exactly this reason. The "Lint, Typecheck, Test, Build" job
+      # above runs a full `pnpm build`, but that happens on a separate,
+      # ephemeral runner whose artifacts don't carry over to this job.
+      - name: Build packages/shared
+        run: pnpm --filter @myev/shared build
 
       - name: Start MinIO
         run: |
@@ -167,6 +186,106 @@ jobs:
         working-directory: apps/api
         run: pnpm exec ts-node --transpile-only prisma/seed.ts
 
+      # Runs first, and alone: it boots its own self-contained Worker
+      # instance internally (Test.createTestingModule). Running it
+      # concurrently with the standalone background Worker started below
+      # would put two competing consumers on the same SYSTEM queue —
+      # exactly the race that made this suite flaky in local verification
+      # (whichever instance BullMQ dispatches a given job to "wins",
+      # non-deterministically, and the loser's assertions fail).
+      - name: Run Worker E2E suite
+        working-directory: apps/worker
+        run: pnpm test:e2e
+
+      # apps/api's own e2e suite (background-jobs.e2e-spec.ts, Module 1F)
+      # enqueues real jobs and waits for a real Worker to complete them —
+      # nothing else in this job runs one, unlike a developer's local
+      # Docker Compose stack where apps/worker is always already running.
+      # Backgrounded + disowned so it survives past this step's own shell;
+      # torn down for free when the runner is destroyed at job end. Started
+      # only now (after the Worker E2E suite above has already finished)
+      # to avoid the two-consumer race described there.
+      - name: Start Worker (background)
+        working-directory: apps/worker
+        run: |
+          # Root-caused (see CI WORKER BOOTSTRAP STALL — FINAL ROOT CAUSE
+          # REPORT): the worker was never hung — main.ts's own
+          # createApplicationContext() consistently resolves in ~130ms on
+          # this exact runner, proven via temporary lifecycle-timestamp
+          # instrumentation (added and fully reverted, see commits
+          # fa027e9 / 1bc247c). The previous readiness probe
+          # (`grep "BullMQ worker listening" /tmp/worker.log`) could never
+          # succeed for an unrelated reason: that message is logged at
+          # info level, and this job sets LOG_LEVEL=error — pino silently
+          # drops it before a single byte is ever written, regardless of
+          # bufferLogs/flushLogs timing. The fix is not to change
+          # LOG_LEVEL (that's a deliberate, job-wide noise-reduction
+          # setting unrelated to worker readiness) but to stop depending
+          # on log output at all.
+          #
+          # WorkerHeartbeatService.onApplicationBootstrap() performs one
+          # unconditional, un-gated database write (a worker_heartbeats
+          # upsert) before this step's own polling loop could ever run —
+          # a DB row, not a log line, so it exists regardless of log
+          # level. Waiting for that row is a direct, deterministic proof
+          # that Postgres connectivity works AND that bootstrap has
+          # already progressed past the heartbeat provider — which, per
+          # the same proven lifecycle order, runs before
+          # BullMqWorkerManager and SchedulerTickManager, so its presence
+          # is a reliable (if slightly conservative) proxy for "the
+          # worker is operational."
+          # Second-level precision only — deliberately not using a
+          # sub-second format specifier (e.g. GNU date's %N): that's a
+          # GNU coreutils extension, not universally portable, and
+          # unnecessary here — CI steps run strictly sequentially with
+          # clear multi-second separation, so second resolution is
+          # already more than enough to distinguish this attempt's own
+          # heartbeat row from any earlier step's leftover rows.
+          START_TIME_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          nohup pnpm exec ts-node --transpile-only src/main.ts > /tmp/worker.log 2>&1 &
+          WORKER_PID=$!
+          disown
+
+          for i in $(seq 1 90); do
+            # Fail fast if bootstrap itself crashed — no point waiting
+            # out the rest of the budget for a process that's already
+            # gone (main.ts's own bootstrap().catch() sets exitCode=1
+            # and returns, which ends the whole process tree here).
+            if ! kill -0 "$WORKER_PID" 2>/dev/null; then
+              echo "Worker process (pid $WORKER_PID) exited before becoming ready." >&2
+              break
+            fi
+
+            HEARTBEAT_COUNT=$(PGPASSWORD=myev_ci_password psql -h localhost -U myev -d myev_media_test -tAc \
+              "SELECT count(*) FROM worker_heartbeats WHERE started_at >= '${START_TIME_ISO}'::timestamptz AND application_version = '${WORKER_APPLICATION_VERSION}';" 2>/dev/null)
+
+            if [ "${HEARTBEAT_COUNT:-0}" -gt 0 ] 2>/dev/null; then
+              echo "Worker heartbeat confirmed after ${i}s (started_at >= ${START_TIME_ISO})."
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "Worker heartbeat not observed within the deadline." >&2
+          echo "--- process alive? ---" >&2
+          if kill -0 "$WORKER_PID" 2>/dev/null; then
+            ps -p "$WORKER_PID" -o pid,ppid,stat,%cpu,etime,cmd >&2 || true
+          else
+            echo "process $WORKER_PID is not running" >&2
+          fi
+          echo "--- full process tree ---" >&2
+          ps -e -o pid,ppid,stat,%cpu,etime,cmd --forest >&2 || true
+          echo "--- /tmp/worker.log ---" >&2
+          cat /tmp/worker.log
+          echo "--- worker_heartbeats rows started since this step began (any application_version) ---" >&2
+          PGPASSWORD=myev_ci_password psql -h localhost -U myev -d myev_media_test -c \
+            "SELECT worker_id, hostname, process_id, application_version, queue_assignments, started_at, last_heartbeat_at FROM worker_heartbeats WHERE started_at >= '${START_TIME_ISO}'::timestamptz ORDER BY started_at DESC;" >&2 2>&1 || true
+          exit 1
+
       - name: Run E2E suite
         working-directory: apps/api
         run: pnpm test:e2e
+
+      - name: Show backgrounded Worker log (always, for debugging)
+        if: always()
+        run: cat /tmp/worker.log || true
