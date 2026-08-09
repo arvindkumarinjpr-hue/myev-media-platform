@@ -276,6 +276,26 @@ jobs:
           done
           DESCENDANTS=$(echo "$DESCENDANTS" | tr ' ' '\n' | sort -u | grep -v '^$' || true)
           echo "descendant pids: $DESCENDANTS" >&2
+          # The previous round's report (both the pnpm wrapper AND its
+          # ts-node child) showed an empty javascriptStack, near-zero
+          # cumulative CPU time across the full 90s wait, and no
+          # network/file libuv handle at all — consistent with a true
+          # kernel-level block Node's own report can't see into (V8
+          # sometimes can't walk the JS stack mid-syscall). /proc's own
+          # wchan/stack give the kernel's own view of exactly which
+          # syscall each thread is parked in.
+          for pid in $WORKER_PID $DESCENDANTS; do
+            echo "--- /proc/$pid kernel-level state ---" >&2
+            echo "wchan: $(cat /proc/$pid/wchan 2>/dev/null || echo unavailable)" >&2
+            grep -E "^State:" /proc/$pid/status 2>/dev/null >&2 || true
+            echo "task wchans:" >&2
+            for t in /proc/$pid/task/*/; do
+              tid=$(basename "$t")
+              echo "  tid=$tid wchan=$(cat "$t/wchan" 2>/dev/null || echo unavailable) status=$(grep -E '^State:' "$t/status" 2>/dev/null)" >&2
+            done
+            cat /proc/$pid/stack 2>/dev/null >&2 || echo "kernel stack unavailable (needs elevated privileges)" >&2
+          done
+          echo "--- requesting a diagnostic report (SIGUSR2) from every descendant of \$WORKER_PID ---" >&2
           for pid in $WORKER_PID $DESCENDANTS; do
             kill -SIGUSR2 "$pid" 2>/dev/null && echo "signaled $pid" >&2
           done
