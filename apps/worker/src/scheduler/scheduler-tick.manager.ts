@@ -51,6 +51,13 @@ export class SchedulerTickManager implements OnApplicationBootstrap, OnApplicati
   private tickQueue?: Queue;
   private tickWorker?: Worker;
   private readonly dispatchQueues = new Map<string, Queue>();
+  // DEFECT-1F-004 (bootstrap can hang indefinitely when Redis is
+  // unreachable — bounded degraded startup, see this file's own class
+  // doc comment): tracks the background retry loop so onApplicationShutdown
+  // can cancel it deterministically, and gates the loop against
+  // scheduling a new attempt after shutdown has begun.
+  private registrationRetryTimer?: NodeJS.Timeout;
+  private shuttingDown = false;
 
   constructor(
     private readonly config: ConfigService<WorkerConfig, true>,
@@ -60,6 +67,31 @@ export class SchedulerTickManager implements OnApplicationBootstrap, OnApplicati
     @InjectPinoLogger(SchedulerTickManager.name) private readonly logger: PinoLogger,
   ) {}
 
+  /**
+   * DEFECT-1F-004: `queue.upsertJobScheduler()` is a real Redis round-trip
+   * that, empirically confirmed against a genuinely unreachable Redis
+   * (real infrastructure, not simulated), never settles — neither
+   * resolves nor rejects — because `maxRetriesPerRequest: null` (required
+   * by BullMQ for its blocking commands) means a queued command waits
+   * forever for a connection ioredis's own default retryStrategy never
+   * stops attempting. Previously awaited directly here, which blocked
+   * NestJS's entire application-bootstrap sequence indefinitely whenever
+   * Redis was down at startup.
+   *
+   * Fixed as bounded degraded startup (chosen over fail-fast because it
+   * is the ALREADY-established policy for this exact process:
+   * BullMqWorkerManager.onApplicationBootstrap is not even `async` — it
+   * never blocks bootstrap on Redis reachability at all, handling
+   * connectivity purely asynchronously via its own 'error' listener.
+   * Fail-fast here would be a new, inconsistent policy for this worker).
+   * The tick Worker starts immediately regardless of registration
+   * outcome, exactly mirroring that precedent — application bootstrap
+   * always completes; a confirmed registration follows independently,
+   * bounded per attempt, retried on a fixed interval in the background
+   * until it succeeds. No business/schedule state ever lives in Redis
+   * (Revision 3 §5), so a delayed registration loses nothing — the next
+   * successful attempt (first or retried) restores it completely.
+   */
   async onApplicationBootstrap(): Promise<void> {
     this.connection = new Redis(this.config.get("redisUrl", { infer: true }), { maxRetriesPerRequest: null });
     this.connection.on("error", (error) => {
@@ -68,14 +100,79 @@ export class SchedulerTickManager implements OnApplicationBootstrap, OnApplicati
 
     this.tickQueue = new Queue(SCHEDULER_QUEUE_NAME, { connection: this.connection });
 
+    // Mirrors BullMqWorkerManager's own bootstrap exactly: the Worker
+    // itself never awaits a Redis round-trip to start (BullMQ connects
+    // and begins consuming asynchronously in the background) — it is
+    // already listening the moment registration (first attempt or a
+    // later retry) eventually succeeds.
     this.tickWorker = new Worker(SCHEDULER_QUEUE_NAME, (job) => this.handleTick(job), { connection: this.connection, concurrency: 1 });
     this.tickWorker.on("error", (error) => {
       this.logger.error({ err: error }, "scheduler tick worker error");
     });
 
+    const registered = await this.attemptRegistration();
+    if (!registered) {
+      this.scheduleRegistrationRetry();
+    }
+  }
+
+  /**
+   * One bounded attempt: races the real upsertJobScheduler call against
+   * schedulerRegistrationTimeoutMs. Never lets that call's own promise —
+   * which may never settle — hold this method open past the deadline.
+   * The losing (abandoned) promise is not cancelled (ioredis has no
+   * per-command cancellation short of tearing down the whole shared
+   * connection, which the tick Worker also depends on) — safe by
+   * construction, since upsertJobScheduler is idempotent: if Redis later
+   * recovers and that abandoned call eventually resolves on its own, it
+   * converges to the same registration state a subsequent retry would
+   * have produced, never a duplicate.
+   */
+  private async attemptRegistration(): Promise<boolean> {
+    const timeoutMs = this.config.get("schedulerRegistrationTimeoutMs", { infer: true });
     const tickIntervalMs = this.config.get("schedulerTickIntervalMs", { infer: true });
-    await this.tickQueue.upsertJobScheduler(SCHEDULER_ID, { every: tickIntervalMs, tz: "UTC" }, { name: TICK_JOB_NAME, data: {} });
-    this.logger.info({ schedulerId: SCHEDULER_ID, tickIntervalMs }, "scheduler tick registered");
+    try {
+      const outcome = await Promise.race([
+        this.tickQueue!.upsertJobScheduler(SCHEDULER_ID, { every: tickIntervalMs, tz: "UTC" }, { name: TICK_JOB_NAME, data: {} }).then(() => "registered" as const),
+        new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), timeoutMs)),
+      ]);
+      if (outcome === "registered") {
+        this.logger.info({ schedulerId: SCHEDULER_ID, tickIntervalMs }, "scheduler tick registered");
+        return true;
+      }
+    } catch (error) {
+      // Never logs the connection URL/credentials — only the schedulerId
+      // and a safe error message.
+      this.logger.error(
+        { event: "SCHEDULER_REGISTRATION_FAILED", schedulerId: SCHEDULER_ID, err: { message: error instanceof Error ? error.message : String(error) } },
+        "scheduler registration attempt failed",
+      );
+      return false;
+    }
+    this.logger.error({ event: "SCHEDULER_REGISTRATION_FAILED", schedulerId: SCHEDULER_ID, timeoutMs }, "scheduler registration did not complete within the configured deadline");
+    return false;
+  }
+
+  /** Fixed-interval retry, not aggressive spinning — each attempt is itself bounded, and the next is only scheduled after the current one has fully settled (never overlapping). Stops permanently on first success. */
+  private scheduleRegistrationRetry(): void {
+    if (this.shuttingDown) return;
+    const retryIntervalMs = this.config.get("schedulerRegistrationRetryIntervalMs", { infer: true });
+    this.registrationRetryTimer = setTimeout(() => {
+      if (this.shuttingDown) return;
+      this.logger.warn({ event: "SCHEDULER_REGISTRATION_RETRYING", schedulerId: SCHEDULER_ID }, "retrying scheduler registration");
+      this.attemptRegistration()
+        .then((registered) => {
+          if (registered) {
+            this.logger.info({ event: "SCHEDULER_REGISTRATION_RECOVERED", schedulerId: SCHEDULER_ID }, "scheduler registration recovered");
+            return;
+          }
+          this.scheduleRegistrationRetry();
+        })
+        .catch((error: unknown) => {
+          this.logger.error({ event: "SCHEDULER_REGISTRATION_FAILED", schedulerId: SCHEDULER_ID, err: { message: error instanceof Error ? error.message : String(error) } }, "scheduler registration retry failed unexpectedly");
+          this.scheduleRegistrationRetry();
+        });
+    }, retryIntervalMs);
   }
 
   private async handleTick(_job: Job): Promise<void> {
@@ -306,10 +403,21 @@ export class SchedulerTickManager implements OnApplicationBootstrap, OnApplicati
   }
 
   async onApplicationShutdown(): Promise<void> {
+    // DEFECT-1F-004: stop the background registration-retry loop first —
+    // otherwise a still-pending retry timer either fires after shutdown
+    // has begun (scheduling yet another attempt on a connection about to
+    // be torn down) or simply leaks, keeping the process's event loop
+    // alive with no other purpose.
+    this.shuttingDown = true;
+    if (this.registrationRetryTimer) clearTimeout(this.registrationRetryTimer);
+
     // Mirrors BullMqWorkerManager's own shutdown shape exactly. Shares
     // its DEFECT-1F-001 characteristic (an unbounded wait if Redis is
     // genuinely unreachable at shutdown time) — recorded under that
-    // existing defect's scope per Revision 3 §7, not a new one.
+    // existing defect's scope per Revision 3 §7, not a new one. Not
+    // addressed here: DEFECT-1F-004 is scoped to the bootstrap path only,
+    // per the explicit instruction not to expand into DEFECT-1F-001's
+    // own approved scope.
     await this.tickWorker?.close();
     await this.tickQueue?.close();
     await Promise.all([...this.dispatchQueues.values()].map((queue) => queue.close()));

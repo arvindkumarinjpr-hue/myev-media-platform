@@ -3,6 +3,8 @@ import { Test, type TestingModule } from "@nestjs/testing";
 import { AppModule } from "../src/app.module";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { SchedulerTickManager } from "../src/scheduler/scheduler-tick.manager";
+import { BullMqWorkerManager } from "../src/bullmq/bullmq-worker.manager";
+import { WorkerHeartbeatService } from "../src/heartbeat/worker-heartbeat.service";
 import type { ScheduledJob } from "../../api/generated/prisma";
 
 /**
@@ -64,6 +66,50 @@ describe("Worker (e2e) — SchedulerTickManager", () => {
     });
     createdScheduleIds.push(row.id);
     return row;
+  }
+
+  /**
+   * DEFECT-1F-004's own test cleanup, found the hard way: racing the
+   * WHOLE module's close() against a bound (as the pre-existing Milestone
+   * 5 "Redis connection resilience" test above does for a DIFFERENT
+   * provider) is not sufficient here, because NestJS invokes every
+   * provider's onApplicationShutdown as part of ONE ordered chain —
+   * BullMqWorkerManager's own shutdown (which has the identical
+   * DEFECT-1F-001 hang characteristic against unreachable Redis) can sit
+   * ahead of SchedulerTickManager's in that chain, meaning the bounded
+   * race gives up on the OUTER close() before SchedulerTickManager's own
+   * shutdown — and therefore its registrationRetryTimer clearTimeout —
+   * ever runs at all. Confirmed directly: a real hung Jest process,
+   * SCHEDULER_REGISTRATION_FAILED logs continuing every ~1.5s long after
+   * "Ran all test suites" had already printed. Fixed here by invoking
+   * SchedulerTickManager's own onApplicationShutdown directly first
+   * (bounded), independent of the rest of the module's own shutdown
+   * ordering.
+   *
+   * Separately (confirmed empirically, not assumed): BullMqWorkerManager
+   * — a different provider in this same broken module instance — has the
+   * identical DEFECT-1F-001 characteristic on its own connection, and
+   * this is PRE-EXISTING (verified directly: the pre-existing Milestone 5
+   * "Redis connection resilience" test, entirely untouched by this
+   * defect's fix, leaves the same kind of lingering process behind it
+   * too). Not this defect's scope to fix in production code — but this
+   * test file's own fixtures force-disconnect it too, exactly the same
+   * way that pre-existing test's own bounded-race comment already
+   * documents as a known, deliberate limitation.
+   */
+  async function cleanupBrokenSchedulerModule(brokenModuleRef: TestingModule): Promise<void> {
+    const brokenHeartbeat = brokenModuleRef.get(WorkerHeartbeatService);
+    await prisma.workerHeartbeat.deleteMany({ where: { workerId: brokenHeartbeat.workerId } });
+
+    const brokenSchedulerManager = brokenModuleRef.get(SchedulerTickManager);
+    await Promise.race([(brokenSchedulerManager as unknown as { onApplicationShutdown: () => Promise<void> }).onApplicationShutdown(), new Promise((resolve) => setTimeout(resolve, 2_000))]);
+    (brokenSchedulerManager as unknown as { connection?: { disconnect: () => void } }).connection?.disconnect();
+
+    const brokenWorkerManager = brokenModuleRef.get(BullMqWorkerManager);
+    (brokenWorkerManager as unknown as { connection?: { disconnect: () => void } }).connection?.disconnect();
+
+    // Best-effort only from here.
+    await Promise.race([brokenModuleRef.close(), new Promise((resolve) => setTimeout(resolve, 3_000))]);
   }
 
   async function runTick(): Promise<void> {
@@ -301,5 +347,102 @@ describe("Worker (e2e) — SchedulerTickManager", () => {
         // in beforeAll for the whole suite's duration.
       }
     }, 20_000);
+  });
+
+  /**
+   * DEFECT-1F-004: bootstrap can hang indefinitely when Redis is
+   * unreachable. Empirically confirmed (this session, real Redis,
+   * `redis://redis:1`): the prior implementation's awaited
+   * `upsertJobScheduler()` call never settled — neither resolved nor
+   * rejected — so onApplicationBootstrap, and therefore the whole
+   * NestJS application context, never finished initializing. Fixed as
+   * bounded degraded startup: the tick Worker starts immediately
+   * regardless of registration outcome (mirroring
+   * BullMqWorkerManager.onApplicationBootstrap's own established,
+   * never-blocks-on-Redis precedent — confirmed by inspection: that
+   * method is not even `async`), and registration itself is bounded per
+   * attempt, retried on a fixed background interval.
+   */
+  describe("DEFECT-1F-004: bounded scheduler-registration startup", () => {
+    const SHORT_TIMEOUT_MS = "1000";
+    const SHORT_RETRY_INTERVAL_MS = "500";
+
+    it("bootstrap against unreachable Redis completes well within the configured deadline — never hangs indefinitely", async () => {
+      const originalRedisUrl = process.env.REDIS_URL;
+      const originalTimeout = process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS;
+      process.env.REDIS_URL = "redis://redis:1";
+      process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS = SHORT_TIMEOUT_MS;
+      let brokenModuleRef: TestingModule | undefined;
+      try {
+        brokenModuleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+        const startedAt = Date.now();
+        await expect(brokenModuleRef.init()).resolves.toBeDefined();
+        const elapsedMs = Date.now() - startedAt;
+        // Bounded by the configured 1000ms deadline, not the old
+        // indefinite hang — generous margin for scheduling jitter, but
+        // nowhere near the 15000s+ this took before the fix.
+        expect(elapsedMs).toBeLessThan(5000);
+      } finally {
+        process.env.REDIS_URL = originalRedisUrl;
+        process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS = originalTimeout;
+        if (brokenModuleRef) {
+          await cleanupBrokenSchedulerModule(brokenModuleRef);
+        }
+      }
+    }, 15_000);
+
+    it("emits SCHEDULER_REGISTRATION_FAILED and keeps retrying on the configured interval while Redis remains unreachable — never a silent, unbounded hang", async () => {
+      const originalRedisUrl = process.env.REDIS_URL;
+      const originalTimeout = process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS;
+      const originalRetryInterval = process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS;
+      process.env.REDIS_URL = "redis://redis:1";
+      process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS = SHORT_TIMEOUT_MS;
+      process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS = SHORT_RETRY_INTERVAL_MS;
+      let brokenModuleRef: TestingModule | undefined;
+      try {
+        brokenModuleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+        await brokenModuleRef.init();
+
+        const brokenManager = brokenModuleRef.get(SchedulerTickManager);
+        const errorSpy = jest.spyOn((brokenManager as unknown as { logger: { error: (...args: unknown[]) => void } }).logger, "error");
+        const warnSpy = jest.spyOn((brokenManager as unknown as { logger: { warn: (...args: unknown[]) => void } }).logger, "warn");
+
+        // Long enough for the first bounded attempt (1000ms) plus at
+        // least two retry cycles (500ms apart) to have occurred.
+        await new Promise((resolve) => setTimeout(resolve, 2_500));
+
+        const failedEvents = errorSpy.mock.calls.filter((call) => (call[0] as { event?: string })?.event === "SCHEDULER_REGISTRATION_FAILED");
+        const retryingEvents = warnSpy.mock.calls.filter((call) => (call[0] as { event?: string })?.event === "SCHEDULER_REGISTRATION_RETRYING");
+        // At least the initial failure plus one retry attempt having
+        // begun — proves the loop is genuinely active, not stalled.
+        expect(failedEvents.length).toBeGreaterThanOrEqual(1);
+        expect(retryingEvents.length).toBeGreaterThanOrEqual(1);
+        // Never logs the connection URL or any credential-bearing value.
+        for (const call of [...failedEvents, ...retryingEvents]) {
+          expect(JSON.stringify(call)).not.toContain("redis://");
+        }
+      } finally {
+        process.env.REDIS_URL = originalRedisUrl;
+        process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS = originalTimeout;
+        process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS = originalRetryInterval;
+        if (brokenModuleRef) {
+          await cleanupBrokenSchedulerModule(brokenModuleRef);
+        }
+      }
+    }, 15_000);
+
+    it("healthy-Redis startup registers on the first attempt, well within the bounded deadline — the bound never slows down the normal case", async () => {
+      // Uses the already-healthy shared `manager` from this file's own
+      // beforeAll — re-registering directly (idempotent, safe) and timing
+      // it, rather than booting yet another module instance.
+      const tickQueueForTiming = (manager as unknown as { tickQueue: { upsertJobScheduler: (id: string, repeat: { every: number; tz: string }, template: { name: string; data: object }) => Promise<unknown> } }).tickQueue;
+      const startedAt = Date.now();
+      await tickQueueForTiming.upsertJobScheduler("scheduler-tick-primary", { every: 60_000, tz: "UTC" }, { name: "scheduler.tick.v1", data: {} });
+      const elapsedMs = Date.now() - startedAt;
+      // A real, healthy Redis round-trip — comfortably under even the
+      // shortest configured registration timeout used elsewhere in this
+      // describe block (1000ms), let alone the production default (5000ms).
+      expect(elapsedMs).toBeLessThan(1000);
+    });
   });
 });

@@ -18,6 +18,15 @@ export interface WorkerConfig {
   // approved defaults, configuration-backed rather than hardcoded inline.
   schedulerTickIntervalMs: number;
   schedulerBatchSize: number;
+  // DEFECT-1F-004: bounds how long a single scheduler-registration attempt
+  // (queue.upsertJobScheduler, a real Redis round-trip) may wait before
+  // onApplicationBootstrap gives up on THIS attempt and lets application
+  // bootstrap proceed anyway — never how long bootstrap itself blocks.
+  schedulerRegistrationTimeoutMs: number;
+  // Fixed interval between background retry attempts once the first one
+  // has timed out — bounded, not exponential, not aggressive (matches
+  // BullMQ's own capped-linear reconnect delay in spirit).
+  schedulerRegistrationRetryIntervalMs: number;
 }
 
 export class WorkerConfigError extends Error {
@@ -69,5 +78,7 @@ export default function configuration(): WorkerConfig {
     heartbeatIntervalMs: parseInt(process.env.WORKER_HEARTBEAT_INTERVAL_MS ?? "15000", 10),
     schedulerTickIntervalMs: parseInt(process.env.SCHEDULER_TICK_INTERVAL_MS ?? "60000", 10),
     schedulerBatchSize: parseInt(process.env.SCHEDULER_BATCH_SIZE ?? "100", 10),
+    schedulerRegistrationTimeoutMs: parseInt(process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS ?? "5000", 10),
+    schedulerRegistrationRetryIntervalMs: parseInt(process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS ?? "10000", 10),
   };
 }
