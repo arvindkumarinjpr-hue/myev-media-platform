@@ -207,6 +207,15 @@ jobs:
       # to avoid the two-consumer race described there.
       - name: Start Worker (background)
         working-directory: apps/worker
+        env:
+          # --report-on-signal is the exact diagnostic technique already
+          # proven in this codebase to root-cause DEFECT-1F-002 (a real
+          # handle leak Jest's own --detectOpenHandles never surfaced).
+          # If this step times out again, SIGUSR2 below dumps a full
+          # report (native/JS stack traces, libuv handles, resource
+          # usage) to see EXACTLY what the process is blocked on, rather
+          # than continuing to guess from the outside.
+          NODE_OPTIONS: --report-on-signal --report-directory=/tmp
         run: |
           nohup pnpm exec ts-node --transpile-only src/main.ts > /tmp/worker.log 2>&1 &
           WORKER_PID=$!
@@ -246,6 +255,16 @@ jobs:
           ps -p "$WORKER_PID" -o pid,stat,%cpu,etime,cmd || echo "process $WORKER_PID is not running" >&2
           echo "--- /tmp/worker.log (byte count: $(wc -c < /tmp/worker.log 2>/dev/null || echo 'file missing')) ---" >&2
           cat /tmp/worker.log
+          echo "--- requesting a diagnostic report (SIGUSR2) ---" >&2
+          kill -SIGUSR2 "$WORKER_PID" 2>/dev/null || echo "could not signal $WORKER_PID" >&2
+          sleep 3
+          REPORT_FILE=$(ls -t /tmp/report.*.json 2>/dev/null | head -1)
+          if [ -n "$REPORT_FILE" ]; then
+            echo "--- diagnostic report: $REPORT_FILE ---" >&2
+            cat "$REPORT_FILE"
+          else
+            echo "no diagnostic report file appeared" >&2
+          fi
           exit 1
 
       - name: Run E2E suite
