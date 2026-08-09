@@ -87,7 +87,13 @@ describe("Worker (e2e) — system.ping.v1 end-to-end pipeline", () => {
     expect(updated.attempts).toBe(1);
     expect(updated.startedAt).not.toBeNull();
     expect(updated.completedAt).not.toBeNull();
-    expect(updated.processorVersion).toBe("e2e-test");
+    // Not a hardcoded literal: the CI workflow's own e2e job sets
+    // WORKER_APPLICATION_VERSION to "ci-e2e" (distinct from this
+    // describe block's own "e2e-test" fallback, which only applies when
+    // nothing else has already set it) — asserting against whatever
+    // value is actually configured proves the same end-to-end
+    // propagation regardless of which environment set it.
+    expect(updated.processorVersion).toBe(process.env.WORKER_APPLICATION_VERSION);
 
     const history = await prisma.backgroundJobHistory.findMany({ where: { backgroundJobId: row.id }, orderBy: { occurredAt: "asc" } });
     expect(history.map((h) => h.toStatus)).toEqual(["RUNNING", "COMPLETED"]);
@@ -132,6 +138,8 @@ describe("Worker (e2e) — system.ping.v1 end-to-end pipeline", () => {
     const row = await prisma.workerHeartbeat.findUnique({ where: { workerId: heartbeat.workerId } });
     expect(row).not.toBeNull();
     expect(row?.queueAssignments).toEqual(["SYSTEM"]);
-    expect(row?.applicationVersion).toBe("e2e-test");
+    // See the identical comment above — asserts the actually-configured
+    // value, not a literal that only happens to match a local run.
+    expect(row?.applicationVersion).toBe(process.env.WORKER_APPLICATION_VERSION);
   });
 });
