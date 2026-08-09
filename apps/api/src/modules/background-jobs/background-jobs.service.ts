@@ -1,5 +1,15 @@
 import { randomUUID, createHash } from "crypto";
-import { BadRequestException, ConflictException, HttpException, HttpStatus, Inject, Injectable, Logger, NotFoundException, OnModuleDestroy } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  HttpException,
+  HttpStatus,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+  OnModuleDestroy,
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { plainToInstance } from "class-transformer";
 import { validate } from "class-validator";
@@ -14,13 +24,45 @@ import { QUEUE_REGISTRY } from "./queue-registry.module";
 
 const UNIQUE_CONSTRAINT_VIOLATION = "P2002";
 
-function isExpectedUniqueViolation(error: unknown, columnSubstrings: string[]): boolean {
-  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== UNIQUE_CONSTRAINT_VIOLATION) {
+/**
+ * DEFECT-1F-003: idempotency uniqueness is enforced by two separate
+ * PARTIAL unique indexes (see schema.prisma's BackgroundJob model
+ * comment), not one composite constraint — a workspace-scoped violation
+ * and a platform-level (workspaceId IS NULL) violation report distinct
+ * `error.meta.target` column sets (verified empirically against a live
+ * Postgres instance, not assumed): `["workspace_id", "idempotency_key"]`
+ * for the former, `["idempotency_key"]` alone for the latter — Postgres
+ * never includes a column that was NULL in the violating row's own key
+ * in its error DETAIL, which is exactly what Prisma's `target` reflects.
+ * Matching is exact (target's column set must equal the expected set for
+ * the request's own scope, no more, no fewer) — a P2002 against some
+ * other, unrelated constraint (e.g. publicId) must never be
+ * misinterpreted as an idempotency conflict and silently swallowed.
+ */
+function isExpectedIdempotencyViolation(
+  error: unknown,
+  workspaceId: string | null,
+): boolean {
+  if (
+    !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+    error.code !== UNIQUE_CONSTRAINT_VIOLATION
+  ) {
     return false;
   }
   const target = error.meta?.target;
-  const targets = Array.isArray(target) ? target : typeof target === "string" ? [target] : [];
-  return columnSubstrings.every((needle) => targets.some((entry) => typeof entry === "string" && entry.toLowerCase().includes(needle.toLowerCase())));
+  const targets = Array.isArray(target)
+    ? target
+    : typeof target === "string"
+      ? [target]
+      : [];
+  const expected =
+    workspaceId === null
+      ? ["idempotency_key"]
+      : ["workspace_id", "idempotency_key"];
+  return (
+    targets.length === expected.length &&
+    expected.every((column) => targets.includes(column))
+  );
 }
 
 // Deterministic regardless of key insertion order, so two logically-
@@ -47,7 +89,9 @@ function canonicalize(value: unknown): unknown {
  * side's actual content.
  */
 function computeFingerprint(jobType: string, payload: unknown): string {
-  return createHash("sha256").update(JSON.stringify(canonicalize({ jobType, payload }))).digest("hex");
+  return createHash("sha256")
+    .update(JSON.stringify(canonicalize({ jobType, payload })))
+    .digest("hex");
 }
 
 const IDEMPOTENCY_CACHE_TTL_SECONDS = 86_400; // 24h — Module 1F Engineering Plan §7's API-level response-replay window.
@@ -91,9 +135,11 @@ const TERMINAL_STATUSES = ["COMPLETED", "FAILED", "TIMED_OUT"] as const;
  * own service calls directly once it has a real job type to dispatch.
  *
  * Idempotency (Milestone 6) is two layers, per the Engineering Plan:
- * queue-level (the `@@unique([workspaceId, idempotencyKey])` constraint
- * on background_jobs — always authoritative, Postgres-enforced, correct
- * even if Redis is down or a prior BullMQ entry has long since been
+ * queue-level (two PARTIAL unique indexes on background_jobs — see
+ * isExpectedIdempotencyViolation's doc comment and schema.prisma's
+ * BackgroundJob model, DEFECT-1F-003 — always authoritative,
+ * Postgres-enforced, correct even if Redis is down or a prior BullMQ
+ * entry has long since been
  * cleaned up by removeOnComplete/removeOnFail) and API-level (a Redis-
  * backed 24h response-replay cache in front of it — a fail-open
  * optimization, never itself a source of truth, so a Redis outage
@@ -126,7 +172,10 @@ export class BackgroundJobsService implements OnModuleDestroy {
   async enqueue(input: EnqueueJobInput): Promise<BackgroundJob> {
     const manifest = this.registry.getManifest(input.jobType);
     if (!manifest) {
-      throw new BadRequestException({ code: "JOB_TYPE_UNKNOWN", message: `"${input.jobType}" is not a registered job type.` });
+      throw new BadRequestException({
+        code: "JOB_TYPE_UNKNOWN",
+        message: `"${input.jobType}" is not a registered job type.`,
+      });
     }
 
     const payload = plainToInstance(manifest.payloadDto, input.payload);
@@ -146,15 +195,21 @@ export class BackgroundJobsService implements OnModuleDestroy {
     const fingerprint = computeFingerprint(input.jobType, payload);
 
     if (input.idempotencyKey) {
-      const cached = await this.checkIdempotencyCache(input.workspaceId, input.idempotencyKey);
+      const cached = await this.checkIdempotencyCache(
+        input.workspaceId,
+        input.idempotencyKey,
+      );
       if (cached) {
         if (cached.fingerprint !== fingerprint) {
           throw new ConflictException({
             code: "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH",
-            message: "This idempotency key was already used with a different job type or payload.",
+            message:
+              "This idempotency key was already used with a different job type or payload.",
           });
         }
-        const cachedRow = await this.prisma.backgroundJob.findUnique({ where: { id: cached.jobId } });
+        const cachedRow = await this.prisma.backgroundJob.findUnique({
+          where: { id: cached.jobId },
+        });
         // A cache hit pointing at a row that no longer exists shouldn't
         // happen in practice (the cache's 24h TTL is far shorter than the
         // 90-day background_jobs retention it points into) — if it ever
@@ -182,7 +237,9 @@ export class BackgroundJobsService implements OnModuleDestroy {
             createdById: input.createdByUserId,
           },
         });
-        await tx.backgroundJobHistory.create({ data: { backgroundJobId: created.id, toStatus: "QUEUED" } });
+        await tx.backgroundJobHistory.create({
+          data: { backgroundJobId: created.id, toStatus: "QUEUED" },
+        });
         return created;
       });
     } catch (error) {
@@ -201,16 +258,39 @@ export class BackgroundJobsService implements OnModuleDestroy {
       // first error and refuses any further command in it (25P02) —
       // recovery can only happen in a fresh query after the rollback
       // completes.
+      //
+      // isExpectedIdempotencyViolation's error.meta.target check is
+      // defense-in-depth, not the actual correctness guarantee — that
+      // guarantee is the findFirst lookup immediately below. If the
+      // target check ever mismatches against a future Prisma/Postgres
+      // version's error metadata shape (true when it shouldn't be, or
+      // false when it should), the lookup either won't run or will run
+      // and find nothing, and `if (!existing) throw error` immediately
+      // below rethrows the original, unmodified error either way. An
+      // unexpected metadata format can therefore never silently produce
+      // an incorrect idempotent replay — it can only, at worst, fail to
+      // recognize a real conflict and surface the raw Prisma error
+      // instead, which is a loud failure, not a silent one.
       const existing =
-        input.idempotencyKey && isExpectedUniqueViolation(error, ["workspace_id", "idempotency_key"])
-          ? await this.prisma.backgroundJob.findFirst({ where: { workspaceId: input.workspaceId, idempotencyKey: input.idempotencyKey } })
+        input.idempotencyKey &&
+        isExpectedIdempotencyViolation(error, input.workspaceId)
+          ? await this.prisma.backgroundJob.findFirst({
+              where: {
+                workspaceId: input.workspaceId,
+                idempotencyKey: input.idempotencyKey,
+              },
+            })
           : null;
       if (!existing) throw error;
-      const existingFingerprint = computeFingerprint(existing.jobType, existing.payloadMetadata);
+      const existingFingerprint = computeFingerprint(
+        existing.jobType,
+        existing.payloadMetadata,
+      );
       if (existingFingerprint !== fingerprint) {
         throw new ConflictException({
           code: "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH",
-          message: "This idempotency key was already used with a different job type or payload.",
+          message:
+            "This idempotency key was already used with a different job type or payload.",
         });
       }
       row = existing;
@@ -234,46 +314,85 @@ export class BackgroundJobsService implements OnModuleDestroy {
       // would leave the row stuck QUEUED with no compensating update at
       // all. A future hardening pass should reconcile stuck QUEUED rows
       // against BullMQ, not invented speculatively here.
-      this.logger.error({ err: error, jobId: row.publicId, jobType: input.jobType }, "failed to dispatch job to BullMQ after Postgres commit");
+      this.logger.error(
+        { err: error, jobId: row.publicId, jobType: input.jobType },
+        "failed to dispatch job to BullMQ after Postgres commit",
+      );
       await this.prisma.backgroundJob
-        .update({ where: { id: row.id }, data: { status: "FAILED", failedAt: new Date(), errorCode: "ENQUEUE_DISPATCH_FAILED", errorMessageSafe: "Failed to dispatch job to the queue." } })
+        .update({
+          where: { id: row.id },
+          data: {
+            status: "FAILED",
+            failedAt: new Date(),
+            errorCode: "ENQUEUE_DISPATCH_FAILED",
+            errorMessageSafe: "Failed to dispatch job to the queue.",
+          },
+        })
         .catch(() => undefined);
       throw error;
     }
 
     if (input.idempotencyKey) {
-      await this.cacheIdempotencyResult(input.workspaceId, input.idempotencyKey, fingerprint, row.id);
+      await this.cacheIdempotencyResult(
+        input.workspaceId,
+        input.idempotencyKey,
+        fingerprint,
+        row.id,
+      );
     }
 
     return row;
   }
 
-  async list(workspaceId: string, filters: { status?: string; jobType?: string; limit: number }): Promise<BackgroundJob[]> {
+  async list(
+    workspaceId: string,
+    filters: { status?: string; jobType?: string; limit: number },
+  ): Promise<BackgroundJob[]> {
     return this.prisma.backgroundJob.findMany({
-      where: { workspaceId, status: filters.status as never, jobType: filters.jobType },
+      where: {
+        workspaceId,
+        status: filters.status as never,
+        jobType: filters.jobType,
+      },
       orderBy: { createdAt: "desc" },
       take: filters.limit,
     });
   }
 
   async get(workspaceId: string, jobPublicId: string): Promise<BackgroundJob> {
-    const job = await this.prisma.backgroundJob.findFirst({ where: { publicId: jobPublicId, workspaceId } });
+    const job = await this.prisma.backgroundJob.findFirst({
+      where: { publicId: jobPublicId, workspaceId },
+    });
     if (!job) {
-      throw new NotFoundException({ code: "JOB_NOT_FOUND", message: "Background job not found." });
+      throw new NotFoundException({
+        code: "JOB_NOT_FOUND",
+        message: "Background job not found.",
+      });
     }
     return job;
   }
 
-  async requestCancel(workspaceId: string, jobPublicId: string, actorUserId: string, ipAddress?: string): Promise<BackgroundJob> {
+  async requestCancel(
+    workspaceId: string,
+    jobPublicId: string,
+    actorUserId: string,
+    ipAddress?: string,
+  ): Promise<BackgroundJob> {
     const job = await this.get(workspaceId, jobPublicId);
 
     if ((TERMINAL_STATUSES as readonly string[]).includes(job.status)) {
-      throw new ConflictException({ code: "JOB_ALREADY_TERMINAL", message: "This job has already finished and cannot be cancelled." });
+      throw new ConflictException({
+        code: "JOB_ALREADY_TERMINAL",
+        message: "This job has already finished and cannot be cancelled.",
+      });
     }
 
     const manifest = this.registry.getManifest(job.jobType);
     if (!manifest?.cancelable) {
-      throw new ConflictException({ code: "JOB_TYPE_NOT_CANCELABLE", message: "This job type does not support cancellation." });
+      throw new ConflictException({
+        code: "JOB_TYPE_NOT_CANCELABLE",
+        message: "This job type does not support cancellation.",
+      });
     }
 
     if (job.cancellationRequestedAt) {
@@ -283,7 +402,10 @@ export class BackgroundJobsService implements OnModuleDestroy {
     }
 
     await this.prisma.$transaction(async (tx) => {
-      await tx.backgroundJob.updateMany({ where: { id: job.id, cancellationRequestedAt: null }, data: { cancellationRequestedAt: new Date() } });
+      await tx.backgroundJob.updateMany({
+        where: { id: job.id, cancellationRequestedAt: null },
+        data: { cancellationRequestedAt: new Date() },
+      });
       await this.audit.recordWithinTransaction(tx, {
         action: "JOB_CANCELLATION_REQUESTED",
         actorUserId,
@@ -297,16 +419,27 @@ export class BackgroundJobsService implements OnModuleDestroy {
     return this.get(workspaceId, jobPublicId);
   }
 
-  async requestRetry(workspaceId: string, jobPublicId: string, actorUserId: string, ipAddress?: string): Promise<BackgroundJob> {
+  async requestRetry(
+    workspaceId: string,
+    jobPublicId: string,
+    actorUserId: string,
+    ipAddress?: string,
+  ): Promise<BackgroundJob> {
     const job = await this.get(workspaceId, jobPublicId);
 
     const manifest = this.registry.getManifest(job.jobType);
     if (!manifest?.supportsRetry) {
-      throw new ConflictException({ code: "JOB_TYPE_NOT_RETRYABLE", message: "This job type does not support retry." });
+      throw new ConflictException({
+        code: "JOB_TYPE_NOT_RETRYABLE",
+        message: "This job type does not support retry.",
+      });
     }
 
     if (job.status !== "FAILED" && job.status !== "TIMED_OUT") {
-      throw new ConflictException({ code: "JOB_NOT_RETRYABLE_IN_CURRENT_STATE", message: "Only a failed or timed-out job can be retried." });
+      throw new ConflictException({
+        code: "JOB_NOT_RETRYABLE_IN_CURRENT_STATE",
+        message: "Only a failed or timed-out job can be retried.",
+      });
     }
 
     // Exactly-one-scheduler invariant: the read above and this write are
@@ -335,7 +468,14 @@ export class BackgroundJobsService implements OnModuleDestroy {
         },
       });
       if (result.count === 0) return false;
-      await tx.backgroundJobHistory.create({ data: { backgroundJobId: job.id, fromStatus: job.status, toStatus: "QUEUED", detail: { reason: "manual_retry" } } });
+      await tx.backgroundJobHistory.create({
+        data: {
+          backgroundJobId: job.id,
+          fromStatus: job.status,
+          toStatus: "QUEUED",
+          detail: { reason: "manual_retry" },
+        },
+      });
       await this.audit.recordWithinTransaction(tx, {
         action: "JOB_RETRY_REQUESTED",
         actorUserId,
@@ -350,7 +490,8 @@ export class BackgroundJobsService implements OnModuleDestroy {
     if (!scheduled) {
       throw new ConflictException({
         code: "JOB_RETRY_ALREADY_SCHEDULED",
-        message: "This job's retry has already been scheduled by another request.",
+        message:
+          "This job's retry has already been scheduled by another request.",
       });
     }
 
@@ -378,14 +519,29 @@ export class BackgroundJobsService implements OnModuleDestroy {
       // failure here would otherwise leave it silently stuck — healthy-
       // looking, but with no BullMQ entry that will ever pick it up.
       // Compensate to a visible terminal state instead of leaving that gap.
-      this.logger.error({ err: dispatchError, jobId: job.publicId }, "retry dispatch failed after the Postgres retry-scheduling commit — compensating to dead-lettered");
+      this.logger.error(
+        { err: dispatchError, jobId: job.publicId },
+        "retry dispatch failed after the Postgres retry-scheduling commit — compensating to dead-lettered",
+      );
       await this.prisma.backgroundJob
         .updateMany({
           where: { id: job.id, status: "QUEUED" },
-          data: { status: "FAILED", failedAt: new Date(), deadLetteredAt: new Date(), errorCode: "RETRY_DISPATCH_FAILED", errorMessageSafe: "Failed to dispatch the retry to the queue." },
+          data: {
+            status: "FAILED",
+            failedAt: new Date(),
+            deadLetteredAt: new Date(),
+            errorCode: "RETRY_DISPATCH_FAILED",
+            errorMessageSafe: "Failed to dispatch the retry to the queue.",
+          },
         })
         .catch(() => undefined);
-      throw new HttpException({ code: "RETRY_DISPATCH_FAILED", message: "Failed to dispatch the retry to the queue." }, HttpStatus.SERVICE_UNAVAILABLE);
+      throw new HttpException(
+        {
+          code: "RETRY_DISPATCH_FAILED",
+          message: "Failed to dispatch the retry to the queue.",
+        },
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
     }
 
     return this.get(workspaceId, jobPublicId);
@@ -393,7 +549,10 @@ export class BackgroundJobsService implements OnModuleDestroy {
 
   private getQueue(queueName: string): Queue {
     if (!this.redisConnection) {
-      this.redisConnection = new Redis(this.config.get("redisUrl", { infer: true }), { maxRetriesPerRequest: null });
+      this.redisConnection = new Redis(
+        this.config.get("redisUrl", { infer: true }),
+        { maxRetriesPerRequest: null },
+      );
       // Same rationale as apps/worker's BullMqWorkerManager: an unhandled
       // 'error' event on a bare Node EventEmitter crashes the process —
       // without this, a transient Redis blip would take down the whole
@@ -413,11 +572,14 @@ export class BackgroundJobsService implements OnModuleDestroy {
 
   private getIdempotencyRedis(): Redis {
     if (!this.idempotencyRedis) {
-      this.idempotencyRedis = new Redis(this.config.get("redisUrl", { infer: true }), {
-        lazyConnect: true,
-        maxRetriesPerRequest: 1,
-        retryStrategy: () => null,
-      });
+      this.idempotencyRedis = new Redis(
+        this.config.get("redisUrl", { infer: true }),
+        {
+          lazyConnect: true,
+          maxRetriesPerRequest: 1,
+          retryStrategy: () => null,
+        },
+      );
       this.idempotencyRedis.on("error", () => {
         // Swallow — every call site below already treats a Redis error as
         // a cache miss / no-op and logs its own warning with call-site
@@ -428,25 +590,41 @@ export class BackgroundJobsService implements OnModuleDestroy {
     return this.idempotencyRedis;
   }
 
-  private idempotencyCacheKey(workspaceId: string | null, idempotencyKey: string): string {
+  private idempotencyCacheKey(
+    workspaceId: string | null,
+    idempotencyKey: string,
+  ): string {
     return `bg-job-idem:${workspaceId ?? "platform"}:${idempotencyKey}`;
   }
 
-  private async checkIdempotencyCache(workspaceId: string | null, idempotencyKey: string): Promise<IdempotencyCacheEntry | null> {
+  private async checkIdempotencyCache(
+    workspaceId: string | null,
+    idempotencyKey: string,
+  ): Promise<IdempotencyCacheEntry | null> {
     try {
-      const raw = await this.getIdempotencyRedis().get(this.idempotencyCacheKey(workspaceId, idempotencyKey));
+      const raw = await this.getIdempotencyRedis().get(
+        this.idempotencyCacheKey(workspaceId, idempotencyKey),
+      );
       return raw ? (JSON.parse(raw) as IdempotencyCacheEntry) : null;
     } catch (error) {
       // Fail OPEN: a Redis outage here degrades to "always fall through
       // to the Postgres-level check below," never to "dedup breaks" — the
       // unique constraint remains authoritative regardless. Never logs
       // the idempotency key or any payload — just that a read failed.
-      this.logger.warn({ err: error }, "idempotency cache read failed — failing open, Postgres unique constraint remains authoritative");
+      this.logger.warn(
+        { err: error },
+        "idempotency cache read failed — failing open, Postgres unique constraint remains authoritative",
+      );
       return null;
     }
   }
 
-  private async cacheIdempotencyResult(workspaceId: string | null, idempotencyKey: string, fingerprint: string, jobId: string): Promise<void> {
+  private async cacheIdempotencyResult(
+    workspaceId: string | null,
+    idempotencyKey: string,
+    fingerprint: string,
+    jobId: string,
+  ): Promise<void> {
     try {
       await this.getIdempotencyRedis().set(
         this.idempotencyCacheKey(workspaceId, idempotencyKey),
@@ -458,7 +636,10 @@ export class BackgroundJobsService implements OnModuleDestroy {
       // Best-effort only — a failed cache write never fails the enqueue
       // that already succeeded; the next replay attempt just falls
       // through to the (slower, but authoritative) Postgres path.
-      this.logger.warn({ err: error }, "idempotency cache write failed — best-effort only, enqueue already succeeded");
+      this.logger.warn(
+        { err: error },
+        "idempotency cache write failed — best-effort only, enqueue already succeeded",
+      );
     }
   }
 
