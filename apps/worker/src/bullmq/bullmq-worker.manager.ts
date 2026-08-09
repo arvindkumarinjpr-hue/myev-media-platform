@@ -5,11 +5,12 @@ import { validate } from "class-validator";
 import { Job, Queue, Worker } from "bullmq";
 import Redis from "ioredis";
 import { InjectPinoLogger, PinoLogger } from "nestjs-pino";
-import { JobCancelledError, type ProcessorContext, type QueueRegistry } from "@myev/shared";
+import { JobCancelledError, boundedShutdown, type ProcessorContext, type QueueRegistry, type ShutdownOutcomeTracker } from "@myev/shared";
 import type { WorkerConfig } from "../config/configuration";
 import { QUEUE_REGISTRY } from "../queue/queue-registry.module";
 import { WorkerHeartbeatService } from "../heartbeat/worker-heartbeat.service";
 import { PrismaService } from "../prisma/prisma.service";
+import { SHUTDOWN_TRACKER } from "../shutdown/shutdown.module";
 import { Prisma, type BackgroundJob } from "../../../api/generated/prisma";
 
 class ProcessorTimeoutError extends Error {
@@ -79,6 +80,7 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
     @Inject(QUEUE_REGISTRY) private readonly registry: QueueRegistry,
     private readonly heartbeat: WorkerHeartbeatService,
     private readonly prisma: PrismaService,
+    @Inject(SHUTDOWN_TRACKER) private readonly shutdownTracker: ShutdownOutcomeTracker,
     @InjectPinoLogger(BullMqWorkerManager.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -407,14 +409,62 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
     return queue;
   }
 
+  /**
+   * DEFECT-1F-001: Worker.close()/Queue.close()/connection.quit() are all
+   * unbounded — if Redis is genuinely unreachable, each can hang
+   * indefinitely (maxRetriesPerRequest: null means the underlying
+   * command/reconnect loop never settles on its own). Bounded via
+   * @myev/shared's boundedShutdown, mirroring the exact pattern already
+   * proven for SchedulerTickManager's registration path (DEFECT-1F-004).
+   *
+   * The graceful phase is the same cooperative drain as before —
+   * Worker.close() stops accepting new jobs and waits for in-flight jobs
+   * to finish, which is the "graceful shutdown drains in-flight jobs"
+   * requirement; hard process termination is out of scope by design (see
+   * ProcessorManifest.cancelable's own doc comment) UNLESS the deadline
+   * is exceeded, in which case the force phase below takes over.
+   *
+   * The force phase tears down BOTH resource classes deliberately —
+   * Worker.close(true) for BullMQ's own internally-duplicated blocking
+   * connection (a Worker cannot issue non-blocking commands on a
+   * connection parked in a blocking read, so it maintains its own
+   * internal connection distinct from the one passed into its
+   * constructor — disconnecting only the caller-owned `connection` field
+   * would not necessarily close that internal one), and
+   * connection.disconnect() for the caller-owned connection this class
+   * itself constructed. Neither call is awaited here: forceClose's
+   * contract (boundedShutdown's second parameter) is synchronous by
+   * design, so this method's own returned promise settles within
+   * deadlineMs regardless of how long BullMQ's internal close(true)
+   * teardown actually takes — see boundedShutdown's own doc comment for
+   * why. Each fire-and-forget call carries its own swallow-catch so a
+   * later rejection can never produce an unhandled-rejection warning.
+   */
   async onApplicationShutdown(): Promise<void> {
-    // Worker.close() is cooperative — it stops accepting new jobs and
-    // waits for in-flight jobs to finish (or their own timeout) before
-    // resolving. This is the "graceful shutdown drains in-flight jobs"
-    // requirement; hard process termination is out of scope by design
-    // (see ProcessorManifest.cancelable's own doc comment).
-    await Promise.all(this.workers.map((worker) => worker.close()));
-    await Promise.all([...this.queues.values()].map((queue) => queue.close()));
-    await this.connection?.quit();
+    const deadlineMs = this.config.get("redisShutdownDeadlineMs", { infer: true });
+
+    const outcome = await boundedShutdown(
+      async () => {
+        await Promise.all(this.workers.map((worker) => worker.close()));
+        await Promise.all([...this.queues.values()].map((queue) => queue.close()));
+        await this.connection?.quit();
+      },
+      () => {
+        for (const worker of this.workers) {
+          worker.close(true).catch(() => undefined);
+        }
+        this.connection?.disconnect();
+      },
+      deadlineMs,
+    );
+
+    this.shutdownTracker.record(BullMqWorkerManager.name, outcome);
+    if (outcome !== "GRACEFUL") {
+      const level = outcome === "FAILED" ? "error" : "warn";
+      this.logger[level](
+        { event: outcome === "FAILED" ? "REDIS_SHUTDOWN_FAILED" : "REDIS_SHUTDOWN_FORCED", component: BullMqWorkerManager.name, deadlineMs },
+        outcome === "FAILED" ? "shutdown force-close also failed" : "graceful shutdown exceeded the deadline — forced disconnect",
+      );
+    }
   }
 }

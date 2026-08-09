@@ -15,12 +15,13 @@ import { plainToInstance } from "class-transformer";
 import { validate } from "class-validator";
 import { Queue } from "bullmq";
 import Redis from "ioredis";
-import type { QueueRegistry } from "@myev/shared";
+import { boundedShutdown, type QueueRegistry, type ShutdownOutcomeTracker } from "@myev/shared";
 import { Prisma, type BackgroundJob } from "../../../generated/prisma";
 import { PrismaService } from "../../prisma/prisma.service";
 import { AuditService } from "../audit/audit.service";
 import type { AppConfig } from "../../config/configuration";
 import { QUEUE_REGISTRY } from "./queue-registry.module";
+import { SHUTDOWN_TRACKER } from "../../shutdown/shutdown.module";
 
 const UNIQUE_CONSTRAINT_VIOLATION = "P2002";
 
@@ -167,6 +168,7 @@ export class BackgroundJobsService implements OnModuleDestroy {
     private readonly audit: AuditService,
     private readonly config: ConfigService<AppConfig, true>,
     @Inject(QUEUE_REGISTRY) private readonly registry: QueueRegistry,
+    @Inject(SHUTDOWN_TRACKER) private readonly shutdownTracker: ShutdownOutcomeTracker,
   ) {}
 
   async enqueue(input: EnqueueJobInput): Promise<BackgroundJob> {
@@ -643,9 +645,42 @@ export class BackgroundJobsService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * DEFECT-1F-001: Queue.close()/redisConnection.quit() are unbounded —
+   * bounded via @myev/shared's boundedShutdown, mirroring
+   * BullMqWorkerManager's identical fix in apps/worker (see that class's
+   * onApplicationShutdown doc comment for the full rationale). This
+   * process never runs a BullMQ Worker (it only enqueues, never
+   * executes), so there is no BullMQ-internal blocking connection to
+   * force-close here — redisConnection.disconnect() is the complete
+   * force story for this component. idempotencyRedis's own cleanup is
+   * untouched — it is already correctly bounded (lazyConnect,
+   * maxRetriesPerRequest: 1, retryStrategy: () => null, plain
+   * .disconnect() on shutdown) and was never part of this defect.
+   */
   async onModuleDestroy(): Promise<void> {
-    await Promise.all([...this.queues.values()].map((queue) => queue.close()));
-    await this.redisConnection?.quit();
+    const deadlineMs = this.config.get("redisShutdownDeadlineMs", { infer: true });
+
+    const outcome = await boundedShutdown(
+      async () => {
+        await Promise.all([...this.queues.values()].map((queue) => queue.close()));
+        await this.redisConnection?.quit();
+      },
+      () => {
+        this.redisConnection?.disconnect();
+      },
+      deadlineMs,
+    );
+
+    this.shutdownTracker.record(BackgroundJobsService.name, outcome);
+    if (outcome !== "GRACEFUL") {
+      const level = outcome === "FAILED" ? "error" : "warn";
+      this.logger[level](
+        { event: outcome === "FAILED" ? "REDIS_SHUTDOWN_FAILED" : "REDIS_SHUTDOWN_FORCED", component: BackgroundJobsService.name, deadlineMs },
+        outcome === "FAILED" ? "shutdown force-close also failed" : "graceful shutdown exceeded the deadline — forced disconnect",
+      );
+    }
+
     this.idempotencyRedis?.disconnect();
   }
 }

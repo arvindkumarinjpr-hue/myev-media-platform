@@ -4,6 +4,11 @@ export interface AppConfig {
   logLevel: string;
   databaseUrl: string;
   redisUrl: string;
+  // DEFECT-1F-001: bounds how long BackgroundJobsService's graceful Redis
+  // shutdown (Queue.close()/redisConnection.quit()) may wait before
+  // falling back to a forced disconnect — see @myev/shared's
+  // boundedShutdown. Mirrors apps/worker's identical config key.
+  redisShutdownDeadlineMs: number;
   storage: {
     endpoint: string;
     port: number;
@@ -113,6 +118,7 @@ export default (): AppConfig => ({
   logLevel: process.env.LOG_LEVEL ?? "info",
   databaseUrl: process.env.DATABASE_URL ?? "",
   redisUrl: process.env.REDIS_URL ?? "",
+  redisShutdownDeadlineMs: parseInt(process.env.REDIS_SHUTDOWN_DEADLINE_MS ?? "5000", 10),
   storage: {
     endpoint: process.env.STORAGE_ENDPOINT ?? "minio",
     port: parseInt(process.env.STORAGE_PORT ?? "9000", 10),

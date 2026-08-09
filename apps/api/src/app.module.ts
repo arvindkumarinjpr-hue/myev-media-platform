@@ -15,6 +15,9 @@ import { MediaAssetsModule } from "./modules/media-assets/media-assets.module";
 import { ContentModule } from "./modules/content/content.module";
 import { BackgroundJobsModule } from "./modules/background-jobs/background-jobs.module";
 import { SchedulesModule } from "./modules/schedules/schedules.module";
+import { EventsModule } from "./modules/events/events.module";
+import { ShutdownModule } from "./shutdown/shutdown.module";
+import { SimulatedShutdownFailureModule } from "./testing/simulated-shutdown-failure.module";
 import type { AppConfig } from "./config/configuration";
 
 @Module({
@@ -49,6 +52,12 @@ import type { AppConfig } from "./config/configuration";
     ContentModule,
     BackgroundJobsModule,
     SchedulesModule,
+    EventsModule,
+    ShutdownModule,
+    // DEFECT-1F-001 FINAL SIGNAL ERROR-HANDLING FIX — test fixture only,
+    // inert unless SIMULATE_SHUTDOWN_FAILURE=true is explicitly set. See
+    // testing/simulated-shutdown-failure.module.ts's own doc comment.
+    ...(process.env.SIMULATE_SHUTDOWN_FAILURE === "true" || process.env.SIMULATE_TRACKER_FAILURE === "true" ? [SimulatedShutdownFailureModule] : []),
   ],
 })
 export class AppModule {}

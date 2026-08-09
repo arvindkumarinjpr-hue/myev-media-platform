@@ -9,6 +9,9 @@ import { QueueRegistryModule } from "./queue/queue-registry.module";
 import { HeartbeatModule } from "./heartbeat/heartbeat.module";
 import { BullMqModule } from "./bullmq/bullmq.module";
 import { SchedulerModule } from "./scheduler/scheduler.module";
+import { EventsModule } from "./events/events.module";
+import { ShutdownModule } from "./shutdown/shutdown.module";
+import { SimulatedShutdownFailureModule } from "./testing/simulated-shutdown-failure.module";
 
 @Module({
   imports: [
@@ -34,6 +37,12 @@ import { SchedulerModule } from "./scheduler/scheduler.module";
     HeartbeatModule,
     BullMqModule,
     SchedulerModule,
+    EventsModule,
+    ShutdownModule,
+    // DEFECT-1F-001 FINAL SIGNAL ERROR-HANDLING FIX — test fixture only,
+    // inert unless SIMULATE_SHUTDOWN_FAILURE=true is explicitly set. See
+    // testing/simulated-shutdown-failure.module.ts's own doc comment.
+    ...(process.env.SIMULATE_SHUTDOWN_FAILURE === "true" || process.env.SIMULATE_TRACKER_FAILURE === "true" ? [SimulatedShutdownFailureModule] : []),
   ],
 })
 export class AppModule {}
