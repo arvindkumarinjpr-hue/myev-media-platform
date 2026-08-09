@@ -226,11 +226,24 @@ jobs:
               echo "Worker is listening after ${i}s."
               exit 0
             fi
+            # nestjs-pino's bufferLogs:true (main.ts) withholds ALL log
+            # output — including bootstrap progress — until
+            # app.flushLogs() runs, which only happens once
+            # createApplicationContext() has already FULLY resolved. An
+            # empty /tmp/worker.log therefore proves nothing about
+            # whether bootstrap is progressing or stuck — this periodic
+            # CPU/state snapshot is the only way to tell the two apart:
+            # sustained %CPU means real (if slow) work; a flat/idle %CPU
+            # for many consecutive samples means something is genuinely
+            # blocked, not merely slow.
+            if [ $((i % 15)) -eq 0 ]; then
+              echo "[t=${i}s] $(ps -p "$WORKER_PID" -o pid,stat,%cpu,etime,cmd --no-headers 2>/dev/null || echo "pid $WORKER_PID gone")"
+            fi
             sleep 1
           done
           echo "Worker did not start in time." >&2
           echo "--- process still alive? ---" >&2
-          ps -p "$WORKER_PID" -o pid,stat,cmd || echo "process $WORKER_PID is not running" >&2
+          ps -p "$WORKER_PID" -o pid,stat,%cpu,etime,cmd || echo "process $WORKER_PID is not running" >&2
           echo "--- /tmp/worker.log (byte count: $(wc -c < /tmp/worker.log 2>/dev/null || echo 'file missing')) ---" >&2
           cat /tmp/worker.log
           exit 1
