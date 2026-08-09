@@ -26,7 +26,9 @@ export class WorkerHeartbeatService implements OnApplicationBootstrap, OnApplica
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
+    process.stderr.write(`[LIFECYCLE] WorkerHeartbeatService.onApplicationBootstrap START t=${Date.now()}\n`);
     await this.beat();
+    process.stderr.write(`[LIFECYCLE] WorkerHeartbeatService.onApplicationBootstrap END t=${Date.now()}\n`);
     const intervalMs = this.config.get("heartbeatIntervalMs", { infer: true });
     this.timer = setInterval(() => {
       this.beat().catch((error: unknown) => {
@@ -37,6 +39,7 @@ export class WorkerHeartbeatService implements OnApplicationBootstrap, OnApplica
   }
 
   private async beat(): Promise<void> {
+    process.stderr.write(`[LIFECYCLE] WorkerHeartbeatService.beat() upsert START t=${Date.now()}\n`);
     const now = new Date();
     await this.prisma.workerHeartbeat.upsert({
       where: { workerId: this.workerId },
@@ -53,6 +56,7 @@ export class WorkerHeartbeatService implements OnApplicationBootstrap, OnApplica
         lastHeartbeatAt: now,
       },
     });
+    process.stderr.write(`[LIFECYCLE] WorkerHeartbeatService.beat() upsert END t=${Date.now()}\n`);
   }
 
   onApplicationShutdown(): void {

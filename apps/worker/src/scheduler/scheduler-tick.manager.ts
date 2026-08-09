@@ -111,6 +111,7 @@ export class SchedulerTickManager implements OnApplicationBootstrap, OnApplicati
    * long-lived connection the Worker depends on).
    */
   async onApplicationBootstrap(): Promise<void> {
+    process.stderr.write(`[LIFECYCLE] SchedulerTickManager.onApplicationBootstrap START t=${Date.now()}\n`);
     this.connection = new Redis(this.config.get("redisUrl", { infer: true }), { maxRetriesPerRequest: null });
     this.connection.on("error", (error) => {
       this.logger.error({ err: error }, "Redis connection error");
@@ -128,10 +129,13 @@ export class SchedulerTickManager implements OnApplicationBootstrap, OnApplicati
       this.logger.error({ err: error }, "scheduler tick worker error");
     });
 
+    process.stderr.write(`[LIFECYCLE] SchedulerTickManager attemptRegistration() call START t=${Date.now()}\n`);
     const registered = await this.attemptRegistration();
+    process.stderr.write(`[LIFECYCLE] SchedulerTickManager attemptRegistration() call END t=${Date.now()} registered=${registered}\n`);
     if (!registered) {
       this.scheduleRegistrationRetry();
     }
+    process.stderr.write(`[LIFECYCLE] SchedulerTickManager.onApplicationBootstrap END t=${Date.now()}\n`);
   }
 
   /**

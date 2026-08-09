@@ -18,7 +18,12 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   private readonly logger = new Logger(PrismaService.name);
 
   async onModuleInit(): Promise<void> {
+    process.stderr.write(`[LIFECYCLE] PrismaService.onModuleInit START t=${Date.now()}\n`);
     await this.$connect();
+    process.stderr.write(`[LIFECYCLE] PrismaService.onModuleInit END (connected) t=${Date.now()}\n`);
+    process.stderr.write(`[LIFECYCLE] PrismaService test query START t=${Date.now()}\n`);
+    const result = await this.$queryRaw`SELECT 1 as ok`;
+    process.stderr.write(`[LIFECYCLE] PrismaService test query END t=${Date.now()} result=${JSON.stringify(result)}\n`);
   }
 
   async onModuleDestroy(): Promise<void> {
