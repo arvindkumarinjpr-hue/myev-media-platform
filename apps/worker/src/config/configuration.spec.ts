@@ -60,6 +60,7 @@ describe("configuration", () => {
       expect(config.logLevel).toBe("info");
       expect(config.applicationVersion).toBe("0.1.0");
       expect(config.heartbeatIntervalMs).toBe(15_000);
+      expect(config.redisShutdownDeadlineMs).toBe(5_000);
     });
   });
 
@@ -71,6 +72,7 @@ describe("configuration", () => {
         LOG_LEVEL: "debug",
         WORKER_APPLICATION_VERSION: "1.2.3",
         WORKER_HEARTBEAT_INTERVAL_MS: "5000",
+        REDIS_SHUTDOWN_DEADLINE_MS: "2000",
       },
       () => {
         const config = configuration();
@@ -78,6 +80,7 @@ describe("configuration", () => {
         expect(config.logLevel).toBe("debug");
         expect(config.applicationVersion).toBe("1.2.3");
         expect(config.heartbeatIntervalMs).toBe(5000);
+        expect(config.redisShutdownDeadlineMs).toBe(2000);
       },
     );
   });

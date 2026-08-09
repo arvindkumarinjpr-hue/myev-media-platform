@@ -6,11 +6,12 @@ import { validate } from "class-validator";
 import { Queue, Worker, type Job } from "bullmq";
 import Redis from "ioredis";
 import { InjectPinoLogger, PinoLogger } from "nestjs-pino";
-import { computeNextOccurrence, type QueueRegistry } from "@myev/shared";
+import { computeNextOccurrence, boundedShutdown, type QueueRegistry, type ShutdownOutcomeTracker } from "@myev/shared";
 import type { WorkerConfig } from "../config/configuration";
 import { QUEUE_REGISTRY } from "../queue/queue-registry.module";
 import { WorkerHeartbeatService } from "../heartbeat/worker-heartbeat.service";
 import { PrismaService } from "../prisma/prisma.service";
+import { SHUTDOWN_TRACKER } from "../shutdown/shutdown.module";
 import { Prisma, type ScheduledJob } from "../../../api/generated/prisma";
 import { isExpectedIdempotencyViolation } from "./idempotency-violation";
 
@@ -75,6 +76,7 @@ export class SchedulerTickManager implements OnApplicationBootstrap, OnApplicati
     @Inject(QUEUE_REGISTRY) private readonly registry: QueueRegistry,
     private readonly heartbeat: WorkerHeartbeatService,
     private readonly prisma: PrismaService,
+    @Inject(SHUTDOWN_TRACKER) private readonly shutdownTracker: ShutdownOutcomeTracker,
     @InjectPinoLogger(SchedulerTickManager.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -509,16 +511,41 @@ export class SchedulerTickManager implements OnApplicationBootstrap, OnApplicati
       this.inFlightRegistrationConnection = undefined;
     }
 
-    // Mirrors BullMqWorkerManager's own shutdown shape exactly. Shares
-    // its DEFECT-1F-001 characteristic (an unbounded wait if Redis is
-    // genuinely unreachable at shutdown time) — recorded under that
-    // existing defect's scope per Revision 3 §7, not a new one. Not
-    // addressed here: DEFECT-1F-004 is scoped to the bootstrap path only,
-    // per the explicit instruction not to expand into DEFECT-1F-001's
-    // own approved scope.
-    await this.tickWorker?.close();
-    await this.tickQueue?.close();
-    await Promise.all([...this.dispatchQueues.values()].map((queue) => queue.close()));
-    await this.connection?.quit();
+    // DEFECT-1F-001: mirrors BullMqWorkerManager's own bounded-shutdown
+    // shape exactly (see that class's identical onApplicationShutdown
+    // doc comment for the full rationale — Worker.close(true) for
+    // BullMQ's own internally-duplicated blocking connection,
+    // connection.disconnect() for this class's own caller-owned one,
+    // neither awaited in the force phase so this method's own promise
+    // stays bounded by deadlineMs regardless of how long BullMQ's
+    // internal teardown takes). The registration-path resources above
+    // are already unconditionally cleared before this point (DEFECT-1F-
+    // 004) — this phase only concerns the main tick-worker/dispatch
+    // connection, previously recorded as sharing DEFECT-1F-001's scope
+    // without yet being fixed.
+    const deadlineMs = this.config.get("redisShutdownDeadlineMs", { infer: true });
+
+    const outcome = await boundedShutdown(
+      async () => {
+        await this.tickWorker?.close();
+        await this.tickQueue?.close();
+        await Promise.all([...this.dispatchQueues.values()].map((queue) => queue.close()));
+        await this.connection?.quit();
+      },
+      () => {
+        this.tickWorker?.close(true).catch(() => undefined);
+        this.connection?.disconnect();
+      },
+      deadlineMs,
+    );
+
+    this.shutdownTracker.record(SchedulerTickManager.name, outcome);
+    if (outcome !== "GRACEFUL") {
+      const level = outcome === "FAILED" ? "error" : "warn";
+      this.logger[level](
+        { event: outcome === "FAILED" ? "REDIS_SHUTDOWN_FAILED" : "REDIS_SHUTDOWN_FORCED", component: SchedulerTickManager.name, deadlineMs },
+        outcome === "FAILED" ? "shutdown force-close also failed" : "graceful shutdown exceeded the deadline — forced disconnect",
+      );
+    }
   }
 }

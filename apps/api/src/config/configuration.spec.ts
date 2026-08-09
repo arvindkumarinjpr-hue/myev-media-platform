@@ -33,4 +33,11 @@ describe("configuration", () => {
     process.env.STORAGE_USE_SSL = "true";
     expect(configuration().storage.useSsl).toBe(true);
   });
+
+  it("defaults redisShutdownDeadlineMs to 5000 and respects an explicit override", () => {
+    delete process.env.REDIS_SHUTDOWN_DEADLINE_MS;
+    expect(configuration().redisShutdownDeadlineMs).toBe(5000);
+    process.env.REDIS_SHUTDOWN_DEADLINE_MS = "2000";
+    expect(configuration().redisShutdownDeadlineMs).toBe(2000);
+  });
 });

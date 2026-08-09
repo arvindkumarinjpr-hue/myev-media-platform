@@ -27,6 +27,12 @@ export interface WorkerConfig {
   // has timed out — bounded, not exponential, not aggressive (matches
   // BullMQ's own capped-linear reconnect delay in spirit).
   schedulerRegistrationRetryIntervalMs: number;
+  // DEFECT-1F-001: bounds how long a component's graceful Redis shutdown
+  // sequence (Worker.close()/Queue.close()/connection.quit()) may wait
+  // before falling back to a forced disconnect. One value governs every
+  // Redis-connected component in this process — see
+  // @myev/shared's boundedShutdown.
+  redisShutdownDeadlineMs: number;
 }
 
 export class WorkerConfigError extends Error {
@@ -80,5 +86,6 @@ export default function configuration(): WorkerConfig {
     schedulerBatchSize: parseInt(process.env.SCHEDULER_BATCH_SIZE ?? "100", 10),
     schedulerRegistrationTimeoutMs: parseInt(process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS ?? "5000", 10),
     schedulerRegistrationRetryIntervalMs: parseInt(process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS ?? "10000", 10),
+    redisShutdownDeadlineMs: parseInt(process.env.REDIS_SHUTDOWN_DEADLINE_MS ?? "5000", 10),
   };
 }
