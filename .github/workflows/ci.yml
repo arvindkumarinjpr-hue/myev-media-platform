@@ -207,120 +207,79 @@ jobs:
       # to avoid the two-consumer race described there.
       - name: Start Worker (background)
         working-directory: apps/worker
-        env:
-          # --report-on-signal is the exact diagnostic technique already
-          # proven in this codebase to root-cause DEFECT-1F-002 (a real
-          # handle leak Jest's own --detectOpenHandles never surfaced).
-          # If this step times out again, SIGUSR2 below dumps a full
-          # report (native/JS stack traces, libuv handles, resource
-          # usage) to see EXACTLY what the process is blocked on, rather
-          # than continuing to guess from the outside.
-          NODE_OPTIONS: --report-on-signal --report-directory=/tmp
-          # A previous /proc-level diagnostic (kernel wchan/stack, this
-          # same run's earlier commit) showed the process's main thread
-          # parked in ep_poll with every thread pool worker idle in
-          # futex_do_wait and near-zero cumulative CPU across a full 90s
-          # wait — genuinely blocked, not slow. Prisma's query engine
-          # does its own native (Rust) connection handling, invisible to
-          # Node's own libuv/DNS layers, so a Node-level DNS-order flag
-          # wouldn't necessarily reach it either way. Overriding to the
-          # literal loopback address bypasses hostname resolution (and
-          # any IPv6-first / Happy-Eyeballs stall against a container
-          # that only binds IPv4) at every layer — Node's own net/dns,
-          # ioredis, and Prisma's native engine alike — without touching
-          # the job-level DATABASE_URL/REDIS_URL the already-passing
-          # Worker E2E (jest) step above depends on.
-          DATABASE_URL: postgresql://myev:myev_ci_password@127.0.0.1:5432/myev_media_test?schema=public
-          REDIS_URL: redis://127.0.0.1:6379
         run: |
+          # Root-caused (see CI WORKER BOOTSTRAP STALL — FINAL ROOT CAUSE
+          # REPORT): the worker was never hung — main.ts's own
+          # createApplicationContext() consistently resolves in ~130ms on
+          # this exact runner, proven via temporary lifecycle-timestamp
+          # instrumentation (added and fully reverted, see commits
+          # fa027e9 / 1bc247c). The previous readiness probe
+          # (`grep "BullMQ worker listening" /tmp/worker.log`) could never
+          # succeed for an unrelated reason: that message is logged at
+          # info level, and this job sets LOG_LEVEL=error — pino silently
+          # drops it before a single byte is ever written, regardless of
+          # bufferLogs/flushLogs timing. The fix is not to change
+          # LOG_LEVEL (that's a deliberate, job-wide noise-reduction
+          # setting unrelated to worker readiness) but to stop depending
+          # on log output at all.
+          #
+          # WorkerHeartbeatService.onApplicationBootstrap() performs one
+          # unconditional, un-gated database write (a worker_heartbeats
+          # upsert) before this step's own polling loop could ever run —
+          # a DB row, not a log line, so it exists regardless of log
+          # level. Waiting for that row is a direct, deterministic proof
+          # that Postgres connectivity works AND that bootstrap has
+          # already progressed past the heartbeat provider — which, per
+          # the same proven lifecycle order, runs before
+          # BullMqWorkerManager and SchedulerTickManager, so its presence
+          # is a reliable (if slightly conservative) proxy for "the
+          # worker is operational."
+          # Second-level precision only — deliberately not using a
+          # sub-second format specifier (e.g. GNU date's %N): that's a
+          # GNU coreutils extension, not universally portable, and
+          # unnecessary here — CI steps run strictly sequentially with
+          # clear multi-second separation, so second resolution is
+          # already more than enough to distinguish this attempt's own
+          # heartbeat row from any earlier step's leftover rows.
+          START_TIME_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           nohup pnpm exec ts-node --transpile-only src/main.ts > /tmp/worker.log 2>&1 &
           WORKER_PID=$!
           disown
-          # 90s, not the 30s this step shipped with: this is the first
-          # time this exact step has ever run on a real GitHub-hosted
-          # runner (no Module 1F PR existed before this one — see the CI
-          # Fix Report), so its timeout was never actually validated
-          # against real CI hardware, and the app has grown substantially
-          # since this step was first written (Milestone 3) to now
-          # include the full Scheduler Foundation. If this still times
-          # out, the diagnostics below (process liveness + exact log
-          # byte count) are there specifically so the NEXT failure is
-          # actually debuggable instead of showing an empty file.
+
           for i in $(seq 1 90); do
-            if grep -q "BullMQ worker listening" /tmp/worker.log 2>/dev/null; then
-              echo "Worker is listening after ${i}s."
-              exit 0
+            # Fail fast if bootstrap itself crashed — no point waiting
+            # out the rest of the budget for a process that's already
+            # gone (main.ts's own bootstrap().catch() sets exitCode=1
+            # and returns, which ends the whole process tree here).
+            if ! kill -0 "$WORKER_PID" 2>/dev/null; then
+              echo "Worker process (pid $WORKER_PID) exited before becoming ready." >&2
+              break
             fi
-            # nestjs-pino's bufferLogs:true (main.ts) withholds ALL log
-            # output — including bootstrap progress — until
-            # app.flushLogs() runs, which only happens once
-            # createApplicationContext() has already FULLY resolved. An
-            # empty /tmp/worker.log therefore proves nothing about
-            # whether bootstrap is progressing or stuck — this periodic
-            # CPU/state snapshot is the only way to tell the two apart:
-            # sustained %CPU means real (if slow) work; a flat/idle %CPU
-            # for many consecutive samples means something is genuinely
-            # blocked, not merely slow.
-            if [ $((i % 15)) -eq 0 ]; then
-              echo "[t=${i}s] $(ps -p "$WORKER_PID" -o pid,stat,%cpu,etime,cmd --no-headers 2>/dev/null || echo "pid $WORKER_PID gone")"
+
+            HEARTBEAT_COUNT=$(PGPASSWORD=myev_ci_password psql -h localhost -U myev -d myev_media_test -tAc \
+              "SELECT count(*) FROM worker_heartbeats WHERE started_at >= '${START_TIME_ISO}'::timestamptz AND application_version = '${WORKER_APPLICATION_VERSION}';" 2>/dev/null)
+
+            if [ "${HEARTBEAT_COUNT:-0}" -gt 0 ] 2>/dev/null; then
+              echo "Worker heartbeat confirmed after ${i}s (started_at >= ${START_TIME_ISO})."
+              exit 0
             fi
             sleep 1
           done
-          echo "Worker did not start in time." >&2
-          echo "--- full process tree rooted at \$WORKER_PID ($WORKER_PID) ---" >&2
-          # $WORKER_PID is `pnpm exec`'s OWN pid — pnpm spawns a CHILD
-          # process to actually run ts-node/main.ts, so the interesting
-          # process (and the one that actually needs signaling below) is
-          # a DESCENDANT of this pid, not this pid itself.
+
+          echo "Worker heartbeat not observed within the deadline." >&2
+          echo "--- process alive? ---" >&2
+          if kill -0 "$WORKER_PID" 2>/dev/null; then
+            ps -p "$WORKER_PID" -o pid,ppid,stat,%cpu,etime,cmd >&2 || true
+          else
+            echo "process $WORKER_PID is not running" >&2
+          fi
+          echo "--- full process tree ---" >&2
           ps -e -o pid,ppid,stat,%cpu,etime,cmd --forest >&2 || true
-          echo "--- /tmp/worker.log (byte count: $(wc -c < /tmp/worker.log 2>/dev/null || echo 'file missing')) ---" >&2
+          echo "--- /tmp/worker.log ---" >&2
           cat /tmp/worker.log
-          echo "--- requesting a diagnostic report (SIGUSR2) from every descendant of \$WORKER_PID ---" >&2
-          # Signal the whole subtree, not just $WORKER_PID itself — a
-          # previous attempt signaled only the pnpm wrapper process and
-          # got back an essentially-empty report (it was just idly
-          # waiting on this exact child via a referenced "process"
-          # handle) instead of the actual node/ts-node process running
-          # main.ts.
-          DESCENDANTS=$(pgrep -P "$WORKER_PID" 2>/dev/null || true)
-          for gen in 1 2 3; do
-            NEXT=""
-            for pid in $DESCENDANTS; do
-              NEXT="$NEXT $(pgrep -P "$pid" 2>/dev/null || true)"
-            done
-            DESCENDANTS="$DESCENDANTS $NEXT"
-          done
-          DESCENDANTS=$(echo "$DESCENDANTS" | tr ' ' '\n' | sort -u | grep -v '^$' || true)
-          echo "descendant pids: $DESCENDANTS" >&2
-          # The previous round's report (both the pnpm wrapper AND its
-          # ts-node child) showed an empty javascriptStack, near-zero
-          # cumulative CPU time across the full 90s wait, and no
-          # network/file libuv handle at all — consistent with a true
-          # kernel-level block Node's own report can't see into (V8
-          # sometimes can't walk the JS stack mid-syscall). /proc's own
-          # wchan/stack give the kernel's own view of exactly which
-          # syscall each thread is parked in.
-          for pid in $WORKER_PID $DESCENDANTS; do
-            echo "--- /proc/$pid kernel-level state ---" >&2
-            echo "wchan: $(cat /proc/$pid/wchan 2>/dev/null || echo unavailable)" >&2
-            grep -E "^State:" /proc/$pid/status 2>/dev/null >&2 || true
-            echo "task wchans:" >&2
-            for t in /proc/$pid/task/*/; do
-              tid=$(basename "$t")
-              echo "  tid=$tid wchan=$(cat "$t/wchan" 2>/dev/null || echo unavailable) status=$(grep -E '^State:' "$t/status" 2>/dev/null)" >&2
-            done
-            cat /proc/$pid/stack 2>/dev/null >&2 || echo "kernel stack unavailable (needs elevated privileges)" >&2
-          done
-          echo "--- requesting a diagnostic report (SIGUSR2) from every descendant of \$WORKER_PID ---" >&2
-          for pid in $WORKER_PID $DESCENDANTS; do
-            kill -SIGUSR2 "$pid" 2>/dev/null && echo "signaled $pid" >&2
-          done
-          sleep 3
-          for REPORT_FILE in /tmp/report.*.json; do
-            [ -e "$REPORT_FILE" ] || continue
-            echo "--- diagnostic report: $REPORT_FILE ---" >&2
-            cat "$REPORT_FILE"
-          done
+          echo "--- worker_heartbeats rows started since this step began (any application_version) ---" >&2
+          PGPASSWORD=myev_ci_password psql -h localhost -U myev -d myev_media_test -c \
+            "SELECT worker_id, hostname, process_id, application_version, queue_assignments, started_at, last_heartbeat_at FROM worker_heartbeats WHERE started_at >= '${START_TIME_ISO}'::timestamptz ORDER BY started_at DESC;" >&2 2>&1 || true
           exit 1
 
       - name: Run E2E suite
