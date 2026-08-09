@@ -58,6 +58,17 @@ export class SchedulerTickManager implements OnApplicationBootstrap, OnApplicati
   // scheduling a new attempt after shutdown has begun.
   private registrationRetryTimer?: NodeJS.Timeout;
   private shuttingDown = false;
+  // Tracks the CURRENTLY in-flight attempt's own dedicated connection
+  // (attemptRegistration is single-flight by construction — the retry
+  // loop never starts a new attempt until the previous one's promise has
+  // settled — so at most one of these is ever set at a time). Exists
+  // solely so onApplicationShutdown can force-disconnect an attempt that
+  // happens to be mid-flight at shutdown, rather than leaving it to
+  // settle on its own bounded schedule after shutdown has already
+  // returned — required so "shutdown cancels ALL registration
+  // resources" holds even for the in-flight case, not just already-
+  // scheduled future retries.
+  private inFlightRegistrationConnection?: Redis;
 
   constructor(
     private readonly config: ConfigService<WorkerConfig, true>,
@@ -91,6 +102,13 @@ export class SchedulerTickManager implements OnApplicationBootstrap, OnApplicati
    * until it succeeds. No business/schedule state ever lives in Redis
    * (Revision 3 §5), so a delayed registration loses nothing — the next
    * successful attempt (first or retried) restores it completely.
+   *
+   * `this.connection`/`this.tickQueue` constructed below are used ONLY
+   * for the tick Worker and dispatch queues — never for registration
+   * attempts themselves (see attemptRegistration's own doc comment for
+   * why: each attempt gets its own dedicated, disposable connection, so
+   * a timed-out attempt can be fully torn down without touching the
+   * long-lived connection the Worker depends on).
    */
   async onApplicationBootstrap(): Promise<void> {
     this.connection = new Redis(this.config.get("redisUrl", { infer: true }), { maxRetriesPerRequest: null });
@@ -117,29 +135,69 @@ export class SchedulerTickManager implements OnApplicationBootstrap, OnApplicati
   }
 
   /**
-   * One bounded attempt: races the real upsertJobScheduler call against
-   * schedulerRegistrationTimeoutMs. Never lets that call's own promise —
-   * which may never settle — hold this method open past the deadline.
-   * The losing (abandoned) promise is not cancelled (ioredis has no
-   * per-command cancellation short of tearing down the whole shared
-   * connection, which the tick Worker also depends on) — safe by
-   * construction, since upsertJobScheduler is idempotent: if Redis later
-   * recovers and that abandoned call eventually resolves on its own, it
-   * converges to the same registration state a subsequent retry would
-   * have produced, never a duplicate.
+   * DEFECT-1F-004 (final correction): Promise.race alone bounds this
+   * method's own wait, but does nothing to the abandoned
+   * upsertJobScheduler() call itself — empirically proven (real
+   * unreachable Redis) that neither ioredis's own `disconnect()` nor
+   * BullMQ's `Queue.close(true)` reliably unblocks a command already
+   * sitting in ioredis's offline queue while the connection is mid
+   * reconnect-cycle; both can leave the connection's `waitUntilReady()`
+   * promise permanently stuck on "reconnecting", never emitting the
+   * 'end' event that BullMQ's own `RedisConnection.close()` needs.
+   * Reusing the long-lived, forever-retrying `this.connection` (as the
+   * previous version of this fix did) meant every retry issued another
+   * upsertJobScheduler call against that SAME connection, each one
+   * joining the last, permanently: pending promises, offline-queued
+   * commands, and (on eventual recovery) a burst of redundant upserts
+   * would all accumulate without bound for the duration of an outage.
+   *
+   * Fixed by giving EVERY attempt its own dedicated, single-use
+   * connection/Queue — never `this.connection` (which tickWorker/
+   * tickQueue/dispatchQueues depend on and which must keep retrying
+   * forever, unchanged, exactly like BullMqWorkerManager's own
+   * connection — it is never touched here). Once an attempt's deadline
+   * expires, its own dedicated connection is disconnected — proven
+   * empirically (5 consecutive real-unreachable-Redis cycles) that this
+   * reliably halts THAT connection's reconnect loop and keeps the
+   * process's active handle count flat, with zero growth across cycles,
+   * even though the abandoned command's own promise never technically
+   * settles. We do not try to force it to settle; we simply ensure
+   * nothing keeps a reference to it or its connection once we give up,
+   * so both become ordinary, non-leaking, unreachable garbage. This
+   * guarantees at most one LIVE (i.e., still trying to reconnect)
+   * registration connection exists at any instant: the previous
+   * attempt's is always torn down before the next is created.
    */
   private async attemptRegistration(): Promise<boolean> {
     const timeoutMs = this.config.get("schedulerRegistrationTimeoutMs", { infer: true });
     const tickIntervalMs = this.config.get("schedulerTickIntervalMs", { infer: true });
+
+    const registrationConnection = new Redis(this.config.get("redisUrl", { infer: true }), { maxRetriesPerRequest: null });
+    // Silent: an unreachable Redis can cycle ECONNREFUSED many times
+    // within a single bounded attempt (ioredis's own fast early retry
+    // backoff), and this connection is discarded the moment this method
+    // returns — attemptRegistration's own single SCHEDULER_REGISTRATION_FAILED
+    // log per attempt is the intended, bounded signal, not a log line
+    // per underlying reconnect cycle. An 'error' listener is still
+    // required — ioredis throws if an 'error' event has zero listeners.
+    registrationConnection.on("error", () => undefined);
+    const registrationQueue = new Queue(SCHEDULER_QUEUE_NAME, { connection: registrationConnection });
+    // Published for onApplicationShutdown to reach — see this field's own
+    // doc comment on why an in-flight attempt needs to be independently
+    // reachable, not just the future retry timer.
+    this.inFlightRegistrationConnection = registrationConnection;
+
     try {
       const outcome = await Promise.race([
-        this.tickQueue!.upsertJobScheduler(SCHEDULER_ID, { every: tickIntervalMs, tz: "UTC" }, { name: TICK_JOB_NAME, data: {} }).then(() => "registered" as const),
+        registrationQueue.upsertJobScheduler(SCHEDULER_ID, { every: tickIntervalMs, tz: "UTC" }, { name: TICK_JOB_NAME, data: {} }).then(() => "registered" as const),
         new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), timeoutMs)),
       ]);
       if (outcome === "registered") {
         this.logger.info({ schedulerId: SCHEDULER_ID, tickIntervalMs }, "scheduler tick registered");
         return true;
       }
+      this.logger.error({ event: "SCHEDULER_REGISTRATION_FAILED", schedulerId: SCHEDULER_ID, timeoutMs }, "scheduler registration did not complete within the configured deadline");
+      return false;
     } catch (error) {
       // Never logs the connection URL/credentials — only the schedulerId
       // and a safe error message.
@@ -148,9 +206,38 @@ export class SchedulerTickManager implements OnApplicationBootstrap, OnApplicati
         "scheduler registration attempt failed",
       );
       return false;
+    } finally {
+      // Terminate THIS attempt's own resources before returning — the
+      // caller (scheduleRegistrationRetry) only ever schedules the next
+      // attempt after this method's promise settles, so "only after
+      // cleanup completes may another attempt be scheduled" is
+      // structural, not incidental. queue.close() never disconnects a
+      // connection we constructed ourselves and handed in (BullMQ treats
+      // an externally-supplied ioredis instance as caller-owned/"shared"
+      // and skips disconnecting it entirely, regardless of its own
+      // internal force flag — confirmed by inspection of
+      // RedisConnection.close() and empirically: an externally-owned
+      // connection is never touched by it), so this explicit,
+      // synchronous disconnect() is the operation that actually matters;
+      // close() below only releases BullMQ's own internal bookkeeping
+      // (listeners, closed/closing state) and is deliberately NOT the
+      // public queue.disconnect() — that method defaults to awaiting the
+      // connection's own 'end' event, which (per this method's own doc
+      // comment) can never fire in exactly the scenario this fix exists
+      // for, and would reintroduce an unbounded await here.
+      registrationConnection.disconnect();
+      await registrationQueue.close().catch(() => undefined);
+      // Only clear the field if it's still THIS attempt's own connection
+      // — onApplicationShutdown may have already raced in, force-
+      // disconnected it, and moved on; calling disconnect() twice on the
+      // same ioredis instance is a harmless no-op (confirmed by
+      // inspection: it just re-clears an already-cleared reconnect
+      // timer and re-invokes connector.disconnect() on an already-dead
+      // stream), so there is no ordering hazard either way.
+      if (this.inFlightRegistrationConnection === registrationConnection) {
+        this.inFlightRegistrationConnection = undefined;
+      }
     }
-    this.logger.error({ event: "SCHEDULER_REGISTRATION_FAILED", schedulerId: SCHEDULER_ID, timeoutMs }, "scheduler registration did not complete within the configured deadline");
-    return false;
   }
 
   /** Fixed-interval retry, not aggressive spinning — each attempt is itself bounded, and the next is only scheduled after the current one has fully settled (never overlapping). Stops permanently on first success. */
@@ -410,6 +497,17 @@ export class SchedulerTickManager implements OnApplicationBootstrap, OnApplicati
     // alive with no other purpose.
     this.shuttingDown = true;
     if (this.registrationRetryTimer) clearTimeout(this.registrationRetryTimer);
+    // Also force-disconnect an attempt that happens to be mid-flight
+    // right now (bounded by its own timeout, so it would settle on its
+    // own eventually — but "shutdown cancels ALL registration
+    // resources" should hold immediately, not just for already-scheduled
+    // future retries). attemptRegistration's own finally block still
+    // runs afterward and finds this connection already gone — a
+    // harmless no-op, not an error (see that method's own comment).
+    if (this.inFlightRegistrationConnection) {
+      this.inFlightRegistrationConnection.disconnect();
+      this.inFlightRegistrationConnection = undefined;
+    }
 
     // Mirrors BullMqWorkerManager's own shutdown shape exactly. Shares
     // its DEFECT-1F-001 characteristic (an unbounded wait if Redis is

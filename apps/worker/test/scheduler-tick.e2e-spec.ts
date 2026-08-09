@@ -1,5 +1,8 @@
 import { randomUUID } from "crypto";
 import { Test, type TestingModule } from "@nestjs/testing";
+import { ConfigService } from "@nestjs/config";
+import { Queue } from "bullmq";
+import Redis from "ioredis";
 import { AppModule } from "../src/app.module";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { SchedulerTickManager } from "../src/scheduler/scheduler-tick.manager";
@@ -362,10 +365,54 @@ describe("Worker (e2e) — SchedulerTickManager", () => {
    * never-blocks-on-Redis precedent — confirmed by inspection: that
    * method is not even `async`), and registration itself is bounded per
    * attempt, retried on a fixed background interval.
+   *
+   * Final correction (review round 2): Promise.race alone bounded the
+   * CALLER's wait but did nothing to the abandoned upsertJobScheduler()
+   * call itself — empirically proven (real unreachable Redis probes run
+   * this session) that reusing one long-lived, forever-retrying
+   * connection across every registration attempt let pending
+   * promises/offline-queued commands accumulate without bound for the
+   * duration of an outage. Fixed by giving every attempt its own
+   * dedicated, single-use connection/Queue, explicitly disconnected the
+   * moment that attempt's deadline expires — see
+   * scheduler-tick.manager.ts's own `attemptRegistration()` doc comment
+   * for the full empirical trail. The tests below prove the resulting
+   * resource-safety properties directly against real infrastructure.
    */
   describe("DEFECT-1F-004: bounded scheduler-registration startup", () => {
     const SHORT_TIMEOUT_MS = "1000";
     const SHORT_RETRY_INTERVAL_MS = "500";
+
+    /**
+     * Redirects a broken module's SUBSEQUENT registration attempts to a
+     * different redisUrl without rebuilding the module — ConfigService
+     * snapshots WorkerConfig once at module init from process.env, so
+     * mutating process.env mid-test has no effect on an already-compiled
+     * module; this spies on the injected ConfigService's own `get`
+     * instead, passing every other key straight through unchanged. Used
+     * only to simulate Redis recovery mid-test (items 6-8 below) — never
+     * touches any already-abandoned attempt's own connection, since each
+     * one reads redisUrl once, for itself, at its own start and is fully
+     * disconnected by the time its own attemptRegistration() call
+     * returns.
+     */
+    function installRedisUrlOverride(moduleRef: TestingModule): { setUrl: (url: string) => void; restore: () => void } {
+      const configService = moduleRef.get(ConfigService);
+      const originalGet = configService.get.bind(configService);
+      let override: string | undefined;
+      const spy = jest.spyOn(configService, "get").mockImplementation((...args: unknown[]) => {
+        if (args[0] === "redisUrl" && override !== undefined) {
+          return override;
+        }
+        return (originalGet as (...a: unknown[]) => unknown)(...args);
+      });
+      return {
+        setUrl: (url: string) => {
+          override = url;
+        },
+        restore: () => spy.mockRestore(),
+      };
+    }
 
     it("bootstrap against unreachable Redis completes well within the configured deadline — never hangs indefinitely", async () => {
       const originalRedisUrl = process.env.REDIS_URL;
@@ -417,6 +464,21 @@ describe("Worker (e2e) — SchedulerTickManager", () => {
         // begun — proves the loop is genuinely active, not stalled.
         expect(failedEvents.length).toBeGreaterThanOrEqual(1);
         expect(retryingEvents.length).toBeGreaterThanOrEqual(1);
+        // Upper bound too, not just a lower one: with a 1000ms timeout and
+        // a 500ms retry interval observed for 2500ms, sequential
+        // (non-overlapping) scheduling can produce at most ~3 of each —
+        // a bug that let attempts overlap/duplicate (e.g. two retry
+        // chains running concurrently) would produce visibly more than
+        // this. Combined with the flat active-handle-count evidence
+        // below (which a genuinely overlapping pair of live registration
+        // connections would also perturb), this is the test-level half
+        // of "at most one live attempt at a time" — the other half is
+        // structural: scheduleRegistrationRetry's setTimeout callback
+        // only ever calls itself again from inside attemptRegistration()'s
+        // OWN .then()/.catch(), i.e. after that attempt's promise (and
+        // its finally-block cleanup) has already settled.
+        expect(failedEvents.length).toBeLessThanOrEqual(4);
+        expect(retryingEvents.length).toBeLessThanOrEqual(4);
         // Never logs the connection URL or any credential-bearing value.
         for (const call of [...failedEvents, ...retryingEvents]) {
           expect(JSON.stringify(call)).not.toContain("redis://");
@@ -444,5 +506,219 @@ describe("Worker (e2e) — SchedulerTickManager", () => {
       // describe block (1000ms), let alone the production default (5000ms).
       expect(elapsedMs).toBeLessThan(1000);
     });
+
+    it("prolonged outage: active handle count stays bounded across many retry cycles — no growing pending commands, sockets, or unresolved promises", async () => {
+      const originalRedisUrl = process.env.REDIS_URL;
+      const originalTimeout = process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS;
+      const originalRetryInterval = process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS;
+      process.env.REDIS_URL = "redis://redis:1";
+      process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS = "400";
+      process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS = "200";
+      let brokenModuleRef: TestingModule | undefined;
+      try {
+        brokenModuleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+        await brokenModuleRef.init();
+
+        // Node's own diagnostic API (the same one DEFECT-1F-002 used to
+        // prove a real handle leak rather than relying on Jest timing
+        // alone) — counts every live timer/socket/etc. in this process.
+        const activeHandles = () => (process as unknown as { _getActiveHandles: () => unknown[] })._getActiveHandles().length;
+
+        const samples: number[] = [];
+        // Six full timeout+retry cycles (400+200=600ms each = ~3.6s):
+        // long enough that if each abandoned attempt's connection/queue
+        // were leaking (a growing offline queue, an uncancelled
+        // reconnect loop, a lingering socket), the handle count would
+        // visibly climb across these samples.
+        for (let i = 0; i < 6; i++) {
+          await new Promise((resolve) => setTimeout(resolve, 600));
+          samples.push(activeHandles());
+        }
+
+        const first = samples[0];
+        const max = Math.max(...samples);
+        const last = samples[samples.length - 1];
+        // Bounded, not growing: allow a small constant slack for
+        // scheduling jitter (at most one extra in-flight attempt's
+        // handles at the exact sampling instant), never a trend that
+        // climbs with the number of cycles observed.
+        expect(max).toBeLessThanOrEqual(first + 1);
+        expect(last).toBeLessThanOrEqual(first + 1);
+      } finally {
+        process.env.REDIS_URL = originalRedisUrl;
+        process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS = originalTimeout;
+        process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS = originalRetryInterval;
+        if (brokenModuleRef) {
+          await cleanupBrokenSchedulerModule(brokenModuleRef);
+        }
+      }
+    }, 20_000);
+
+    it("Redis recovery after a prolonged outage creates exactly one scheduler registration — no burst of previously-abandoned upserts firing at once", async () => {
+      const originalRedisUrl = process.env.REDIS_URL;
+      const originalTimeout = process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS;
+      const originalRetryInterval = process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS;
+      const healthyRedisUrl = originalRedisUrl as string;
+      process.env.REDIS_URL = "redis://redis:1";
+      process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS = "400";
+      process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS = "300";
+      let brokenModuleRef: TestingModule | undefined;
+      let override: ReturnType<typeof installRedisUrlOverride> | undefined;
+      try {
+        brokenModuleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+        await brokenModuleRef.init();
+
+        const brokenManager = brokenModuleRef.get(SchedulerTickManager);
+        const infoSpy = jest.spyOn((brokenManager as unknown as { logger: { info: (...args: unknown[]) => void } }).logger, "info");
+
+        // Let it fail through a couple of full cycles against the
+        // unreachable address first — the actual "prolonged outage" this
+        // defect's resource-safety claims are about. Each abandoned
+        // attempt's own connection is permanently disconnected by the
+        // time attemptRegistration() returns (proven in the handle-count
+        // test above), so none of them can ever fire again on their own.
+        await new Promise((resolve) => setTimeout(resolve, 1_400));
+
+        // Redirect only the NEXT scheduled attempt to the real, healthy
+        // Redis — does not touch any already-abandoned attempt.
+        override = installRedisUrlOverride(brokenModuleRef);
+        override.setUrl(healthyRedisUrl);
+
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+
+        const recoveredEvents = infoSpy.mock.calls.filter((call) => (call[0] as { event?: string })?.event === "SCHEDULER_REGISTRATION_RECOVERED");
+        // Exactly one recovery — not a burst of N redundant successes
+        // from previously-abandoned attempts all firing at once (they
+        // structurally can't: each one's connection was already torn
+        // down and its reconnect loop permanently halted).
+        expect(recoveredEvents.length).toBe(1);
+
+        // Independent, fresh introspection connection against the real
+        // Redis (never the broken manager's own tickQueue/connection,
+        // which is fixed to the broken address for this manager's whole
+        // lifetime, matching the explicit requirement that the tick
+        // Worker is never disconnected merely because registration
+        // timed out).
+        const verifyConnection = new Redis(healthyRedisUrl, { maxRetriesPerRequest: null });
+        const verifyQueue = new Queue("SCHEDULER_INTERNAL", { connection: verifyConnection });
+        try {
+          const schedulers = await verifyQueue.getJobSchedulers(0, -1);
+          const matching = schedulers.filter((s) => s.key === "scheduler-tick-primary");
+          expect(matching).toHaveLength(1);
+        } finally {
+          await verifyQueue.close().catch(() => undefined);
+          verifyConnection.disconnect();
+        }
+      } finally {
+        override?.restore();
+        process.env.REDIS_URL = originalRedisUrl;
+        process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS = originalTimeout;
+        process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS = originalRetryInterval;
+        if (brokenModuleRef) {
+          await cleanupBrokenSchedulerModule(brokenModuleRef);
+        }
+      }
+    }, 15_000);
+
+    it("two SchedulerTickManager instances recovering concurrently still converge to exactly one scheduler registration", async () => {
+      const originalRedisUrl = process.env.REDIS_URL;
+      const originalTimeout = process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS;
+      const originalRetryInterval = process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS;
+      const healthyRedisUrl = originalRedisUrl as string;
+      process.env.REDIS_URL = "redis://redis:1";
+      process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS = "400";
+      process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS = "300";
+      let firstModuleRef: TestingModule | undefined;
+      let secondModuleRef: TestingModule | undefined;
+      let firstOverride: ReturnType<typeof installRedisUrlOverride> | undefined;
+      let secondOverride: ReturnType<typeof installRedisUrlOverride> | undefined;
+      try {
+        [firstModuleRef, secondModuleRef] = await Promise.all([
+          Test.createTestingModule({ imports: [AppModule] }).compile(),
+          Test.createTestingModule({ imports: [AppModule] }).compile(),
+        ]);
+        await Promise.all([firstModuleRef.init(), secondModuleRef.init()]);
+
+        // Both replicas fail against the unreachable address for a bit...
+        await new Promise((resolve) => setTimeout(resolve, 1_100));
+
+        // ...then both recover concurrently.
+        firstOverride = installRedisUrlOverride(firstModuleRef);
+        secondOverride = installRedisUrlOverride(secondModuleRef);
+        firstOverride.setUrl(healthyRedisUrl);
+        secondOverride.setUrl(healthyRedisUrl);
+
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+
+        const verifyConnection = new Redis(healthyRedisUrl, { maxRetriesPerRequest: null });
+        const verifyQueue = new Queue("SCHEDULER_INTERNAL", { connection: verifyConnection });
+        try {
+          const schedulers = await verifyQueue.getJobSchedulers(0, -1);
+          const matching = schedulers.filter((s) => s.key === "scheduler-tick-primary");
+          expect(matching).toHaveLength(1);
+        } finally {
+          await verifyQueue.close().catch(() => undefined);
+          verifyConnection.disconnect();
+        }
+      } finally {
+        firstOverride?.restore();
+        secondOverride?.restore();
+        process.env.REDIS_URL = originalRedisUrl;
+        process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS = originalTimeout;
+        process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS = originalRetryInterval;
+        for (const ref of [firstModuleRef, secondModuleRef]) {
+          if (ref) await cleanupBrokenSchedulerModule(ref);
+        }
+      }
+    }, 15_000);
+
+    it("shutdown cancels the retry timer — no further registration attempts, and the process's active handle count does not keep climbing afterward", async () => {
+      const originalRedisUrl = process.env.REDIS_URL;
+      const originalTimeout = process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS;
+      const originalRetryInterval = process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS;
+      process.env.REDIS_URL = "redis://redis:1";
+      process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS = "300";
+      process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS = "200";
+      let brokenModuleRef: TestingModule | undefined;
+      try {
+        brokenModuleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+        await brokenModuleRef.init();
+
+        const brokenManager = brokenModuleRef.get(SchedulerTickManager);
+        const warnSpy = jest.spyOn((brokenManager as unknown as { logger: { warn: (...args: unknown[]) => void } }).logger, "warn");
+
+        // Let at least one full cycle happen first.
+        await new Promise((resolve) => setTimeout(resolve, 600));
+
+        const activeHandles = () => (process as unknown as { _getActiveHandles: () => unknown[] })._getActiveHandles().length;
+        const beforeShutdown = activeHandles();
+
+        await cleanupBrokenSchedulerModule(brokenModuleRef);
+        brokenModuleRef = undefined; // already cleaned up — don't clean up twice in `finally`
+
+        const retryingCountAtShutdown = warnSpy.mock.calls.filter((call) => (call[0] as { event?: string })?.event === "SCHEDULER_REGISTRATION_RETRYING").length;
+
+        // Wait well past several more would-be retry cycles.
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+
+        const retryingCountAfterWait = warnSpy.mock.calls.filter((call) => (call[0] as { event?: string })?.event === "SCHEDULER_REGISTRATION_RETRYING").length;
+        // No new retries were scheduled after shutdown — the timer was
+        // genuinely cancelled, not just outlived by the test.
+        expect(retryingCountAfterWait).toBe(retryingCountAtShutdown);
+
+        const afterWait = activeHandles();
+        // The process's own handle count settles rather than continuing
+        // to grow once shutdown has run — allow the same small constant
+        // slack as the prolonged-outage test above.
+        expect(afterWait).toBeLessThanOrEqual(beforeShutdown + 1);
+      } finally {
+        process.env.REDIS_URL = originalRedisUrl;
+        process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS = originalTimeout;
+        process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS = originalRetryInterval;
+        if (brokenModuleRef) {
+          await cleanupBrokenSchedulerModule(brokenModuleRef);
+        }
+      }
+    }, 15_000);
   });
 });
