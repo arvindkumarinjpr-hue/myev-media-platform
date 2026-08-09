@@ -209,15 +209,29 @@ jobs:
         working-directory: apps/worker
         run: |
           nohup pnpm exec ts-node --transpile-only src/main.ts > /tmp/worker.log 2>&1 &
+          WORKER_PID=$!
           disown
-          for i in $(seq 1 30); do
+          # 90s, not the 30s this step shipped with: this is the first
+          # time this exact step has ever run on a real GitHub-hosted
+          # runner (no Module 1F PR existed before this one — see the CI
+          # Fix Report), so its timeout was never actually validated
+          # against real CI hardware, and the app has grown substantially
+          # since this step was first written (Milestone 3) to now
+          # include the full Scheduler Foundation. If this still times
+          # out, the diagnostics below (process liveness + exact log
+          # byte count) are there specifically so the NEXT failure is
+          # actually debuggable instead of showing an empty file.
+          for i in $(seq 1 90); do
             if grep -q "BullMQ worker listening" /tmp/worker.log 2>/dev/null; then
-              echo "Worker is listening."
+              echo "Worker is listening after ${i}s."
               exit 0
             fi
             sleep 1
           done
           echo "Worker did not start in time." >&2
+          echo "--- process still alive? ---" >&2
+          ps -p "$WORKER_PID" -o pid,stat,cmd || echo "process $WORKER_PID is not running" >&2
+          echo "--- /tmp/worker.log (byte count: $(wc -c < /tmp/worker.log 2>/dev/null || echo 'file missing')) ---" >&2
           cat /tmp/worker.log
           exit 1
 
