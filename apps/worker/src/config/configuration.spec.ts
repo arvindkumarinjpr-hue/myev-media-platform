@@ -61,6 +61,33 @@ describe("configuration", () => {
       expect(config.applicationVersion).toBe("0.1.0");
       expect(config.heartbeatIntervalMs).toBe(15_000);
       expect(config.redisShutdownDeadlineMs).toBe(5_000);
+      expect(config.outboxRelayIntervalMs).toBe(2_000);
+      expect(config.outboxRelayBatchSize).toBe(50);
+      expect(config.outboxRelayClaimLeaseMs).toBe(30_000);
+    });
+  });
+
+  it("throws WorkerConfigError when OUTBOX_RELAY_INTERVAL_MS is not a positive integer", () => {
+    withEnv({ ...REQUIRED_ENV, OUTBOX_RELAY_INTERVAL_MS: "0" }, () => {
+      expect(() => configuration()).toThrow(/OUTBOX_RELAY_INTERVAL_MS/);
+    });
+    withEnv({ ...REQUIRED_ENV, OUTBOX_RELAY_INTERVAL_MS: "not-a-number" }, () => {
+      expect(() => configuration()).toThrow(/OUTBOX_RELAY_INTERVAL_MS/);
+    });
+  });
+
+  it("throws WorkerConfigError when OUTBOX_RELAY_BATCH_SIZE is not a positive integer", () => {
+    withEnv({ ...REQUIRED_ENV, OUTBOX_RELAY_BATCH_SIZE: "-5" }, () => {
+      expect(() => configuration()).toThrow(/OUTBOX_RELAY_BATCH_SIZE/);
+    });
+  });
+
+  it("throws WorkerConfigError when OUTBOX_RELAY_CLAIM_LEASE_MS is not a positive integer", () => {
+    withEnv({ ...REQUIRED_ENV, OUTBOX_RELAY_CLAIM_LEASE_MS: "0" }, () => {
+      expect(() => configuration()).toThrow(/OUTBOX_RELAY_CLAIM_LEASE_MS/);
+    });
+    withEnv({ ...REQUIRED_ENV, OUTBOX_RELAY_CLAIM_LEASE_MS: "not-a-number" }, () => {
+      expect(() => configuration()).toThrow(/OUTBOX_RELAY_CLAIM_LEASE_MS/);
     });
   });
 
