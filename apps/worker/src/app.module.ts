@@ -14,6 +14,10 @@ import { OutboxRelayModule } from "./events/outbox-relay.module";
 import { ShutdownModule } from "./shutdown/shutdown.module";
 import { SimulatedShutdownFailureModule } from "./testing/simulated-shutdown-failure.module";
 
+// TEMPORARY DIAGNOSTIC — shutdown-signals forensics, remove before merge.
+const shouldLoadSimModule = process.env.SIMULATE_SHUTDOWN_FAILURE === "true" || process.env.SIMULATE_TRACKER_FAILURE === "true";
+console.error(`DIAG SIM_MODULE_LOADED=${shouldLoadSimModule}`);
+
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -44,7 +48,7 @@ import { SimulatedShutdownFailureModule } from "./testing/simulated-shutdown-fai
     // DEFECT-1F-001 FINAL SIGNAL ERROR-HANDLING FIX — test fixture only,
     // inert unless SIMULATE_SHUTDOWN_FAILURE=true is explicitly set. See
     // testing/simulated-shutdown-failure.module.ts's own doc comment.
-    ...(process.env.SIMULATE_SHUTDOWN_FAILURE === "true" || process.env.SIMULATE_TRACKER_FAILURE === "true" ? [SimulatedShutdownFailureModule] : []),
+    ...(shouldLoadSimModule ? [SimulatedShutdownFailureModule] : []),
   ],
 })
 export class AppModule {}

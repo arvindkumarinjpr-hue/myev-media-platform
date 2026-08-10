@@ -14,6 +14,10 @@ import { SHUTDOWN_TRACKER } from "./shutdown/shutdown.module";
  * already uses — without exposing any network surface.
  */
 async function bootstrap(): Promise<void> {
+  // TEMPORARY DIAGNOSTIC — shutdown-signals forensics, remove before merge.
+  console.error(`DIAG PROCESS_PID=${process.pid}`);
+  console.error(`DIAG SIMULATE_SHUTDOWN_FAILURE=${process.env.SIMULATE_SHUTDOWN_FAILURE ?? "<unset>"}`);
+  console.error(`DIAG SIMULATE_TRACKER_FAILURE=${process.env.SIMULATE_TRACKER_FAILURE ?? "<unset>"}`);
   const app = await NestFactory.createApplicationContext(AppModule, { bufferLogs: true });
   app.useLogger(app.get(Logger));
   app.flushLogs();
@@ -55,6 +59,7 @@ async function bootstrap(): Promise<void> {
     process.on(signal, () => {
       if (shuttingDown) return;
       shuttingDown = true;
+      console.error(`DIAG SIGNAL_RECEIVED=${signal}`); // TEMPORARY DIAGNOSTIC
       void (async () => {
         // DEFECT-1F-001 final correction: mirrors NestJS's own
         // enableShutdownHooks() cleanup() try/catch exactly (confirmed
@@ -70,9 +75,12 @@ async function bootstrap(): Promise<void> {
         // torn down by the time a shutdown hook has failed. Never logs
         // the raw error object (could carry a connection string) — only
         // a safe .message string.
+        console.error("DIAG BEFORE_APP_CLOSE"); // TEMPORARY DIAGNOSTIC
         try {
           await app.close();
+          console.error("DIAG AFTER_APP_CLOSE"); // TEMPORARY DIAGNOSTIC
         } catch (error) {
+          console.error("DIAG APP_CLOSE_REJECTED"); // TEMPORARY DIAGNOSTIC
           console.error(
             JSON.stringify({
               event: "APPLICATION_SHUTDOWN_FAILED",
@@ -81,14 +89,17 @@ async function bootstrap(): Promise<void> {
               err: { message: error instanceof Error ? error.message : String(error) },
             }),
           );
+          console.error("DIAG BEFORE_PROCESS_EXIT_1"); // TEMPORARY DIAGNOSTIC
           process.exit(1);
           return;
         }
         if (shutdownTracker.hasFailure()) {
+          console.error("DIAG BEFORE_PROCESS_EXIT_1"); // TEMPORARY DIAGNOSTIC
           process.exit(1);
           return;
         }
         for (const sig of shutdownSignals) process.removeAllListeners(sig);
+        console.error("DIAG BEFORE_PROCESS_KILL"); // TEMPORARY DIAGNOSTIC
         process.kill(process.pid, signal);
       })();
     });

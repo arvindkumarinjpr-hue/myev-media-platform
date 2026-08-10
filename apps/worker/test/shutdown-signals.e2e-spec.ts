@@ -101,6 +101,29 @@ describe("Worker (e2e) — DEFECT-1F-001 real SIGTERM/SIGINT", () => {
     return { text: () => buffer };
   }
 
+  // TEMPORARY DIAGNOSTIC — shutdown-signals forensics, remove before merge.
+  function collectStdout(child: ChildProcessWithoutNullStreams): { text: () => string } {
+    let buffer = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      buffer += chunk.toString("utf8");
+    });
+    return { text: () => buffer };
+  }
+
+  // TEMPORARY DIAGNOSTIC — shutdown-signals forensics, remove before merge.
+  // Prints unconditionally, BEFORE any assertion runs, so the full child
+  // output is always visible in the Jest log regardless of pass/fail.
+  function dumpDiagnostics(
+    label: string,
+    result: { code: number | null; signal: NodeJS.Signals | null; timedOut: boolean },
+    stdout: { text: () => string },
+    stderr: { text: () => string },
+  ): void {
+    console.log(`DIAG_RESULT[${label}] code=${result.code} signal=${result.signal} timedOut=${result.timedOut}`);
+    console.log(`DIAG_STDOUT_BEGIN[${label}]\n${stdout.text()}\nDIAG_STDOUT_END[${label}]`);
+    console.log(`DIAG_STDERR_BEGIN[${label}]\n${stderr.text()}\nDIAG_STDERR_END[${label}]`);
+  }
+
   const spawnedProcesses: ChildProcessWithoutNullStreams[] = [];
   afterEach(async () => {
     // Defensive-only backstop (see waitForExit's own comment) — a
@@ -182,11 +205,13 @@ describe("Worker (e2e) — DEFECT-1F-001 real SIGTERM/SIGINT", () => {
         const child = spawnWorker(applicationVersion, { SIMULATE_SHUTDOWN_FAILURE: "true" });
         spawnedProcesses.push(child);
         const stderr = collectStderr(child);
+        const stdout = collectStdout(child); // TEMPORARY DIAGNOSTIC
 
         await waitForHeartbeat(applicationVersion, startedAfter, 15_000);
 
         child.kill(signal);
         const result = await waitForExit(child, 15_000);
+        dumpDiagnostics(`signal-failure-${signal}`, result, stdout, stderr); // TEMPORARY DIAGNOSTIC — before any assertion
 
         expect(result.timedOut).toBe(false);
         // Deterministic exit(1) — NOT terminated by the signal itself
@@ -218,11 +243,14 @@ describe("Worker (e2e) — DEFECT-1F-001 real SIGTERM/SIGINT", () => {
       const startedAfter = new Date();
       const child = spawnWorker(applicationVersion, { SIMULATE_TRACKER_FAILURE: "true" });
       spawnedProcesses.push(child);
+      const stderrTf = collectStderr(child); // TEMPORARY DIAGNOSTIC
+      const stdoutTf = collectStdout(child); // TEMPORARY DIAGNOSTIC
 
       await waitForHeartbeat(applicationVersion, startedAfter, 15_000);
 
       child.kill("SIGTERM");
       const result = await waitForExit(child, 15_000);
+      dumpDiagnostics("tracker-failure", result, stdoutTf, stderrTf); // TEMPORARY DIAGNOSTIC — before any assertion
 
       expect(result.timedOut).toBe(false);
       // This exercises the OTHER branch — app.close() resolves (no
@@ -242,6 +270,7 @@ describe("Worker (e2e) — DEFECT-1F-001 real SIGTERM/SIGINT", () => {
       const child = spawnWorker(applicationVersion, { SIMULATE_SHUTDOWN_FAILURE: "true" });
       spawnedProcesses.push(child);
       const stderr = collectStderr(child);
+      const stdoutRace = collectStdout(child); // TEMPORARY DIAGNOSTIC
 
       await waitForHeartbeat(applicationVersion, startedAfter, 15_000);
 
@@ -250,6 +279,7 @@ describe("Worker (e2e) — DEFECT-1F-001 real SIGTERM/SIGINT", () => {
       child.kill("SIGTERM");
       child.kill("SIGINT");
       const result = await waitForExit(child, 15_000);
+      dumpDiagnostics("near-simultaneous", result, stdoutRace, stderr); // TEMPORARY DIAGNOSTIC — before any assertion
 
       expect(result.timedOut).toBe(false);
       expect(result.code).toBe(1);

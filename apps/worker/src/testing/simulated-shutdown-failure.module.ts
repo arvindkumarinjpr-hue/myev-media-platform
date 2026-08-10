@@ -25,9 +25,12 @@ import { SHUTDOWN_TRACKER } from "../shutdown/shutdown.module";
  */
 @Injectable()
 export class SimulatedShutdownFailureProvider implements OnApplicationShutdown {
-  constructor(@Inject(SHUTDOWN_TRACKER) private readonly shutdownTracker: ShutdownOutcomeTracker) {}
+  constructor(@Inject(SHUTDOWN_TRACKER) private readonly shutdownTracker: ShutdownOutcomeTracker) {
+    console.error("DIAG SIM_PROVIDER_CREATED"); // TEMPORARY DIAGNOSTIC
+  }
 
   onApplicationShutdown(): void {
+    console.error("DIAG SIM_PROVIDER_ON_SHUTDOWN_ENTER"); // TEMPORARY DIAGNOSTIC
     if (process.env.SIMULATE_TRACKER_FAILURE === "true") {
       this.shutdownTracker.record(SimulatedShutdownFailureProvider.name, "FAILED");
       return;

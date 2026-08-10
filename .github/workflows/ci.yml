@@ -8,6 +8,8 @@ on:
 
 jobs:
   validate:
+    # TEMPORARY DIAGNOSTIC — shutdown-signals forensics, revert before merge.
+    if: false
     name: Lint, Typecheck, Test, Build
     runs-on: ubuntu-latest
     steps:
@@ -41,6 +43,8 @@ jobs:
         run: pnpm verify:packages
 
   docker-validate:
+    # TEMPORARY DIAGNOSTIC — shutdown-signals forensics, revert before merge.
+    if: false
     name: Docker Compose Config & Build
     runs-on: ubuntu-latest
     steps:
@@ -193,19 +197,15 @@ jobs:
       # exactly the race that made this suite flaky in local verification
       # (whichever instance BullMQ dispatches a given job to "wins",
       # non-deterministically, and the loser's assertions fail).
+      # TEMPORARY DIAGNOSTIC — shutdown-signals forensics, revert before
+      # merge: scoped to only the failing file instead of the full suite.
       - name: Run Worker E2E suite
         working-directory: apps/worker
-        run: pnpm test:e2e
+        run: npx jest --config test/jest-e2e.config.js --forceExit shutdown-signals
 
-      # apps/api's own e2e suite (background-jobs.e2e-spec.ts, Module 1F)
-      # enqueues real jobs and waits for a real Worker to complete them —
-      # nothing else in this job runs one, unlike a developer's local
-      # Docker Compose stack where apps/worker is always already running.
-      # Backgrounded + disowned so it survives past this step's own shell;
-      # torn down for free when the runner is destroyed at job end. Started
-      # only now (after the Worker E2E suite above has already finished)
-      # to avoid the two-consumer race described there.
+      # TEMPORARY DIAGNOSTIC — shutdown-signals forensics, revert before merge.
       - name: Start Worker (background)
+        if: false
         working-directory: apps/worker
         run: |
           # Root-caused (see CI WORKER BOOTSTRAP STALL — FINAL ROOT CAUSE
@@ -282,7 +282,9 @@ jobs:
             "SELECT worker_id, hostname, process_id, application_version, queue_assignments, started_at, last_heartbeat_at FROM worker_heartbeats WHERE started_at >= '${START_TIME_ISO}'::timestamptz ORDER BY started_at DESC;" >&2 2>&1 || true
           exit 1
 
+      # TEMPORARY DIAGNOSTIC — shutdown-signals forensics, revert before merge.
       - name: Run E2E suite
+        if: false
         working-directory: apps/api
         run: pnpm test:e2e
 
