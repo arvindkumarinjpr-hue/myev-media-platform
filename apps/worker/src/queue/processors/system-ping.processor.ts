@@ -1,6 +1,13 @@
 import { Injectable } from "@nestjs/common";
 import { InjectPinoLogger, PinoLogger } from "nestjs-pino";
-import { JobCancelledError, type ProcessorContext, type ProcessorHandler, type SystemPingPayload, type SystemPingResult } from "@myev/shared";
+import {
+  JobCancelledError,
+  PermanentProcessorError,
+  type ProcessorContext,
+  type ProcessorHandler,
+  type SystemPingPayload,
+  type SystemPingResult,
+} from "@myev/shared";
 
 @Injectable()
 export class SystemPingProcessor {
@@ -48,6 +55,12 @@ export class SystemPingProcessor {
 
     if (await context.isCancelled()) {
       throw new JobCancelledError();
+    }
+
+    // Milestone 8.3 Phase 2 test fixture only — see
+    // SystemPingPayload.permanentFailure's own comment.
+    if (payload.permanentFailure) {
+      throw new PermanentProcessorError("SIMULATED_PERMANENT_FAILURE", "Simulated permanent failure for testing.");
     }
 
     // Deterministic-failure hook for Milestone 5's retry/backoff/dead-
