@@ -14,6 +14,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { SHUTDOWN_TRACKER } from "../shutdown/shutdown.module";
 import { Prisma, type ScheduledJob } from "../../../api/generated/prisma";
 import { isExpectedIdempotencyViolation } from "./idempotency-violation";
+import { diagLog, diagWrapConnection } from "../testing/diag-timing";
 
 // Deliberately NOT one of the 9 QueueName categories, and never
 // registered as a ProcessorManifest — this is the resolution to the
@@ -113,7 +114,9 @@ export class SchedulerTickManager implements OnApplicationBootstrap, OnApplicati
    * long-lived connection the Worker depends on).
    */
   async onApplicationBootstrap(): Promise<void> {
+    diagLog("BOOTSTRAP_START", { manager: "SchedulerTickManager" });
     this.connection = new Redis(this.config.get("redisUrl", { infer: true }), { maxRetriesPerRequest: null });
+    diagWrapConnection(this.connection, "SchedulerTickManager.connection", this.config.get("redisUrl", { infer: true }));
     this.connection.on("error", (error) => {
       this.logger.error({ err: error }, "Redis connection error");
     });
@@ -134,6 +137,7 @@ export class SchedulerTickManager implements OnApplicationBootstrap, OnApplicati
     if (!registered) {
       this.scheduleRegistrationRetry();
     }
+    diagLog("BOOTSTRAP_END", { manager: "SchedulerTickManager" });
   }
 
   /**
@@ -175,6 +179,7 @@ export class SchedulerTickManager implements OnApplicationBootstrap, OnApplicati
     const tickIntervalMs = this.config.get("schedulerTickIntervalMs", { infer: true });
 
     const registrationConnection = new Redis(this.config.get("redisUrl", { infer: true }), { maxRetriesPerRequest: null });
+    diagWrapConnection(registrationConnection, "SchedulerTickManager.registrationConnection", this.config.get("redisUrl", { infer: true }));
     // Silent: an unreachable Redis can cycle ECONNREFUSED many times
     // within a single bounded attempt (ioredis's own fast early retry
     // backoff), and this connection is discarded the moment this method
@@ -479,6 +484,16 @@ export class SchedulerTickManager implements OnApplicationBootstrap, OnApplicati
     );
   }
 
+  /**
+   * DEFECT-1F-005 (final call site). Same rationale as
+   * BullMqWorkerManager.getQueue()'s own doc comment: this Queue's
+   * underlying RedisConnection is constructed with `shared: true`
+   * (verified against the installed bullmq@6.0.8 source — `this.connection`
+   * is a live ioredis instance, not connection options), so a zero-listener
+   * 'error' emission on the Queue object itself would otherwise be
+   * possible. Attached once, at construction, never re-attached on a
+   * cache hit.
+   */
   private getDispatchQueue(queueName: string): Queue {
     if (!this.connection) {
       throw new Error("SchedulerTickManager.getDispatchQueue() called before onApplicationBootstrap");
@@ -486,12 +501,16 @@ export class SchedulerTickManager implements OnApplicationBootstrap, OnApplicati
     let queue = this.dispatchQueues.get(queueName);
     if (!queue) {
       queue = new Queue(queueName, { connection: this.connection });
+      queue.on("error", (error) => {
+        this.logger.error({ err: error, queueName }, "scheduler dispatch queue error");
+      });
       this.dispatchQueues.set(queueName, queue);
     }
     return queue;
   }
 
   async onApplicationShutdown(): Promise<void> {
+    diagLog("SHUTDOWN_START", { manager: "SchedulerTickManager" });
     // DEFECT-1F-004: stop the background registration-retry loop first —
     // otherwise a still-pending retry timer either fires after shutdown
     // has begun (scheduling yet another attempt on a connection about to
@@ -531,10 +550,16 @@ export class SchedulerTickManager implements OnApplicationBootstrap, OnApplicati
         await this.tickQueue?.close();
         await Promise.all([...this.dispatchQueues.values()].map((queue) => queue.close()));
         await this.connection?.quit();
+        diagLog("SHUTDOWN_GRACEFUL_END", { manager: "SchedulerTickManager" });
       },
       () => {
+        diagLog("SHUTDOWN_FORCE_START", { manager: "SchedulerTickManager" });
         this.tickWorker?.close(true).catch(() => undefined);
+        for (const queue of this.dispatchQueues.values()) {
+          queue.close().catch(() => undefined);
+        }
         this.connection?.disconnect();
+        diagLog("SHUTDOWN_FORCE_END", { manager: "SchedulerTickManager" });
       },
       deadlineMs,
     );

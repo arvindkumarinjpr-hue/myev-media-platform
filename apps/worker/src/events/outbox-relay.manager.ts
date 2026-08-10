@@ -14,6 +14,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { SHUTDOWN_TRACKER } from "../shutdown/shutdown.module";
 import { Prisma } from "../../../api/generated/prisma";
 import { isExpectedIdempotencyViolation } from "../scheduler/idempotency-violation";
+import { diagLog, diagWrapConnection } from "../testing/diag-timing";
 
 // Deliberately NOT one of the 9 QueueName categories, and never
 // registered as a ProcessorManifest — identical reasoning to
@@ -153,7 +154,9 @@ export class OutboxRelayManager implements OnApplicationBootstrap, OnApplication
    * milestone needs.
    */
   async onApplicationBootstrap(): Promise<void> {
+    diagLog("BOOTSTRAP_START", { manager: "OutboxRelayManager" });
     this.connection = new Redis(this.config.get("redisUrl", { infer: true }), { maxRetriesPerRequest: null });
+    diagWrapConnection(this.connection, "OutboxRelayManager.connection", this.config.get("redisUrl", { infer: true }));
     this.connection.on("error", (error) => {
       this.logger.error({ err: error }, "Redis connection error");
     });
@@ -168,6 +171,7 @@ export class OutboxRelayManager implements OnApplicationBootstrap, OnApplication
     if (!registered) {
       this.scheduleRegistrationRetry();
     }
+    diagLog("BOOTSTRAP_END", { manager: "OutboxRelayManager" });
   }
 
   /** Reuses schedulerRegistrationTimeoutMs — the same generic "how long to wait for one upsertJobScheduler call" concern, not duplicated as new config. */
@@ -176,6 +180,7 @@ export class OutboxRelayManager implements OnApplicationBootstrap, OnApplication
     const tickIntervalMs = this.config.get("outboxRelayIntervalMs", { infer: true });
 
     const registrationConnection = new Redis(this.config.get("redisUrl", { infer: true }), { maxRetriesPerRequest: null });
+    diagWrapConnection(registrationConnection, "OutboxRelayManager.registrationConnection", this.config.get("redisUrl", { infer: true }));
     registrationConnection.on("error", () => undefined);
     const registrationQueue = new Queue(OUTBOX_RELAY_QUEUE_NAME, { connection: registrationConnection });
     this.inFlightRegistrationConnection = registrationConnection;
@@ -775,6 +780,13 @@ export class OutboxRelayManager implements OnApplicationBootstrap, OnApplication
     return result.count > 0;
   }
 
+  /**
+   * DEFECT-1F-005 (final call site). Same rationale as
+   * BullMqWorkerManager.getQueue()'s own doc comment — this Queue's
+   * underlying RedisConnection is `shared: true` (this.connection is a
+   * live ioredis instance), so a zero-listener 'error' emission is
+   * otherwise possible. Attached once, at construction.
+   */
   private getDispatchQueue(queueName: string): Queue {
     if (!this.connection) {
       throw new Error("OutboxRelayManager.getDispatchQueue() called before onApplicationBootstrap");
@@ -782,6 +794,9 @@ export class OutboxRelayManager implements OnApplicationBootstrap, OnApplication
     let queue = this.dispatchQueues.get(queueName);
     if (!queue) {
       queue = new Queue(queueName, { connection: this.connection });
+      queue.on("error", (error) => {
+        this.logger.error({ err: error, queueName }, "outbox relay dispatch queue error");
+      });
       this.dispatchQueues.set(queueName, queue);
     }
     return queue;
@@ -793,9 +808,14 @@ export class OutboxRelayManager implements OnApplicationBootstrap, OnApplication
    * onApplicationShutdown for the full rationale (Worker.close(true)
    * for BullMQ's own internally-duplicated blocking connection,
    * connection.disconnect() for the caller-owned one, neither awaited
-   * in the force phase).
+   * in the force phase). DEFECT-1F-005: the force phase now also closes
+   * every cached dispatchQueues entry — previously only the graceful
+   * phase did, leaving a Queue created while Redis was unreachable
+   * orphaned past shutdown (same gap already fixed in
+   * BullMqWorkerManager.onApplicationShutdown).
    */
   async onApplicationShutdown(): Promise<void> {
+    diagLog("SHUTDOWN_START", { manager: "OutboxRelayManager" });
     this.shuttingDown = true;
     if (this.registrationRetryTimer) clearTimeout(this.registrationRetryTimer);
     if (this.inFlightRegistrationConnection) {
@@ -811,10 +831,16 @@ export class OutboxRelayManager implements OnApplicationBootstrap, OnApplication
         await this.tickQueue?.close();
         await Promise.all([...this.dispatchQueues.values()].map((queue) => queue.close()));
         await this.connection?.quit();
+        diagLog("SHUTDOWN_GRACEFUL_END", { manager: "OutboxRelayManager" });
       },
       () => {
+        diagLog("SHUTDOWN_FORCE_START", { manager: "OutboxRelayManager" });
         this.tickWorker?.close(true).catch(() => undefined);
+        for (const queue of this.dispatchQueues.values()) {
+          queue.close().catch(() => undefined);
+        }
         this.connection?.disconnect();
+        diagLog("SHUTDOWN_FORCE_END", { manager: "OutboxRelayManager" });
       },
       deadlineMs,
     );

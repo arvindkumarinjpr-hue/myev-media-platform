@@ -11,6 +11,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { SHUTDOWN_TRACKER } from "../shutdown/shutdown.module";
 import { BullMqWorkerManager, JobLifecycleConflictError } from "../bullmq/bullmq-worker.manager";
 import type { BackgroundJob } from "../../../api/generated/prisma";
+import { diagLog, diagWrapConnection } from "../testing/diag-timing";
 
 // Deliberately NOT one of the 9 QueueName categories, and never
 // registered as a ProcessorManifest — identical reasoning to
@@ -72,7 +73,9 @@ export class BackgroundJobReconciliationManager implements OnApplicationBootstra
 
   /** Mirrors SchedulerTickManager/OutboxRelayManager's own bootstrap shape exactly — never blocks application bootstrap on Redis reachability. */
   async onApplicationBootstrap(): Promise<void> {
+    diagLog("BOOTSTRAP_START", { manager: "BackgroundJobReconciliationManager" });
     this.connection = new Redis(this.config.get("redisUrl", { infer: true }), { maxRetriesPerRequest: null });
+    diagWrapConnection(this.connection, "BackgroundJobReconciliationManager.connection", this.config.get("redisUrl", { infer: true }));
     this.connection.on("error", (error) => {
       this.logger.error({ err: error }, "Redis connection error");
     });
@@ -87,6 +90,7 @@ export class BackgroundJobReconciliationManager implements OnApplicationBootstra
     if (!registered) {
       this.scheduleRegistrationRetry();
     }
+    diagLog("BOOTSTRAP_END", { manager: "BackgroundJobReconciliationManager" });
   }
 
   /** Reuses schedulerRegistrationTimeoutMs/schedulerRegistrationRetryIntervalMs — the same generic "how long to wait for one upsertJobScheduler call" concern OutboxRelayManager already reuses rather than duplicating as new config. */
@@ -95,6 +99,7 @@ export class BackgroundJobReconciliationManager implements OnApplicationBootstra
     const tickIntervalMs = this.config.get("backgroundJobReconciliationIntervalMs", { infer: true });
 
     const registrationConnection = new Redis(this.config.get("redisUrl", { infer: true }), { maxRetriesPerRequest: null });
+    diagWrapConnection(registrationConnection, "BackgroundJobReconciliationManager.registrationConnection", this.config.get("redisUrl", { infer: true }));
     registrationConnection.on("error", () => undefined);
     const registrationQueue = new Queue(RECONCILIATION_QUEUE_NAME, { connection: registrationConnection });
     this.inFlightRegistrationConnection = registrationConnection;
@@ -303,6 +308,7 @@ export class BackgroundJobReconciliationManager implements OnApplicationBootstra
 
   /** DEFECT-1F-001's bounded-shutdown pattern, reused unchanged — see BullMqWorkerManager/SchedulerTickManager/OutboxRelayManager's identical onApplicationShutdown for the full rationale. */
   async onApplicationShutdown(): Promise<void> {
+    diagLog("SHUTDOWN_START", { manager: "BackgroundJobReconciliationManager" });
     this.shuttingDown = true;
     if (this.registrationRetryTimer) clearTimeout(this.registrationRetryTimer);
     if (this.inFlightRegistrationConnection) {
@@ -317,10 +323,13 @@ export class BackgroundJobReconciliationManager implements OnApplicationBootstra
         await this.tickWorker?.close();
         await this.tickQueue?.close();
         await this.connection?.quit();
+        diagLog("SHUTDOWN_GRACEFUL_END", { manager: "BackgroundJobReconciliationManager" });
       },
       () => {
+        diagLog("SHUTDOWN_FORCE_START", { manager: "BackgroundJobReconciliationManager" });
         this.tickWorker?.close(true).catch(() => undefined);
         this.connection?.disconnect();
+        diagLog("SHUTDOWN_FORCE_END", { manager: "BackgroundJobReconciliationManager" });
       },
       deadlineMs,
     );

@@ -16,4 +16,6 @@ module.exports = {
   // discovered (and fixed by ordering, not by mocking) with the live
   // Docker Compose worker container during local verification.
   maxWorkers: 1,
+  // DIAG ONLY — Module 1F Phase A CI forensics. Revert before merge.
+  reporters: ["default", "<rootDir>/test/diag-timeline-reporter.js"],
 };

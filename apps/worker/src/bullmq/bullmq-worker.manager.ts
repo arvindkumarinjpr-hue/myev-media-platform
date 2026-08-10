@@ -12,6 +12,7 @@ import { WorkerHeartbeatService } from "../heartbeat/worker-heartbeat.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { SHUTDOWN_TRACKER } from "../shutdown/shutdown.module";
 import { Prisma, type BackgroundJob } from "../../../api/generated/prisma";
+import { diagLog, diagWrapConnection } from "../testing/diag-timing";
 
 class ProcessorTimeoutError extends Error {
   constructor(timeoutMs: number) {
@@ -85,8 +86,10 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
   ) {}
 
   onApplicationBootstrap(): void {
+    diagLog("BOOTSTRAP_START", { manager: "BullMqWorkerManager" });
     // BullMQ requires this exact setting for its blocking commands.
     this.connection = new Redis(this.config.get("redisUrl", { infer: true }), { maxRetriesPerRequest: null });
+    diagWrapConnection(this.connection, "BullMqWorkerManager.connection", this.config.get("redisUrl", { infer: true }));
     // Node's EventEmitter throws (crashing the whole process) if an
     // 'error' event fires with zero listeners attached — without this,
     // a transient Redis blip (exactly the "Redis restart" scenario) would
@@ -113,6 +116,7 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
       this.workers.push(worker);
       this.logger.info({ queueName }, "BullMQ worker listening");
     }
+    diagLog("BOOTSTRAP_END", { manager: "BullMqWorkerManager" });
   }
 
   private async process(job: Job, queueName: string, processorVersion: string): Promise<unknown> {
@@ -558,6 +562,7 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
    * rejection can never produce an unhandled-rejection warning.
    */
   async onApplicationShutdown(): Promise<void> {
+    diagLog("SHUTDOWN_START", { manager: "BullMqWorkerManager" });
     const deadlineMs = this.config.get("redisShutdownDeadlineMs", { infer: true });
 
     const outcome = await boundedShutdown(
@@ -565,8 +570,10 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
         await Promise.all(this.workers.map((worker) => worker.close()));
         await Promise.all([...this.queues.values()].map((queue) => queue.close()));
         await this.connection?.quit();
+        diagLog("SHUTDOWN_GRACEFUL_END", { manager: "BullMqWorkerManager" });
       },
       () => {
+        diagLog("SHUTDOWN_FORCE_START", { manager: "BullMqWorkerManager" });
         for (const worker of this.workers) {
           worker.close(true).catch(() => undefined);
         }
@@ -574,6 +581,7 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
           queue.close().catch(() => undefined);
         }
         this.connection?.disconnect();
+        diagLog("SHUTDOWN_FORCE_END", { manager: "BullMqWorkerManager" });
       },
       deadlineMs,
     );
