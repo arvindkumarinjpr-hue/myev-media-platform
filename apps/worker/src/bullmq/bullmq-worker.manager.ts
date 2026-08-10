@@ -480,6 +480,24 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
     }
   }
 
+  /**
+   * DEFECT-1F-006 CI blocker fix / DEFECT-1F-005 (partial). Verified
+   * against the installed bullmq@6.0.8 source before choosing this fix
+   * (node_modules/.pnpm/bullmq@6.0.8.../dist/cjs): `createRedisBackend`
+   * (utils/create-backend.js) constructs this Queue's underlying
+   * `RedisConnection` with `shared: isRedisInstance(opts.connection)` —
+   * `true` here, since `this.connection` is a live `ioredis.Redis`
+   * instance, not connection options. `QueueBase`'s own `close()`
+   * (classes/queue-base.js) re-emits the backend's `'error'` event on
+   * itself (`this.backend.on('error', (error) => this.emit('error',
+   * error))`) — with zero listeners on the `Queue` object itself, that
+   * `emit('error', ...)` throws (Node's EventEmitter contract), which is
+   * exactly DEFECT-1F-005's mechanism. Attached once, at construction,
+   * never re-attached on a cache hit (this branch only runs when a new
+   * Queue is actually created) — logs safely (queueName only, no
+   * URL/credentials), mirroring `worker.on("error", ...)`'s own
+   * convention below.
+   */
   private getQueue(queueName: string): Queue {
     if (!this.connection) {
       throw new Error("BullMqWorkerManager.getQueue() called before onApplicationBootstrap");
@@ -487,6 +505,9 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
     let queue = this.queues.get(queueName);
     if (!queue) {
       queue = new Queue(queueName, { connection: this.connection });
+      queue.on("error", (error) => {
+        this.logger.error({ err: error, queueName }, "BullMQ dispatch queue error");
+      });
       this.queues.set(queueName, queue);
     }
     return queue;
@@ -507,21 +528,34 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
    * ProcessorManifest.cancelable's own doc comment) UNLESS the deadline
    * is exceeded, in which case the force phase below takes over.
    *
-   * The force phase tears down BOTH resource classes deliberately —
-   * Worker.close(true) for BullMQ's own internally-duplicated blocking
-   * connection (a Worker cannot issue non-blocking commands on a
+   * The force phase tears down every resource class this manager owns or
+   * wraps — Worker.close(true) for BullMQ's own internally-duplicated
+   * blocking connection (a Worker cannot issue non-blocking commands on a
    * connection parked in a blocking read, so it maintains its own
    * internal connection distinct from the one passed into its
    * constructor — disconnecting only the caller-owned `connection` field
-   * would not necessarily close that internal one), and
-   * connection.disconnect() for the caller-owned connection this class
-   * itself constructed. Neither call is awaited here: forceClose's
+   * would not necessarily close that internal one); queue.close() for
+   * every cached `getQueue()` Queue (DEFECT-1F-006 CI blocker fix — the
+   * graceful phase below already did this, but the force phase
+   * previously left them untouched entirely, so a Queue created while
+   * Redis was unreachable would survive shutdown and keep its own
+   * error-forwarding chain alive indefinitely, well past this test/
+   * process's own lifetime; verified against bullmq@6.0.8's own source
+   * that `queue.close()` on a `shared: true` connection — which is what
+   * `getQueue()` always constructs, since `this.connection` is a live
+   * ioredis instance, not connection options — never awaits a Redis
+   * round-trip: `RedisConnection.close()`'s entire disconnect/quit branch
+   * is gated on `!this.extraOptions.shared` and is skipped outright here,
+   * leaving only synchronous listener detachment, which is what actually
+   * stops that Queue from re-emitting further connection errors); and
+   * connection.disconnect() for the caller-owned primary connection this
+   * class itself constructed. No call here is awaited: forceClose's
    * contract (boundedShutdown's second parameter) is synchronous by
    * design, so this method's own returned promise settles within
-   * deadlineMs regardless of how long BullMQ's internal close(true)
-   * teardown actually takes — see boundedShutdown's own doc comment for
-   * why. Each fire-and-forget call carries its own swallow-catch so a
-   * later rejection can never produce an unhandled-rejection warning.
+   * deadlineMs regardless of how long any of this actually takes to
+   * settle internally — see boundedShutdown's own doc comment for why.
+   * Each fire-and-forget call carries its own swallow-catch so a later
+   * rejection can never produce an unhandled-rejection warning.
    */
   async onApplicationShutdown(): Promise<void> {
     const deadlineMs = this.config.get("redisShutdownDeadlineMs", { infer: true });
@@ -535,6 +569,9 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
       () => {
         for (const worker of this.workers) {
           worker.close(true).catch(() => undefined);
+        }
+        for (const queue of this.queues.values()) {
+          queue.close().catch(() => undefined);
         }
         this.connection?.disconnect();
       },
