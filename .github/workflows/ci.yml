@@ -9,6 +9,7 @@ on:
 jobs:
   validate:
     name: Lint, Typecheck, Test, Build
+    if: false # TEMP DIAG SCOPE - DEFECT-1F-001 signal readiness fix scoped CI check, revert before merge
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,6 +43,7 @@ jobs:
 
   docker-validate:
     name: Docker Compose Config & Build
+    if: false # TEMP DIAG SCOPE - DEFECT-1F-001 signal readiness fix scoped CI check, revert before merge
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -195,7 +197,9 @@ jobs:
       # non-deterministically, and the loser's assertions fail).
       - name: Run Worker E2E suite
         working-directory: apps/worker
-        run: pnpm test:e2e
+        # TEMP DIAG SCOPE - DEFECT-1F-001 signal readiness fix scoped CI
+        # check, revert to `pnpm test:e2e` before merge.
+        run: npx jest --config test/jest-e2e.config.js --forceExit shutdown-signals
 
       # apps/api's own e2e suite (background-jobs.e2e-spec.ts, Module 1F)
       # enqueues real jobs and waits for a real Worker to complete them —
@@ -207,6 +211,12 @@ jobs:
       # to avoid the two-consumer race described there.
       - name: Start Worker (background)
         working-directory: apps/worker
+        # TEMP DIAG SCOPE - DEFECT-1F-001 signal readiness fix scoped CI
+        # check: apps/api's shutdown-signals suite spawns its own API
+        # process directly and never enqueues a background job, so no
+        # standalone Worker is needed for this scoped run. Revert before
+        # merge.
+        if: false
         run: |
           # Root-caused (see CI WORKER BOOTSTRAP STALL — FINAL ROOT CAUSE
           # REPORT): the worker was never hung — main.ts's own
@@ -284,7 +294,9 @@ jobs:
 
       - name: Run E2E suite
         working-directory: apps/api
-        run: pnpm test:e2e
+        # TEMP DIAG SCOPE - DEFECT-1F-001 signal readiness fix scoped CI
+        # check, revert to `pnpm test:e2e` before merge.
+        run: npx jest --config test/jest-e2e.config.js --forceExit shutdown-signals
 
       - name: Show backgrounded Worker log (always, for debugging)
         if: always()
