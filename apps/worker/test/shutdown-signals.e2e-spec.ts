@@ -10,6 +10,17 @@ import { PrismaService } from "../src/prisma/prisma.service";
  * also fixes (enableShutdownHooks() was previously never called there)
  * actually matters: without it, a real SIGTERM never triggers
  * OnModuleDestroy in the first place.
+ *
+ * Readiness (DEFECT-1F-001 signal-handler readiness race fix): every
+ * test below waits for the child's own APPLICATION_READY marker on
+ * stdout, never for the worker_heartbeats row alone. The heartbeat row
+ * is written during OnApplicationBootstrap, which can complete before
+ * NestFactory.createApplicationContext() itself resolves (a LATER
+ * module's own bootstrap hook may still be in flight) — i.e. before
+ * main.ts's own signal handlers are armed. APPLICATION_READY is only
+ * ever printed after signal handlers are registered AND bootstrap has
+ * fully completed, so it is the only correct readiness signal for a
+ * test that immediately sends a real OS signal.
  */
 describe("Worker (e2e) — DEFECT-1F-001 real SIGTERM/SIGINT", () => {
   const WORKER_ROOT = path.resolve(__dirname, "..");
@@ -83,14 +94,35 @@ describe("Worker (e2e) — DEFECT-1F-001 real SIGTERM/SIGINT", () => {
     });
   }
 
-  async function waitForHeartbeat(applicationVersion: string, startedAfter: Date, timeoutMs: number): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const count = await prisma.workerHeartbeat.count({ where: { applicationVersion, startedAt: { gte: startedAfter } } });
-      if (count > 0) return;
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-    throw new Error(`worker "${applicationVersion}" did not report a heartbeat within ${timeoutMs}ms`);
+  // DEFECT-1F-001 signal-handler readiness race fix — replaces the old
+  // worker_heartbeats-row-based wait (see this file's own class doc
+  // comment for why that was unsafe). Watches the child's own stdout for
+  // its self-reported APPLICATION_READY marker, printed by main.ts only
+  // once signal handlers are armed AND bootstrap has fully completed —
+  // the only point at which sending a real signal is safe to reason
+  // about deterministically.
+  function waitForReady(child: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      let buffer = "";
+      let settled = false;
+      const onData = (chunk: Buffer): void => {
+        buffer += chunk.toString("utf8");
+        if (settled) return;
+        if (buffer.includes('"event":"APPLICATION_READY"')) {
+          settled = true;
+          clearTimeout(timer);
+          child.stdout.off("data", onData);
+          resolve();
+        }
+      };
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        child.stdout.off("data", onData);
+        reject(new Error(`worker did not report APPLICATION_READY within ${timeoutMs}ms`));
+      }, timeoutMs);
+      child.stdout.on("data", onData);
+    });
   }
 
   function collectStderr(child: ChildProcessWithoutNullStreams): { text: () => string } {
@@ -113,11 +145,10 @@ describe("Worker (e2e) — DEFECT-1F-001 real SIGTERM/SIGINT", () => {
 
   it.each(["SIGTERM", "SIGINT"] as const)("%s against a healthy Redis: bounded exit via correct signal termination, no external kill needed", async (signal) => {
     const applicationVersion = `e2e-signal-${signal.toLowerCase()}-${Date.now()}`;
-    const startedAfter = new Date();
     const child = spawnWorker(applicationVersion);
     spawnedProcesses.push(child);
 
-    await waitForHeartbeat(applicationVersion, startedAfter, 15_000);
+    await waitForReady(child, 15_000);
 
     child.kill(signal);
     const result = await waitForExit(child, 15_000);
@@ -137,11 +168,11 @@ describe("Worker (e2e) — DEFECT-1F-001 real SIGTERM/SIGINT", () => {
   }, 30_000);
 
   it("SIGTERM against a genuinely unreachable Redis: still exits within the bounded deadline via correct signal termination (FORCED still terminates via the signal, not a distinct exit code — see main.ts's own policy comment)", async () => {
-    // The worker must reach a live, heartbeating state on a HEALTHY
-    // Redis/Postgres first (that's what proves bootstrap itself is
-    // fine) — this test is about SHUTDOWN behavior once Redis then
-    // becomes unreachable, not about bootstrap against a broken Redis
-    // (already covered in redis-shutdown.e2e-spec.ts).
+    // The worker must reach a live, ready state on a HEALTHY Redis/
+    // Postgres first (that's what proves bootstrap itself is fine) —
+    // this test is about SHUTDOWN behavior once Redis then becomes
+    // unreachable, not about bootstrap against a broken Redis (already
+    // covered in redis-shutdown.e2e-spec.ts).
     //
     // Simulating "Redis becomes unreachable at shutdown time" for a
     // real spawned process without an actual network-level fault
@@ -152,16 +183,17 @@ describe("Worker (e2e) — DEFECT-1F-001 real SIGTERM/SIGINT", () => {
     // property under test (bounded, correctly-coded shutdown even when
     // every Redis operation the shutdown path attempts fails) without
     // requiring bootstrap to have first succeeded against a healthy one.
+    //
+    // waitForReady still works correctly here: every module's own
+    // OnApplicationBootstrap hook is bounded (DEFECT-1F-004's own
+    // never-block-on-Redis precedent), so APPLICATION_READY is printed
+    // once bootstrap finishes even with Redis genuinely unreachable —
+    // just later than the healthy-Redis case, never never.
     const applicationVersion = `e2e-signal-broken-${Date.now()}`;
     const child = spawnWorker(applicationVersion, { REDIS_URL: "redis://redis:1" });
     spawnedProcesses.push(child);
 
-    // No heartbeat wait here — WorkerHeartbeatService writes to
-    // Postgres, not Redis, so it succeeds regardless; a short fixed
-    // delay is enough to let bootstrap (bounded by DEFECT-1F-004's own
-    // registration timeout) reach a steady, fully-running state before
-    // signaling.
-    await new Promise((resolve) => setTimeout(resolve, 4_000));
+    await waitForReady(child, 15_000);
 
     child.kill("SIGTERM");
     const result = await waitForExit(child, 15_000);
@@ -178,12 +210,11 @@ describe("Worker (e2e) — DEFECT-1F-001 real SIGTERM/SIGINT", () => {
       "%s while a lifecycle provider throws during app.close(): exits deterministically with code 1, no unhandled-rejection/uncaught-exception path, original signal NOT re-delivered",
       async (signal) => {
         const applicationVersion = `e2e-signal-failure-${signal.toLowerCase()}-${Date.now()}`;
-        const startedAfter = new Date();
         const child = spawnWorker(applicationVersion, { SIMULATE_SHUTDOWN_FAILURE: "true" });
         spawnedProcesses.push(child);
         const stderr = collectStderr(child);
 
-        await waitForHeartbeat(applicationVersion, startedAfter, 15_000);
+        await waitForReady(child, 15_000);
 
         child.kill(signal);
         const result = await waitForExit(child, 15_000);
@@ -215,11 +246,10 @@ describe("Worker (e2e) — DEFECT-1F-001 real SIGTERM/SIGINT", () => {
 
     it("ShutdownOutcomeTracker already contains FAILED while app.close() itself resolves cleanly: still exits 1", async () => {
       const applicationVersion = `e2e-signal-tracker-failure-${Date.now()}`;
-      const startedAfter = new Date();
       const child = spawnWorker(applicationVersion, { SIMULATE_TRACKER_FAILURE: "true" });
       spawnedProcesses.push(child);
 
-      await waitForHeartbeat(applicationVersion, startedAfter, 15_000);
+      await waitForReady(child, 15_000);
 
       child.kill("SIGTERM");
       const result = await waitForExit(child, 15_000);
@@ -238,12 +268,11 @@ describe("Worker (e2e) — DEFECT-1F-001 real SIGTERM/SIGINT", () => {
 
     it("near-simultaneous SIGTERM + SIGINT: the shutdown body executes exactly once, not twice", async () => {
       const applicationVersion = `e2e-signal-race-${Date.now()}`;
-      const startedAfter = new Date();
       const child = spawnWorker(applicationVersion, { SIMULATE_SHUTDOWN_FAILURE: "true" });
       spawnedProcesses.push(child);
       const stderr = collectStderr(child);
 
-      await waitForHeartbeat(applicationVersion, startedAfter, 15_000);
+      await waitForReady(child, 15_000);
 
       // Fired back-to-back, deliberately not awaiting anything between
       // them — the shuttingDown guard must make the second one a no-op.
@@ -260,6 +289,33 @@ describe("Worker (e2e) — DEFECT-1F-001 real SIGTERM/SIGINT", () => {
       // — would appear twice.
       const occurrences = (stderr.text().match(/APPLICATION_SHUTDOWN_FAILED/g) ?? []).length;
       expect(occurrences).toBe(1);
+
+      await prisma.workerHeartbeat.deleteMany({ where: { applicationVersion } });
+    }, 30_000);
+
+    it("regression guard: SIGTERM sent with zero delay after APPLICATION_READY is never dropped — signal handling is already armed by the moment readiness is observed", async () => {
+      // This is the exact race DEFECT-1F-001's signal-handler readiness
+      // fix closed: previously, a worker_heartbeats row (written during
+      // OnApplicationBootstrap) could become visible before this
+      // process's own signal handlers were registered, letting a signal
+      // received in that window fall through to the OS default
+      // disposition instead of running app.close() at all. Deliberately
+      // no delay of any kind between observing readiness and signaling
+      // — if this regresses, this test observes code:null (signal-
+      // terminated, handler never ran) instead of the expected code:1.
+      const applicationVersion = `e2e-signal-readiness-race-${Date.now()}`;
+      const child = spawnWorker(applicationVersion, { SIMULATE_SHUTDOWN_FAILURE: "true" });
+      spawnedProcesses.push(child);
+      const stderr = collectStderr(child);
+
+      await waitForReady(child, 15_000);
+      child.kill("SIGTERM");
+      const result = await waitForExit(child, 15_000);
+
+      expect(result.timedOut).toBe(false);
+      expect(result.code).toBe(1);
+      expect(result.signal).toBeNull();
+      expect(stderr.text()).toContain("APPLICATION_SHUTDOWN_FAILED");
 
       await prisma.workerHeartbeat.deleteMany({ where: { applicationVersion } });
     }, 30_000);
