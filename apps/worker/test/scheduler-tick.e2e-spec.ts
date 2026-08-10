@@ -7,8 +7,20 @@ import { AppModule } from "../src/app.module";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { SchedulerTickManager } from "../src/scheduler/scheduler-tick.manager";
 import { BullMqWorkerManager } from "../src/bullmq/bullmq-worker.manager";
+import { OutboxRelayManager } from "../src/events/outbox-relay.manager";
+import { BackgroundJobReconciliationManager } from "../src/reconciliation/background-job-reconciliation.manager";
 import { WorkerHeartbeatService } from "../src/heartbeat/worker-heartbeat.service";
 import type { ScheduledJob } from "../../api/generated/prisma";
+
+/** Shape shared by OutboxRelayManager/BackgroundJobReconciliationManager's own registration/tick resources — see cleanupBrokenSchedulerModule's own doc comment. */
+interface RegistrationTickManagerInternals {
+  registrationRetryTimer?: NodeJS.Timeout;
+  inFlightRegistrationConnection?: { disconnect: () => void };
+  tickWorker?: { close: (force?: boolean) => Promise<void> };
+  tickQueue?: { close: () => Promise<void> };
+  dispatchQueues?: Map<string, { close: () => Promise<void> }>;
+  connection?: { disconnect: () => void };
+}
 
 /**
  * Module 1F Milestone 7 (Scheduler Foundation), Revision 3. Runs against
@@ -76,42 +88,56 @@ describe("Worker (e2e) — SchedulerTickManager", () => {
    * WHOLE module's close() against a bound (as the pre-existing Milestone
    * 5 "Redis connection resilience" test above does for a DIFFERENT
    * provider) is not sufficient here, because NestJS invokes every
-   * provider's onApplicationShutdown as part of ONE ordered chain —
-   * BullMqWorkerManager's own shutdown (which has the identical
-   * DEFECT-1F-001 hang characteristic against unreachable Redis) can sit
-   * ahead of SchedulerTickManager's in that chain, meaning the bounded
-   * race gives up on the OUTER close() before SchedulerTickManager's own
-   * shutdown — and therefore its registrationRetryTimer clearTimeout —
-   * ever runs at all. Confirmed directly: a real hung Jest process,
-   * SCHEDULER_REGISTRATION_FAILED logs continuing every ~1.5s long after
-   * "Ran all test suites" had already printed. Fixed here by invoking
-   * SchedulerTickManager's own onApplicationShutdown directly first
-   * (bounded), independent of the rest of the module's own shutdown
-   * ordering.
+   * provider's onApplicationShutdown as part of ONE ordered chain, and a
+   * bounded race against that whole chain can give up before it ever
+   * reaches a later provider's own shutdown hook at all.
    *
-   * Separately (confirmed empirically, not assumed): BullMqWorkerManager
-   * — a different provider in this same broken module instance — has the
-   * identical DEFECT-1F-001 characteristic on its own connection, and
-   * this is PRE-EXISTING (verified directly: the pre-existing Milestone 5
-   * "Redis connection resilience" test, entirely untouched by this
-   * defect's fix, leaves the same kind of lingering process behind it
-   * too). Not this defect's scope to fix in production code — but this
-   * test file's own fixtures force-disconnect it too, exactly the same
-   * way that pre-existing test's own bounded-race comment already
-   * documents as a known, deliberate limitation.
+   * POST-MERGE WORKER E2E CLEANUP FIX (test-harness only, no production
+   * change): every broken-module manager below is force-cleaned directly
+   * via its own fields, rather than by invoking its onApplicationShutdown()
+   * — deliberately NOT calling that method here. Proven, via a real
+   * spawned-process reproduction, that calling onApplicationShutdown()
+   * first (the original approach, kept for years for SchedulerTickManager
+   * only) is actively counterproductive: BullMQ's own `Worker.close()`
+   * caches its `closing` promise on FIRST call and silently ignores the
+   * `force` argument on every subsequent call (see bullmq's own
+   * classes/worker.js `close(force = false) { if (this.closing) return
+   * this.closing; ... }`) — so once onApplicationShutdown()'s own
+   * internal graceful (non-forced) close has started in the background,
+   * a later manual `.close(true)` here is silently downgraded to that
+   * same non-forced close, which can itself hang against unreachable
+   * Redis. Every manager's registration-retry timer and in-flight
+   * registration connection are cleared the same way
+   * onApplicationShutdown() itself would (see each manager's own
+   * onApplicationShutdown doc comment) — just done here directly, first,
+   * so this helper — not a racing internal shutdown call — is what wins
+   * ownership of each resource.
    */
   async function cleanupBrokenSchedulerModule(brokenModuleRef: TestingModule): Promise<void> {
     const brokenHeartbeat = brokenModuleRef.get(WorkerHeartbeatService);
     await prisma.workerHeartbeat.deleteMany({ where: { workerId: brokenHeartbeat.workerId } });
 
-    const brokenSchedulerManager = brokenModuleRef.get(SchedulerTickManager);
-    await Promise.race([(brokenSchedulerManager as unknown as { onApplicationShutdown: () => Promise<void> }).onApplicationShutdown(), new Promise((resolve) => setTimeout(resolve, 2_000))]);
-    (brokenSchedulerManager as unknown as { connection?: { disconnect: () => void } }).connection?.disconnect();
+    for (const ManagerClass of [SchedulerTickManager, OutboxRelayManager, BackgroundJobReconciliationManager] as const) {
+      const brokenManager = brokenModuleRef.get(ManagerClass) as unknown as RegistrationTickManagerInternals;
+      if (brokenManager.registrationRetryTimer) clearTimeout(brokenManager.registrationRetryTimer);
+      brokenManager.inFlightRegistrationConnection?.disconnect();
+      brokenManager.tickWorker?.close(true).catch(() => undefined);
+      brokenManager.tickQueue?.close().catch(() => undefined);
+      if (brokenManager.dispatchQueues) {
+        for (const queue of brokenManager.dispatchQueues.values()) queue.close().catch(() => undefined);
+      }
+      brokenManager.connection?.disconnect();
+    }
 
     const brokenWorkerManager = brokenModuleRef.get(BullMqWorkerManager);
+    for (const worker of (brokenWorkerManager as unknown as { workers: Array<{ close: (force?: boolean) => Promise<void> }> }).workers) {
+      worker.close(true).catch(() => undefined);
+    }
     (brokenWorkerManager as unknown as { connection?: { disconnect: () => void } }).connection?.disconnect();
 
-    // Best-effort only from here.
+    // Best-effort only from here — every resource above is already
+    // force-neutralized directly, so this is a formality/safety net, not
+    // load-bearing for correctness.
     await Promise.race([brokenModuleRef.close(), new Promise((resolve) => setTimeout(resolve, 3_000))]);
   }
 
@@ -677,6 +703,111 @@ describe("Worker (e2e) — SchedulerTickManager", () => {
         }
       }
     }, 15_000);
+
+    it("POST-MERGE WORKER E2E CLEANUP FIX — cross-file contamination regression: two broken-Redis module instances (all four managers) are fully neutralized by cleanup, and a fresh AppModule boot immediately afterward, in the same process, sees zero interference", async () => {
+      // The real CI failure this proves against was cross-file
+      // contamination within one Jest worker process (maxWorkers: 1) —
+      // this test reproduces that exact shape in miniature, entirely
+      // within a single test, rather than relying on file-execution
+      // order across separate spec files.
+      const originalRedisUrl = process.env.REDIS_URL;
+      const originalTimeout = process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS;
+      const originalRetryInterval = process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS;
+      process.env.REDIS_URL = "redis://redis:1";
+      process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS = "400";
+      process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS = "300";
+
+      let firstModuleRef: TestingModule | undefined;
+      let secondModuleRef: TestingModule | undefined;
+      let freshModuleRef: TestingModule | undefined;
+      const errorSpies: Array<ReturnType<typeof jest.spyOn>> = [];
+
+      try {
+        [firstModuleRef, secondModuleRef] = await Promise.all([
+          Test.createTestingModule({ imports: [AppModule] }).compile(),
+          Test.createTestingModule({ imports: [AppModule] }).compile(),
+        ]);
+        await Promise.all([firstModuleRef.init(), secondModuleRef.init()]);
+
+        // Spy on every manager's own error logger across BOTH broken
+        // instances — this is what a leaked, still-retrying connection
+        // would keep calling long after cleanup, per the real CI evidence
+        // ("BullMQ worker error" / "scheduler tick worker error" /
+        // OutboxRelayManager's/BackgroundJobReconciliationManager's own
+        // equivalents, continuing for 100+ seconds post-cleanup).
+        for (const moduleRef of [firstModuleRef, secondModuleRef]) {
+          for (const ManagerClass of [SchedulerTickManager, BullMqWorkerManager, OutboxRelayManager, BackgroundJobReconciliationManager] as const) {
+            const manager = moduleRef.get(ManagerClass) as unknown as { logger: { error: (...args: unknown[]) => void } };
+            errorSpies.push(jest.spyOn(manager.logger, "error"));
+          }
+        }
+
+        // Let both replicas actually fail against the unreachable address
+        // for a bit — the genuine "outage" scenario, not a fabricated one.
+        await new Promise((resolve) => setTimeout(resolve, 1_200));
+
+        const errorCountBeforeCleanup = errorSpies.reduce((sum, spy) => sum + spy.mock.calls.length, 0);
+        expect(errorCountBeforeCleanup).toBeGreaterThan(0); // sanity: the outage was real
+
+        process.env.REDIS_URL = originalRedisUrl;
+        await Promise.all([cleanupBrokenSchedulerModule(firstModuleRef), cleanupBrokenSchedulerModule(secondModuleRef)]);
+        const errorCountAtCleanup = errorSpies.reduce((sum, spy) => sum + spy.mock.calls.length, 0);
+
+        // A forced .disconnect()/.close(true) cannot synchronously cancel
+        // an OS-level DNS lookup or TCP connect already in flight at the
+        // exact moment it's called — each of the 8 primary connections
+        // (4 managers x 2 instances) can therefore fire, at most, ONE
+        // more trailing error shortly afterward as that specific in-
+        // flight attempt finally settles. That is real, unavoidable I/O
+        // latency, not a leak — the actual defect this regression proves
+        // against is an ONGOING RETRY LOOP, so the assertion below checks
+        // for renewed growth in a LATER window, after any such one-time
+        // tail has had time to land, rather than demanding zero calls in
+        // the instant cleanup returns (which no real forced-disconnect
+        // can structurally guarantee).
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        const errorCountAfterTail = errorSpies.reduce((sum, spy) => sum + spy.mock.calls.length, 0);
+        expect(errorCountAfterTail - errorCountAtCleanup).toBeLessThanOrEqual(8);
+
+        // Wait well past several more would-be retry/registration cycles
+        // (SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS=300 above — this is
+        // ~13 such cycles). If anything were still alive and genuinely
+        // retrying, this window — not the tail window above — is where
+        // it would show up as renewed growth.
+        await new Promise((resolve) => setTimeout(resolve, 4_000));
+
+        const errorCountAfterWait = errorSpies.reduce((sum, spy) => sum + spy.mock.calls.length, 0);
+        // Zero NEW error-logger calls from ANY of the eight loggers once
+        // the one-time tail has settled — the defining proof that
+        // nothing is still alive and retrying.
+        expect(errorCountAfterWait).toBe(errorCountAfterTail);
+
+        // Now boot a completely fresh, healthy AppModule instance in this
+        // SAME process — standing in for "the next spec file" in the real
+        // CI failure. It must initialize cleanly, with no interference
+        // (no unexpected errors, no unexplained delay) from the two
+        // instances just torn down above.
+        const freshStart = Date.now();
+        freshModuleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+        await freshModuleRef.init();
+        const freshBootMs = Date.now() - freshStart;
+        expect(freshBootMs).toBeLessThan(5_000);
+
+        const freshManager = freshModuleRef.get(SchedulerTickManager);
+        const freshErrorSpy = jest.spyOn((freshManager as unknown as { logger: { error: (...args: unknown[]) => void } }).logger, "error");
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        expect(freshErrorSpy.mock.calls.length).toBe(0);
+      } finally {
+        for (const spy of errorSpies) spy.mockRestore();
+        process.env.REDIS_URL = originalRedisUrl;
+        process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS = originalTimeout;
+        process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS = originalRetryInterval;
+        for (const ref of [firstModuleRef, secondModuleRef]) {
+          if (ref) await cleanupBrokenSchedulerModule(ref);
+        }
+        if (freshModuleRef) await freshModuleRef.close();
+      }
+    }, 20_000);
 
     it("shutdown cancels the retry timer — no further registration attempts, and the process's active handle count does not keep climbing afterward", async () => {
       const originalRedisUrl = process.env.REDIS_URL;
