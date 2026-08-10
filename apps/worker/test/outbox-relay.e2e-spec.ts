@@ -4,7 +4,15 @@ import { Test, type TestingModule } from "@nestjs/testing";
 import { IsOptional, IsString } from "class-validator";
 import { Queue, type Worker } from "bullmq";
 import Redis from "ioredis";
-import { EventPublisher, EventRegistryBuilder, type DomainEventWriter, type EventConsumerManifest, type EventRegistry, type ShutdownOutcomeTracker } from "@myev/shared";
+import {
+  EventPublisher,
+  EventRegistryBuilder,
+  deriveEventConsumerJobType,
+  type DomainEventWriter,
+  type EventConsumerManifest,
+  type EventRegistry,
+  type ShutdownOutcomeTracker,
+} from "@myev/shared";
 import { AppModule } from "../src/app.module";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { WorkerHeartbeatService } from "../src/heartbeat/worker-heartbeat.service";
@@ -1189,6 +1197,197 @@ describe("Worker (e2e) — Milestone 8.2 OutboxRelayManager", () => {
           "RUNNING->FAILED", // no ProcessorManifest bound — expected/accepted
         ]);
         expect(history.filter((h) => h.toStatus === "RUNNING")).toHaveLength(1); // executed exactly once
+      } finally {
+        await verifyQueue?.close().catch(() => undefined);
+        verifyConnection?.disconnect();
+        await cleanup(moduleRef, heartbeat);
+      }
+    }, 30_000);
+  });
+
+  // ==================================================================
+  // Group G — Milestone 8.3 Phase 3: canonical event job envelope.
+  // BackgroundJob.payloadMetadata and the BullMQ job.data it dispatches
+  // must both equal EventConsumerJobEnvelope — never the business
+  // payload — for every active consumer, and deprecated consumers must
+  // receive no new fan-out. No execution runtime exists yet: any job a
+  // generic worker happens to pick up still hits its own unrelated
+  // "no ProcessorManifest bound" path, exactly as throughout Group A-F
+  // above — this suite deliberately never registers one.
+  // ==================================================================
+  describe("Milestone 8.3 Phase 3 — canonical event job envelope", () => {
+    it("29. an active consumer's BackgroundJob.payloadMetadata and BullMQ job.data both equal the canonical envelope — never the business payload — with jobType derived via the shared helper", async () => {
+      process.env.OUTBOX_RELAY_INTERVAL_MS = "3600000";
+      const manifest = consumerManifest();
+      const { moduleRef, prisma, heartbeat } = await bootstrap([manifest]);
+      let verifyQueue: Queue | undefined;
+      let verifyConnection: Redis | undefined;
+      try {
+        const outboxManager = moduleRef.get(OutboxRelayManager) as unknown as OutboxRelayInternals;
+        const event = await publishTracked(prisma, TEST_EVENT_TYPE, { note: "envelope-proof" });
+        const claimed = await outboxManager.claimUndispatchedEvents();
+        const row = claimed.find((r) => r.id === event.id)!;
+        const outcome = await outboxManager.dispatchToConsumer(row, manifest, randomUUID());
+        expect(outcome).toBe("dispatched");
+
+        const job = await prisma.backgroundJob.findFirst({ where: { idempotencyKey: `event:${event.id}:consumer:outbox-test-consumer-a` } });
+        expect(job).not.toBeNull();
+        expect(job?.jobType).toBe(deriveEventConsumerJobType("outbox-test-consumer-a", 1));
+
+        const expectedEnvelope = {
+          domainEventId: event.id,
+          eventType: TEST_EVENT_TYPE,
+          eventVersion: 1,
+          consumerName: "outbox-test-consumer-a",
+          workspaceId: null,
+          correlationId: null,
+          causationId: null,
+        };
+        expect(job!.payloadMetadata).toEqual(expectedEnvelope);
+        // The business payload ({ note: "envelope-proof" }) must never
+        // appear in the durable envelope.
+        expect(job!.payloadMetadata).not.toHaveProperty("note");
+
+        verifyConnection = new Redis(process.env.REDIS_URL!, { maxRetriesPerRequest: null });
+        verifyQueue = new Queue("SYSTEM", { connection: verifyConnection });
+        const bullJob = await verifyQueue.getJob(job!.id);
+        expect(bullJob?.name).toBe(deriveEventConsumerJobType("outbox-test-consumer-a", 1));
+        expect(bullJob?.data).toEqual(expectedEnvelope);
+        // The two are the identical logical object, not independently
+        // reconstructed — deepEqual against each other, not just against
+        // the expected shape twice.
+        expect(bullJob?.data).toEqual(job!.payloadMetadata);
+      } finally {
+        await verifyQueue?.close().catch(() => undefined);
+        verifyConnection?.disconnect();
+        await cleanup(moduleRef, heartbeat);
+      }
+    }, 30_000);
+
+    it("30. non-null DomainEvent workspaceId/correlationId/causationId are preserved exactly in the envelope, and the relay tick's own operational correlationId remains separate on BackgroundJob.correlationId", async () => {
+      process.env.OUTBOX_RELAY_INTERVAL_MS = "3600000";
+      const manifest = consumerManifest();
+      const { moduleRef, prisma, heartbeat } = await bootstrap([manifest]);
+      const workspaceFixture = await createTestWorkspace(prisma);
+      let verifyQueue: Queue | undefined;
+      let verifyConnection: Redis | undefined;
+      try {
+        const outboxManager = moduleRef.get(OutboxRelayManager) as unknown as OutboxRelayInternals;
+        const businessCorrelationId = randomUUID();
+        const businessCausationId = randomUUID();
+        const tickCorrelationId = randomUUID();
+        expect(tickCorrelationId).not.toBe(businessCorrelationId); // genuinely distinct, not incidentally equal
+
+        const event = await publishTracked(prisma, TEST_EVENT_TYPE, { note: "non-null-metadata" }, {
+          workspaceId: workspaceFixture.workspaceId,
+          correlationId: businessCorrelationId,
+          causationId: businessCausationId,
+        });
+
+        const claimed = await outboxManager.claimUndispatchedEvents();
+        const row = claimed.find((r) => r.id === event.id)!;
+        const outcome = await outboxManager.dispatchToConsumer(row, manifest, tickCorrelationId);
+        expect(outcome).toBe("dispatched");
+
+        const job = await prisma.backgroundJob.findFirst({ where: { idempotencyKey: `event:${event.id}:consumer:outbox-test-consumer-a` } });
+        const expectedEnvelope = {
+          domainEventId: event.id,
+          eventType: TEST_EVENT_TYPE,
+          eventVersion: 1,
+          consumerName: "outbox-test-consumer-a",
+          workspaceId: workspaceFixture.workspaceId,
+          correlationId: businessCorrelationId,
+          causationId: businessCausationId,
+        };
+        expect(job?.payloadMetadata).toEqual(expectedEnvelope);
+
+        // BackgroundJob.correlationId is the relay tick's own operational
+        // tracing value — unchanged by Phase 3 — never the envelope's own
+        // business correlationId, even though both are non-null here.
+        expect(job?.correlationId).toBe(tickCorrelationId);
+
+        verifyConnection = new Redis(process.env.REDIS_URL!, { maxRetriesPerRequest: null });
+        verifyQueue = new Queue("SYSTEM", { connection: verifyConnection });
+        const bullJob = await verifyQueue.getJob(job!.id);
+        expect(bullJob?.data).toEqual(expectedEnvelope);
+      } finally {
+        await verifyQueue?.close().catch(() => undefined);
+        verifyConnection?.disconnect();
+        await cleanup(moduleRef, heartbeat);
+        await deleteTestWorkspace(prisma, workspaceFixture);
+      }
+    }, 30_000);
+
+    it("31. a deprecated-only eventType receives no new fan-out — no BackgroundJob, no BullMQ dispatch, left undispatched like the zero-consumer case", async () => {
+      const manifest = consumerManifest({ status: "deprecated" });
+      const { moduleRef, prisma, heartbeat } = await bootstrap([manifest]);
+      try {
+        const event = await publishTracked(prisma, TEST_EVENT_TYPE, { note: "deprecated-only" });
+        // Deliberately wait, then assert the NEGATIVE — same technique as
+        // "unsupported eventType" (test 18): a deprecated-only eventType
+        // is structurally the same "no active consumer" case.
+        await new Promise((resolve) => setTimeout(resolve, 3_000));
+        const row = await prisma.domainEvent.findUnique({ where: { id: event.id } });
+        expect(row?.dispatchedAt).toBeNull();
+
+        const jobs = await prisma.backgroundJob.findMany({ where: { idempotencyKey: { startsWith: `event:${event.id}:` } } });
+        expect(jobs).toHaveLength(0);
+      } finally {
+        await cleanup(moduleRef, heartbeat);
+      }
+    }, 30_000);
+
+    it("32. mixed active + deprecated consumers: only the active consumer fans out, the deprecated one receives no BackgroundJob, and the event still finalizes", async () => {
+      const manifests = [
+        consumerManifest({ consumerName: "outbox-test-consumer-active", status: "active" }),
+        consumerManifest({ consumerName: "outbox-test-consumer-deprecated", status: "deprecated" }),
+      ];
+      const { moduleRef, prisma, heartbeat } = await bootstrap(manifests);
+      try {
+        const event = await publishTracked(prisma, TEST_EVENT_TYPE, { note: "mixed-active-deprecated" });
+        await waitUntil(async () => {
+          const row = await prisma.domainEvent.findUnique({ where: { id: event.id } });
+          return row?.dispatchedAt != null;
+        }, 15_000);
+
+        const activeJob = await prisma.backgroundJob.findFirst({ where: { idempotencyKey: `event:${event.id}:consumer:outbox-test-consumer-active` } });
+        const deprecatedJob = await prisma.backgroundJob.findFirst({ where: { idempotencyKey: `event:${event.id}:consumer:outbox-test-consumer-deprecated` } });
+
+        expect(activeJob).not.toBeNull();
+        expect(deprecatedJob).toBeNull();
+      } finally {
+        await cleanup(moduleRef, heartbeat);
+      }
+    }, 30_000);
+
+    it("33. a permanent payload-validation failure still stores the canonical envelope in payloadMetadata (never the business payload), and no BullMQ job is ever created for it", async () => {
+      const manifest = consumerManifest({ payloadDto: OutboxUnvalidatablePayload });
+      const { moduleRef, prisma, heartbeat } = await bootstrap([manifest]);
+      let verifyQueue: Queue | undefined;
+      let verifyConnection: Redis | undefined;
+      try {
+        const event = await publishTracked(prisma, TEST_EVENT_TYPE, { note: "missing-required-field" });
+        await waitUntil(async () => {
+          const row = await prisma.domainEvent.findUnique({ where: { id: event.id } });
+          return row?.dispatchedAt != null;
+        }, 15_000);
+
+        const job = await prisma.backgroundJob.findFirst({ where: { idempotencyKey: `event:${event.id}:consumer:outbox-test-consumer-a` } });
+        expect(job?.status).toBe("FAILED");
+        expect(job?.payloadMetadata).toEqual({
+          domainEventId: event.id,
+          eventType: TEST_EVENT_TYPE,
+          eventVersion: 1,
+          consumerName: "outbox-test-consumer-a",
+          workspaceId: null,
+          correlationId: null,
+          causationId: null,
+        });
+        expect(job?.payloadMetadata).not.toHaveProperty("note");
+
+        verifyConnection = new Redis(process.env.REDIS_URL!, { maxRetriesPerRequest: null });
+        verifyQueue = new Queue("SYSTEM", { connection: verifyConnection });
+        expect(await verifyQueue.getJob(job!.id)).toBeUndefined();
       } finally {
         await verifyQueue?.close().catch(() => undefined);
         verifyConnection?.disconnect();
