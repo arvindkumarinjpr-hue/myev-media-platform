@@ -10,6 +10,7 @@ import { HeartbeatModule } from "./heartbeat/heartbeat.module";
 import { BullMqModule } from "./bullmq/bullmq.module";
 import { SchedulerModule } from "./scheduler/scheduler.module";
 import { EventsModule } from "./events/events.module";
+import { OutboxRelayModule } from "./events/outbox-relay.module";
 import { ShutdownModule } from "./shutdown/shutdown.module";
 import { SimulatedShutdownFailureModule } from "./testing/simulated-shutdown-failure.module";
 
@@ -38,6 +39,7 @@ import { SimulatedShutdownFailureModule } from "./testing/simulated-shutdown-fai
     BullMqModule,
     SchedulerModule,
     EventsModule,
+    OutboxRelayModule,
     ShutdownModule,
     // DEFECT-1F-001 FINAL SIGNAL ERROR-HANDLING FIX — test fixture only,
     // inert unless SIMULATE_SHUTDOWN_FAILURE=true is explicitly set. See

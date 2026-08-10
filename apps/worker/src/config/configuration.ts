@@ -33,6 +33,24 @@ export interface WorkerConfig {
   // Redis-connected component in this process — see
   // @myev/shared's boundedShutdown.
   redisShutdownDeadlineMs: number;
+  // Milestone 8.2 (OutboxRelayManager) — Milestone 8 Architecture §14/§20
+  // approved starting defaults, no dynamic autoscaling yet. Reuses
+  // schedulerRegistrationTimeoutMs/schedulerRegistrationRetryIntervalMs
+  // for its own BullMQ scheduler-registration bounding (the same generic
+  // "how long to wait for a upsertJobScheduler call" concern
+  // SchedulerTickManager already has config for — not duplicated here).
+  outboxRelayIntervalMs: number;
+  outboxRelayBatchSize: number;
+  // Milestone 8.2 correctness fix — how long a claimed-but-not-yet-
+  // finalized DomainEvent's lease stays exclusive to the relay instance
+  // holding it, before it becomes eligible for another relay to reclaim.
+  // Renewed (extended) while genuine dispatch work is still in progress;
+  // only actually expires if the owning relay crashed or was killed
+  // mid-dispatch. Must comfortably exceed normal end-to-end dispatch
+  // latency for a full batch — too short causes needless duplicate
+  // dispatch attempts (still safe, via idempotency, but wasteful); too
+  // long only delays crash recovery, never causes incorrect behavior.
+  outboxRelayClaimLeaseMs: number;
 }
 
 export class WorkerConfigError extends Error {
@@ -74,6 +92,20 @@ export default function configuration(): WorkerConfig {
   if (!process.env.REDIS_URL?.trim()) {
     throw new WorkerConfigError("REDIS_URL is not set — worker cannot reach Redis");
   }
+
+  const outboxRelayIntervalMs = parseInt(process.env.OUTBOX_RELAY_INTERVAL_MS ?? "2000", 10);
+  if (!Number.isInteger(outboxRelayIntervalMs) || outboxRelayIntervalMs <= 0) {
+    throw new WorkerConfigError("OUTBOX_RELAY_INTERVAL_MS must be a positive integer");
+  }
+  const outboxRelayBatchSize = parseInt(process.env.OUTBOX_RELAY_BATCH_SIZE ?? "50", 10);
+  if (!Number.isInteger(outboxRelayBatchSize) || outboxRelayBatchSize <= 0) {
+    throw new WorkerConfigError("OUTBOX_RELAY_BATCH_SIZE must be a positive integer");
+  }
+  const outboxRelayClaimLeaseMs = parseInt(process.env.OUTBOX_RELAY_CLAIM_LEASE_MS ?? "30000", 10);
+  if (!Number.isInteger(outboxRelayClaimLeaseMs) || outboxRelayClaimLeaseMs <= 0) {
+    throw new WorkerConfigError("OUTBOX_RELAY_CLAIM_LEASE_MS must be a positive integer");
+  }
+
   return {
     env: process.env.NODE_ENV ?? "development",
     logLevel: process.env.LOG_LEVEL ?? "info",
@@ -87,5 +119,8 @@ export default function configuration(): WorkerConfig {
     schedulerRegistrationTimeoutMs: parseInt(process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS ?? "5000", 10),
     schedulerRegistrationRetryIntervalMs: parseInt(process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS ?? "10000", 10),
     redisShutdownDeadlineMs: parseInt(process.env.REDIS_SHUTDOWN_DEADLINE_MS ?? "5000", 10),
+    outboxRelayIntervalMs,
+    outboxRelayBatchSize,
+    outboxRelayClaimLeaseMs,
   };
 }

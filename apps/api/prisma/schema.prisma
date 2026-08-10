@@ -1314,6 +1314,25 @@ model DomainEvent {
   // in this migration's raw SQL for the relay's actual poll query.
   dispatchedAt DateTime? @map("dispatched_at")
 
+  // Milestone 8.2 correctness fix (claim/lease model) — added because
+  // FOR UPDATE SKIP LOCKED alone only provides mutual exclusion for the
+  // lifetime of the claiming transaction, which the "no Redis/BullMQ
+  // call under a held row lock" invariant forces to commit BEFORE
+  // dispatch even starts. Without a persisted lease, a second relay tick
+  // (this instance's next tick, or a different replica) can re-claim and
+  // re-dispatch the same still-undispatched row while the first attempt
+  // is mid-flight — empirically confirmed against real Postgres. All
+  // three are set together by the atomic claim UPDATE, extended by
+  // lease-renewal UPDATEs guarded on claimToken while dispatch is in
+  // progress, and cleared together by a successful, ownership-guarded
+  // finalize. A row with claimExpiresAt in the past is exactly as
+  // eligible for claim as one that was never claimed at all — that is
+  // the entire crash-recovery mechanism, no separate sweep/cleanup job
+  // is needed.
+  claimToken     String?   @map("claim_token") @db.Uuid
+  claimedAt      DateTime? @map("claimed_at")
+  claimExpiresAt DateTime? @map("claim_expires_at")
+
   consumers ProcessedEvent[]
 
   @@index([workspaceId])
