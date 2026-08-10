@@ -1,4 +1,4 @@
-import { IsInt, IsOptional, IsString, Max, Min } from "class-validator";
+import { IsBoolean, IsInt, IsOptional, IsString, Max, Min } from "class-validator";
 import type { ProcessorManifest } from "../processor-manifest";
 
 /**
@@ -50,6 +50,16 @@ export class SystemPingPayload {
   @Min(0)
   @Max(30_000)
   blockEventLoopMs?: number;
+
+  // Milestone 8.3 Phase 2 test fixture only, inert unless explicitly set —
+  // same discipline as failUntilAttempt/blockEventLoopMs. When true, the
+  // processor throws PermanentProcessorError deterministically, so
+  // BullMqWorkerManager's own permanent-failure branch (dead-letter
+  // immediately, skip the retry budget entirely) can be proven against
+  // real Postgres + BullMQ, not mocked.
+  @IsOptional()
+  @IsBoolean()
+  permanentFailure?: boolean;
 }
 
 export class SystemPingResult {

@@ -5,7 +5,14 @@ import { validate } from "class-validator";
 import { Job, Queue, Worker } from "bullmq";
 import Redis from "ioredis";
 import { InjectPinoLogger, PinoLogger } from "nestjs-pino";
-import { JobCancelledError, boundedShutdown, type ProcessorContext, type QueueRegistry, type ShutdownOutcomeTracker } from "@myev/shared";
+import {
+  JobCancelledError,
+  PermanentProcessorError,
+  boundedShutdown,
+  type ProcessorContext,
+  type QueueRegistry,
+  type ShutdownOutcomeTracker,
+} from "@myev/shared";
 import type { WorkerConfig } from "../config/configuration";
 import { QUEUE_REGISTRY } from "../queue/queue-registry.module";
 import { WorkerHeartbeatService } from "../heartbeat/worker-heartbeat.service";
@@ -233,6 +240,25 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
           errorMessageSafe: "Job was cancelled.",
           cancelledAt: new Date(),
         });
+        throw error;
+      }
+
+      if (error instanceof PermanentProcessorError) {
+        // Milestone 8.3 Phase 2 — a generic queue-engine capability, not
+        // event-consumer-specific: any processor may throw this to
+        // declare its own failure permanent, skipping
+        // scheduleRetryOrDeadLetter's retry-budget decision entirely,
+        // exactly like the UNKNOWN_JOB_TYPE/PAYLOAD_VALIDATION_FAILED
+        // permanent-failure paths above (deadLetterImmediately, still
+        // fenced on this attempt's own captured `started.attempts` via
+        // transitionTerminal, attempts never re-incremented here).
+        // Rethrown afterward so BullMQ's own bookkeeping marks this
+        // specific delivery failed, not completed — every Queue.add()
+        // call in this codebase already passes attempts: 1, so BullMQ
+        // never natively retries this delivery regardless; Postgres
+        // remains the sole retry/dead-letter authority.
+        this.logger.error({ ...logContext, err: error }, "job execution failed permanently");
+        await this.deadLetterImmediately(started, "FAILED", error.errorCode, error.errorMessageSafe);
         throw error;
       }
 

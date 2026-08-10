@@ -245,6 +245,80 @@ describe("Worker (e2e) — retry, backoff, and dead-letter", () => {
     }, 10_000);
   });
 
+  describe("PermanentProcessorError (Milestone 8.3 Phase 2)", () => {
+    it("dead-letters immediately: correct errorCode/errorMessageSafe, attempts not re-incremented, no retry BullMQ job, BullMQ classifies the delivery failed", async () => {
+      const payload = { permanentFailure: true };
+      const row = await createRow({ maxAttempts: 3, payload });
+      const job = await queue.add(SYSTEM_PING_V1_MANIFEST.jobType, payload, { jobId: row.id });
+
+      await job.waitUntilFinished(queueEvents, 5_000).catch(() => undefined);
+      const final = await prisma.backgroundJob.findUniqueOrThrow({ where: { id: row.id } });
+
+      expect(final.status).toBe("FAILED");
+      // Only the pickup transition's own +1 — the terminal write never
+      // touches attempts, and scheduleRetryOrDeadLetter (which alone
+      // could exhaust the budget) was never called for this branch.
+      expect(final.attempts).toBe(1);
+      expect(final.errorCode).toBe("SIMULATED_PERMANENT_FAILURE");
+      expect(final.errorMessageSafe).toBe("Simulated permanent failure for testing.");
+      expect(final.deadLetteredAt).not.toBeNull();
+
+      // Exactly one terminal transition — no intermediate QUEUED step,
+      // unlike a retried transient failure.
+      const history = await historyFor(row.id);
+      expect(history.map((h) => h.toStatus)).toEqual(["RUNNING", "FAILED"]);
+      expect(history[1].detail).toMatchObject({ errorCode: "SIMULATED_PERMANENT_FAILURE", deadLettered: true });
+
+      // scheduleRetry was never invoked — no delayed retry entry exists.
+      const retryJob = await queue.getJob(`${row.id}#retry1`);
+      expect(retryJob).toBeUndefined();
+
+      // The rethrow after the Postgres terminal write still reaches
+      // BullMQ, which — combined with every Queue.add() call in this
+      // codebase using attempts: 1 — classifies this specific delivery
+      // as failed, not completed, with no BullMQ-native retry.
+      const bullJob = await queue.getJob(row.id);
+      expect(await bullJob?.getState()).toBe("failed");
+    }, 10_000);
+
+    it("a stale PermanentProcessorError attempt cannot overwrite a newer attempt's outcome, and writes no duplicate history", async () => {
+      // Same technique as "duplicate scheduling prevention" above,
+      // applied to the new branch: let this attempt reach RUNNING, then
+      // simulate a newer attempt having already concluded before this
+      // (stale) attempt's own PermanentProcessorError write lands.
+      const payload = { delayMs: 500, permanentFailure: true };
+      const row = await createRow({ maxAttempts: 3, payload });
+      await queue.add(SYSTEM_PING_V1_MANIFEST.jobType, payload, { jobId: row.id });
+
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const midFlight = await prisma.backgroundJob.findUniqueOrThrow({ where: { id: row.id } });
+      expect(midFlight.status).toBe("RUNNING");
+
+      const newerOutcomeTime = new Date();
+      await prisma.backgroundJob.update({
+        where: { id: row.id },
+        data: { status: "FAILED", failedAt: newerOutcomeTime, deadLetteredAt: newerOutcomeTime, errorCode: "SIMULATED_NEWER_ATTEMPT_OUTCOME" },
+      });
+
+      const bullJob = await queue.getJob(row.id);
+      const rejection = await bullJob?.waitUntilFinished(queueEvents, 5_000).catch((error: Error) => error);
+      expect(rejection).toBeInstanceOf(Error);
+      expect((rejection as Error).message).toMatch(/job lifecycle conflict/);
+
+      // The stale attempt's write affected zero rows — the row still
+      // reflects exactly what the "newer attempt" set, never a mix.
+      const after = await prisma.backgroundJob.findUniqueOrThrow({ where: { id: row.id } });
+      expect(after.status).toBe("FAILED");
+      expect(after.errorCode).toBe("SIMULATED_NEWER_ATTEMPT_OUTCOME");
+      expect(after.deadLetteredAt?.getTime()).toBe(newerOutcomeTime.getTime());
+
+      // No history row from the stale attempt's rejected write — only
+      // the original QUEUED->RUNNING transition exists.
+      const history = await historyFor(row.id);
+      expect(history.map((h) => h.toStatus)).toEqual(["RUNNING"]);
+    }, 10_000);
+  });
+
   describe("crash-recovery: a stray delivery against an already-terminal row", () => {
     it("is safely skipped — never re-executed, and the row is left completely untouched", async () => {
       // Simulates BullMQ redelivering a job whose row has already reached
