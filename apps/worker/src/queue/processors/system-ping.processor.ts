@@ -21,8 +21,29 @@ export class SystemPingProcessor {
       throw new JobCancelledError();
     }
 
+    // DEFECT-1F-006 test fixture only, inert unless explicitly set — same
+    // discipline as SIMULATE_SHUTDOWN_FAILURE/SIMULATE_TRACKER_FAILURE
+    // (apps/worker/src/testing/simulated-shutdown-failure.module.ts).
+    // Kills this process AFTER the QUEUED->RUNNING pickup transition has
+    // already committed but BEFORE any terminal write — the exact window
+    // the stale-RUNNING reconciliation test matrix needs a REAL crashed
+    // process for, not a simulated one. A hard process.exit(1), not a
+    // thrown error: this must terminate the process itself, not just
+    // fail this one job execution.
+    if (process.env.SIMULATE_PROCESS_CRASH_AFTER_PICKUP === "true") {
+      process.exit(1);
+    }
+
     if (payload.delayMs) {
       await new Promise((resolve) => setTimeout(resolve, payload.delayMs));
+    }
+
+    // DEFECT-1F-006 test fixture only — see SystemPingPayload.blockEventLoopMs's own comment for why a real synchronous busy-wait, not setTimeout, is required here.
+    if (payload.blockEventLoopMs) {
+      const until = Date.now() + payload.blockEventLoopMs;
+      while (Date.now() < until) {
+        // Intentionally synchronous — this is the point.
+      }
     }
 
     if (await context.isCancelled()) {

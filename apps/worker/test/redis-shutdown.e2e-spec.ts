@@ -68,14 +68,21 @@ describe("Worker (e2e) — DEFECT-1F-001 bounded shutdown", () => {
     // since SchedulerTickManager's own DEFECT-1F-004 registration
     // timeout also runs during bootstrap, not shutdown) still proves
     // this is nowhere close to the unbounded hang the defect describes.
-    expect(elapsed).toBeLessThan(8_000);
+    // DEFECT-1F-006 added a 4th bootstrap/shutdown-participating manager
+    // (BackgroundJobReconciliationManager) to this same AppModule, each
+    // bounded at REDIS_SHUTDOWN_DEADLINE_MS and run sequentially across
+    // modules (not in parallel — see BullMqWorkerManager's own doc
+    // comment) — worst case is now ~4 * 2000ms = 8000ms just for
+    // shutdown forcing, so the previous 8000ms ceiling (sized for 2-3
+    // managers) is no longer a safe margin.
+    expect(elapsed).toBeLessThan(12_000);
 
     const outcomes = tracker.getAll();
     expect(outcomes.get("BullMqWorkerManager")).toBe("FORCED");
     expect(outcomes.get("SchedulerTickManager")).toBe("FORCED");
 
     await cleanupHeartbeat(moduleRef);
-  }, 20_000);
+  }, 25_000);
 
   it("Redis genuinely unreachable: repeated forced-shutdown cycles do not grow active handles", async () => {
     process.env.REDIS_URL = "redis://redis:1";
@@ -98,7 +105,11 @@ describe("Worker (e2e) — DEFECT-1F-001 bounded shutdown", () => {
     // is what a real leak would look like, and is what this rejects.
     const growth = handleCounts[handleCounts.length - 1] - handleCounts[0];
     expect(growth).toBeLessThanOrEqual(2);
-  }, 40_000);
+    // DEFECT-1F-006's 4th manager adds real, bounded time to both
+    // bootstrap and shutdown of each of the 3 cycles here (see the
+    // identical comment on the test above) — 40_000ms is no longer
+    // reliably enough headroom.
+  }, 60_000);
 
   it("Redis genuinely unreachable: produces no unhandled promise rejection", async () => {
     const rejections: unknown[] = [];
