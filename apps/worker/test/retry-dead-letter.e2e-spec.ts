@@ -8,6 +8,7 @@ import { PrismaService } from "../src/prisma/prisma.service";
 import { WorkerHeartbeatService } from "../src/heartbeat/worker-heartbeat.service";
 import { BullMqWorkerManager } from "../src/bullmq/bullmq-worker.manager";
 import { SchedulerTickManager } from "../src/scheduler/scheduler-tick.manager";
+import { BackgroundJobReconciliationManager } from "../src/reconciliation/background-job-reconciliation.manager";
 import type { BackgroundJob, BackgroundJobHistory } from "../../api/generated/prisma";
 
 /**
@@ -381,10 +382,34 @@ describe("Worker (e2e) — retry, backoff, and dead-letter", () => {
           await brokenSchedulerInternals.tickWorker?.close(true);
           brokenSchedulerInternals.connection?.disconnect();
 
+          // DEFECT-1F-006 added BackgroundJobReconciliationManager to this
+          // same AppModule (this test predates it too) — identical
+          // characteristic, identical fix. Mirrors the SchedulerTickManager
+          // handling immediately above for exactly the same reason.
+          const brokenReconciler = brokenModuleRef.get(BackgroundJobReconciliationManager);
+          const brokenReconcilerInternals = brokenReconciler as unknown as {
+            tickWorker?: { close: (force?: boolean) => Promise<void> };
+            connection?: { disconnect: () => void };
+          };
+          await brokenReconcilerInternals.tickWorker?.close(true);
+          brokenReconcilerInternals.connection?.disconnect();
+
           await Promise.race([brokenModuleRef.close(), new Promise((resolve) => setTimeout(resolve, 3_000))]);
         }
       }
-    }, 15_000);
+      // DEFECT-1F-006: a 4th bootstrap-participating manager
+      // (BackgroundJobReconciliationManager) now shares this same
+      // sequential-across-modules registration-timeout chain (see
+      // SchedulerTickManager/OutboxRelayManager's own identical bounded-
+      // registration pattern) — each bounded at schedulerRegistrationTimeoutMs
+      // (5000ms in this file's env setup), and Nest's own bootstrap hooks
+      // run sequentially across modules, not in parallel (confirmed by
+      // reading @nestjs/core's own source during DEFECT-1F-001). Worst
+      // case with Redis genuinely unreachable is now ~3 * 5000ms = 15000ms
+      // just for registration attempts to settle, before this test's own
+      // 500ms observation window and cleanup even begin — the previous
+      // 15_000ms budget (sized for 2 such managers) is no longer enough.
+    }, 20_000);
   });
 
   it("reports a live WorkerHeartbeat row for this process", async () => {

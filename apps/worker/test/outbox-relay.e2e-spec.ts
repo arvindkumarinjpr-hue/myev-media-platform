@@ -977,9 +977,14 @@ describe("Worker (e2e) — Milestone 8.2 OutboxRelayManager", () => {
       await cleanup(moduleRef, heartbeat);
       const elapsed = Date.now() - start;
 
-      expect(elapsed).toBeLessThan(8_000);
+      // DEFECT-1F-006 added a 4th bootstrap/shutdown-participating
+      // manager (BackgroundJobReconciliationManager) to this same
+      // AppModule, sequential-across-modules like the others (see
+      // redis-shutdown.e2e-spec.ts's identical comment) — worst case is
+      // now ~4 managers' worth of bounded shutdown time, not 2-3.
+      expect(elapsed).toBeLessThan(12_000);
       expect(tracker.getAll().get("OutboxRelayManager")).toBe("FORCED");
-    }, 20_000);
+    }, 25_000);
 
     it("26. repeated startup/shutdown cycles do not grow active handles", async () => {
       const proc = process as unknown as { _getActiveHandles?: () => unknown[] };

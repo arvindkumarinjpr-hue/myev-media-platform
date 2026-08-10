@@ -128,12 +128,15 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
     // error: whoever delivered this duplicate already has a real outcome
     // recorded from the delivery that won the race. (A worker crash that
     // leaves a row stuck at RUNNING forever, with no process left to ever
-    // transition it, is a known, deliberately out-of-scope gap here —
-    // reconciling stale RUNNING rows is a periodic-sweep concern for a
-    // future Scheduler foundation piece, not something this per-job
-    // execution path can detect about itself. Critically, that gap is an
-    // UNDER-scheduling risk, never a duplicate-scheduling one: a stuck row
-    // simply never retries, it never retries twice.)
+    // transition it, was a known gap here — root-caused as DEFECT-1F-006:
+    // BullMQ's own single native stalled-redelivery attempt gets silently
+    // absorbed by this exact guard, treated as a successful completion by
+    // BullMQ, so no further native recovery ever occurs. Now closed by
+    // BackgroundJobReconciliationManager's periodic sweep, which detects a
+    // RUNNING row past its own manifest's timeout and recovers it via
+    // scheduleRetryOrDeadLetter — see that class and this file's own
+    // attempts-fencing doc comments for why a stale execution that later
+    // resumes can never corrupt a newer attempt's state.)
     const started = await this.prisma.$transaction(async (tx) => {
       const updated = await tx.backgroundJob.updateMany({
         where: { id: backgroundJobId, status: "QUEUED" },
@@ -215,8 +218,8 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
       const result = await Promise.race([handlerPromise, timeoutPromise]);
       clearTimeout(timer);
       const safeResult = result === undefined ? null : (JSON.parse(JSON.stringify(result)) as object);
-      await this.transitionTerminal(backgroundJobId, "COMPLETED", { resultMetadata: safeResult });
-      this.logger.info(logContext, "job execution completed");
+      const fenced = await this.runFenced(logContext, () => this.transitionTerminal(backgroundJobId, started.attempts, "COMPLETED", { resultMetadata: safeResult }));
+      if (fenced.ok) this.logger.info(logContext, "job execution completed");
       return result;
     } catch (error) {
       clearTimeout(timer);
@@ -225,7 +228,7 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
         // Deliberate, not transient — cancellation is never auto-retried
         // regardless of attempts remaining.
         this.logger.info({ ...logContext, err: error }, "job execution cancelled");
-        await this.transitionTerminal(backgroundJobId, "FAILED", {
+        await this.transitionTerminal(backgroundJobId, started.attempts, "FAILED", {
           errorCode: "JOB_CANCELLED_BY_USER",
           errorMessageSafe: "Job was cancelled.",
           cancelledAt: new Date(),
@@ -245,53 +248,122 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
+   * DEFECT-1F-006. Every execution-owned write in this file (scheduleRetry,
+   * transitionTerminal, and therefore scheduleRetryOrDeadLetter/
+   * deadLetterImmediately, which call them) is guarded on this attempt's
+   * own captured `attempts` value in addition to status='RUNNING' — see
+   * those methods' own doc comments and the DEFECT-1F-006 engineering
+   * proof. A stale attempt that resumes after a newer attempt has
+   * already taken ownership (or after the reconciliation manager has
+   * already recovered the row) will have its write rejected:
+   * JobLifecycleConflictError, zero rows affected, no history written.
+   *
+   * Deliberately used ONLY around the success path's own completion
+   * write (`transitionTerminal(..., "COMPLETED", ...)`) below, not
+   * around the failure/cancellation/permanent-failure paths. Those other
+   * paths already have a genuine error of their own to report (the
+   * handler's thrown error, `JobCancelledError`, an unknown job type, an
+   * invalid payload) — a fencing rejection there means a DIFFERENT
+   * writer raced this same live execution to a conflicting outcome, and
+   * that conflict is itself the more informative, pre-existing signal to
+   * surface (an established behavior this file's own duplicate-
+   * scheduling-prevention tests already depend on) — swallowing it in
+   * favor of the original, now-superseded error would hide a genuine
+   * race behind a less useful message. The success path has no such
+   * fallback error to preserve — a fenced-out completion is simply
+   * obsolete, nothing else to report — so logging and stopping there is
+   * correct without losing any existing signal.
+   */
+  private async runFenced<T>(logContext: Record<string, unknown>, action: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false }> {
+    try {
+      return { ok: true, value: await action() };
+    } catch (error) {
+      if (error instanceof JobLifecycleConflictError) {
+        this.logger.warn(
+          { ...logContext, event: "RECONCILER_STALE_ATTEMPT_FENCED" },
+          "stale attempt's lifecycle write was fenced out — a newer attempt already owns this job",
+        );
+        return { ok: false };
+      }
+      throw error;
+    }
+  }
+
+  /**
    * The single chokepoint every failure path (exception, timeout) routes
    * through to decide "retry with backoff" vs "dead-letter" — see the
    * class doc comment for the invariant this implements.
+   *
+   * DEFECT-1F-006: also the entry point BackgroundJobReconciliationManager
+   * calls to recover a stale RUNNING row it has detected (see that
+   * class). Not `private` for that reason — every value this method (and
+   * its two internal helpers) needs is exactly what a caller's own
+   * candidate read already produces (id, attempts, maxAttempts); it holds
+   * no execution-local state a reconciler couldn't supply. `reason`
+   * distinguishes an ordinary transient-failure retry
+   * ("automatic_retry", the default, unchanged) from a reconciliation-
+   * recovered one ("worker_crash_recovery") in the resulting
+   * BackgroundJobHistory row — see scheduleRetry's own doc comment.
    */
-  private async scheduleRetryOrDeadLetter(
+  async scheduleRetryOrDeadLetter(
     job: BackgroundJob,
     terminalStatusOnExhaustion: "FAILED" | "TIMED_OUT",
     errorCode: string,
     errorMessageSafe: string,
+    reason = "automatic_retry",
   ): Promise<void> {
     // Cancellation is authoritative even when the processor itself never
     // observed isCancelled() and threw an ordinary error instead (or the
     // cancel request landed in the narrow window between this worker's
     // last isCancelled() check and its failure) — a job the user asked to
     // stop must never be silently retried just because the failure that
-    // happened to occur wasn't itself a JobCancelledError.
+    // happened to occur wasn't itself a JobCancelledError. Re-fetched
+    // fresh here regardless of caller, so a reconciler-supplied `job`
+    // snapshot (possibly read long before this call) is never trusted
+    // for this specific decision.
     const current = await this.prisma.backgroundJob.findUnique({ where: { id: job.id }, select: { cancellationRequestedAt: true } });
     if (current?.cancellationRequestedAt) {
-      await this.transitionTerminal(job.id, "FAILED", { errorCode: "JOB_CANCELLED_BY_USER", errorMessageSafe: "Job was cancelled.", cancelledAt: new Date() });
+      await this.transitionTerminal(job.id, job.attempts, "FAILED", { errorCode: "JOB_CANCELLED_BY_USER", errorMessageSafe: "Job was cancelled.", cancelledAt: new Date() });
       return;
     }
 
     if (job.attempts < job.maxAttempts) {
-      await this.scheduleRetry(job, errorCode, errorMessageSafe);
+      await this.scheduleRetry(job, errorCode, errorMessageSafe, reason);
     } else {
-      await this.transitionTerminal(job.id, terminalStatusOnExhaustion, { errorCode, errorMessageSafe, deadLettered: true });
+      await this.transitionTerminal(job.id, job.attempts, terminalStatusOnExhaustion, { errorCode, errorMessageSafe, deadLettered: true });
     }
   }
 
   /** Permanent failures (unknown job type, invalid payload) skip the attempts budget entirely — no retry could ever succeed. */
   private async deadLetterImmediately(job: BackgroundJob, status: "FAILED" | "TIMED_OUT", errorCode: string, errorMessageSafe: string): Promise<void> {
-    await this.transitionTerminal(job.id, status, { errorCode, errorMessageSafe, deadLettered: true });
+    await this.transitionTerminal(job.id, job.attempts, status, { errorCode, errorMessageSafe, deadLettered: true });
   }
 
-  private async scheduleRetry(job: BackgroundJob, errorCode: string, errorMessageSafe: string): Promise<void> {
+  /**
+   * DEFECT-1F-006: the guard below is fenced on `attempts` in addition to
+   * `status='RUNNING'` — see this class's own doc comment and the
+   * DEFECT-1F-006 engineering proof. `job.attempts` is exactly the value
+   * this specific execution attempt (or, for a reconciler-driven
+   * recovery, the specific stale attempt being recovered) captured at
+   * its own pickup transition; if the row's current `attempts` no longer
+   * matches (a newer attempt has since started, or someone else already
+   * resolved this exact stale attempt), this guard affects zero rows and
+   * the caller receives JobLifecycleConflictError — never a double
+   * requeue of the same logical retry.
+   */
+  private async scheduleRetry(job: BackgroundJob, errorCode: string, errorMessageSafe: string, reason = "automatic_retry"): Promise<void> {
     const delayMs = Math.min(BASE_BACKOFF_MS * 2 ** job.attempts, MAX_BACKOFF_MS);
 
     const updated = await this.prisma.$transaction(async (tx) => {
-      // The guard: only a row still RUNNING (i.e. still this exact
-      // execution's to decide) may be moved back to QUEUED for retry.
+      // The guard: only a row still RUNNING under THIS exact attempt
+      // (status AND attempts both match) may be moved back to QUEUED.
       const result = await tx.backgroundJob.updateMany({
-        where: { id: job.id, status: "RUNNING" },
+        where: { id: job.id, status: "RUNNING", attempts: job.attempts },
         data: { status: "QUEUED", errorCode, errorMessageSafe },
       });
       if (result.count === 0) return null;
       await tx.backgroundJobHistory.create({
-        data: { backgroundJobId: job.id, fromStatus: "RUNNING", toStatus: "QUEUED", detail: { reason: "automatic_retry", attempt: job.attempts, maxAttempts: job.maxAttempts, nextAttemptDelayMs: delayMs } },
+        data: { backgroundJobId: job.id, fromStatus: "RUNNING", toStatus: "QUEUED", detail: { reason, attempt: job.attempts, maxAttempts: job.maxAttempts, nextAttemptDelayMs: delayMs } },
       });
       return true;
     });
@@ -357,17 +429,28 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
     }
   }
 
+  /**
+   * DEFECT-1F-006: fenced on `expectedAttempts` in addition to
+   * `status='RUNNING'` — identical rationale to scheduleRetry's own doc
+   * comment. Every caller passes the exact `attempts` value ITS OWN
+   * attempt captured at pickup (`started.attempts` inside process(), or
+   * `job.attempts` from scheduleRetryOrDeadLetter/deadLetterImmediately)
+   * — never a value read fresh at write time, which would defeat the
+   * fencing property entirely.
+   */
   private async transitionTerminal(
     backgroundJobId: string,
+    expectedAttempts: number,
     status: "COMPLETED" | "FAILED" | "TIMED_OUT",
     fields: { errorCode?: string; errorMessageSafe?: string; resultMetadata?: object | null; cancelledAt?: Date; deadLettered?: boolean } = {},
   ): Promise<void> {
     const now = new Date();
     const updated = await this.prisma.$transaction(async (tx) => {
       // Guarded the same way as scheduleRetry: only a row still RUNNING
-      // may be moved to a terminal status by this execution.
+      // under THIS exact attempt (status AND attempts both match) may be
+      // moved to a terminal status by this execution.
       const result = await tx.backgroundJob.updateMany({
-        where: { id: backgroundJobId, status: "RUNNING" },
+        where: { id: backgroundJobId, status: "RUNNING", attempts: expectedAttempts },
         data: {
           status,
           completedAt: status === "COMPLETED" ? now : undefined,
@@ -397,6 +480,24 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
     }
   }
 
+  /**
+   * DEFECT-1F-006 CI blocker fix / DEFECT-1F-005 (partial). Verified
+   * against the installed bullmq@6.0.8 source before choosing this fix
+   * (node_modules/.pnpm/bullmq@6.0.8.../dist/cjs): `createRedisBackend`
+   * (utils/create-backend.js) constructs this Queue's underlying
+   * `RedisConnection` with `shared: isRedisInstance(opts.connection)` —
+   * `true` here, since `this.connection` is a live `ioredis.Redis`
+   * instance, not connection options. `QueueBase`'s own `close()`
+   * (classes/queue-base.js) re-emits the backend's `'error'` event on
+   * itself (`this.backend.on('error', (error) => this.emit('error',
+   * error))`) — with zero listeners on the `Queue` object itself, that
+   * `emit('error', ...)` throws (Node's EventEmitter contract), which is
+   * exactly DEFECT-1F-005's mechanism. Attached once, at construction,
+   * never re-attached on a cache hit (this branch only runs when a new
+   * Queue is actually created) — logs safely (queueName only, no
+   * URL/credentials), mirroring `worker.on("error", ...)`'s own
+   * convention below.
+   */
   private getQueue(queueName: string): Queue {
     if (!this.connection) {
       throw new Error("BullMqWorkerManager.getQueue() called before onApplicationBootstrap");
@@ -404,6 +505,9 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
     let queue = this.queues.get(queueName);
     if (!queue) {
       queue = new Queue(queueName, { connection: this.connection });
+      queue.on("error", (error) => {
+        this.logger.error({ err: error, queueName }, "BullMQ dispatch queue error");
+      });
       this.queues.set(queueName, queue);
     }
     return queue;
@@ -424,21 +528,34 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
    * ProcessorManifest.cancelable's own doc comment) UNLESS the deadline
    * is exceeded, in which case the force phase below takes over.
    *
-   * The force phase tears down BOTH resource classes deliberately —
-   * Worker.close(true) for BullMQ's own internally-duplicated blocking
-   * connection (a Worker cannot issue non-blocking commands on a
+   * The force phase tears down every resource class this manager owns or
+   * wraps — Worker.close(true) for BullMQ's own internally-duplicated
+   * blocking connection (a Worker cannot issue non-blocking commands on a
    * connection parked in a blocking read, so it maintains its own
    * internal connection distinct from the one passed into its
    * constructor — disconnecting only the caller-owned `connection` field
-   * would not necessarily close that internal one), and
-   * connection.disconnect() for the caller-owned connection this class
-   * itself constructed. Neither call is awaited here: forceClose's
+   * would not necessarily close that internal one); queue.close() for
+   * every cached `getQueue()` Queue (DEFECT-1F-006 CI blocker fix — the
+   * graceful phase below already did this, but the force phase
+   * previously left them untouched entirely, so a Queue created while
+   * Redis was unreachable would survive shutdown and keep its own
+   * error-forwarding chain alive indefinitely, well past this test/
+   * process's own lifetime; verified against bullmq@6.0.8's own source
+   * that `queue.close()` on a `shared: true` connection — which is what
+   * `getQueue()` always constructs, since `this.connection` is a live
+   * ioredis instance, not connection options — never awaits a Redis
+   * round-trip: `RedisConnection.close()`'s entire disconnect/quit branch
+   * is gated on `!this.extraOptions.shared` and is skipped outright here,
+   * leaving only synchronous listener detachment, which is what actually
+   * stops that Queue from re-emitting further connection errors); and
+   * connection.disconnect() for the caller-owned primary connection this
+   * class itself constructed. No call here is awaited: forceClose's
    * contract (boundedShutdown's second parameter) is synchronous by
    * design, so this method's own returned promise settles within
-   * deadlineMs regardless of how long BullMQ's internal close(true)
-   * teardown actually takes — see boundedShutdown's own doc comment for
-   * why. Each fire-and-forget call carries its own swallow-catch so a
-   * later rejection can never produce an unhandled-rejection warning.
+   * deadlineMs regardless of how long any of this actually takes to
+   * settle internally — see boundedShutdown's own doc comment for why.
+   * Each fire-and-forget call carries its own swallow-catch so a later
+   * rejection can never produce an unhandled-rejection warning.
    */
   async onApplicationShutdown(): Promise<void> {
     const deadlineMs = this.config.get("redisShutdownDeadlineMs", { infer: true });
@@ -452,6 +569,9 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
       () => {
         for (const worker of this.workers) {
           worker.close(true).catch(() => undefined);
+        }
+        for (const queue of this.queues.values()) {
+          queue.close().catch(() => undefined);
         }
         this.connection?.disconnect();
       },

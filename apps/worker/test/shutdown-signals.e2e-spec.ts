@@ -145,14 +145,22 @@ describe("Worker (e2e) — DEFECT-1F-001 real SIGTERM/SIGINT", () => {
     await waitForReady(child, 15_000);
 
     child.kill("SIGTERM");
-    const result = await waitForExit(child, 15_000);
+    // DEFECT-1F-006 added a 4th bootstrap/shutdown-participating manager
+    // (BackgroundJobReconciliationManager) to this same AppModule, bound
+    // by the identical REDIS_SHUTDOWN_DEADLINE_MS/SCHEDULER_REGISTRATION_TIMEOUT_MS
+    // (2000ms each) and run sequentially across modules, not in parallel
+    // (see redis-shutdown.e2e-spec.ts's identical comment) — worst case
+    // shutdown is now ~4 * 2000ms = 8000ms, and the previous 15_000ms
+    // budget (sized for 2-3 managers, with no margin for real-world
+    // scheduling jitter under load) is no longer reliably enough.
+    const result = await waitForExit(child, 20_000);
 
     expect(result.timedOut).toBe(false);
     expect(result.signal).toBe("SIGTERM");
     expect(result.code).toBeNull();
 
     await prisma.workerHeartbeat.deleteMany({ where: { applicationVersion } });
-  }, 30_000);
+  }, 40_000);
 
   describe("DEFECT-1F-001 FINAL SIGNAL ERROR-HANDLING FIX", () => {
     it.each(["SIGTERM", "SIGINT"] as const)(

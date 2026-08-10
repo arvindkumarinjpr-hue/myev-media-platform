@@ -51,6 +51,14 @@ export interface WorkerConfig {
   // dispatch attempts (still safe, via idempotency, but wasteful); too
   // long only delays crash recovery, never causes incorrect behavior.
   outboxRelayClaimLeaseMs: number;
+  // DEFECT-1F-006 — BackgroundJobReconciliationManager. How often the
+  // reconciliation tick scans for stale RUNNING rows, and how many
+  // candidates it inspects per tick. Deliberately no separate stale-age
+  // setting: manifest.timeout (already declared per job type) is the
+  // authoritative per-attempt staleness bound — see that class's own doc
+  // comment.
+  backgroundJobReconciliationIntervalMs: number;
+  backgroundJobReconciliationBatchSize: number;
 }
 
 export class WorkerConfigError extends Error {
@@ -105,6 +113,14 @@ export default function configuration(): WorkerConfig {
   if (!Number.isInteger(outboxRelayClaimLeaseMs) || outboxRelayClaimLeaseMs <= 0) {
     throw new WorkerConfigError("OUTBOX_RELAY_CLAIM_LEASE_MS must be a positive integer");
   }
+  const backgroundJobReconciliationIntervalMs = parseInt(process.env.BACKGROUND_JOB_RECONCILIATION_INTERVAL_MS ?? "30000", 10);
+  if (!Number.isInteger(backgroundJobReconciliationIntervalMs) || backgroundJobReconciliationIntervalMs <= 0) {
+    throw new WorkerConfigError("BACKGROUND_JOB_RECONCILIATION_INTERVAL_MS must be a positive integer");
+  }
+  const backgroundJobReconciliationBatchSize = parseInt(process.env.BACKGROUND_JOB_RECONCILIATION_BATCH_SIZE ?? "50", 10);
+  if (!Number.isInteger(backgroundJobReconciliationBatchSize) || backgroundJobReconciliationBatchSize <= 0) {
+    throw new WorkerConfigError("BACKGROUND_JOB_RECONCILIATION_BATCH_SIZE must be a positive integer");
+  }
 
   return {
     env: process.env.NODE_ENV ?? "development",
@@ -122,5 +138,7 @@ export default function configuration(): WorkerConfig {
     outboxRelayIntervalMs,
     outboxRelayBatchSize,
     outboxRelayClaimLeaseMs,
+    backgroundJobReconciliationIntervalMs,
+    backgroundJobReconciliationBatchSize,
   };
 }

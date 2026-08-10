@@ -34,6 +34,22 @@ export class SystemPingPayload {
   @Min(1)
   @Max(10)
   failUntilAttempt?: number;
+
+  // DEFECT-1F-006 test fixture only. Unlike delayMs (an async setTimeout
+  // — the event loop stays free, so BOTH the in-process Promise.race
+  // timeout AND BullMQ's own lock-renewal timer still fire normally),
+  // this performs a REAL synchronous busy-wait, genuinely blocking the
+  // event loop for the given duration — nothing on this process's timer
+  // queue can run, including this exact job's own ProcessorTimeoutError
+  // timer. This is the only way to test "a still-alive process whose
+  // event loop is genuinely stalled past manifest.timeout" as opposed to
+  // a merely slow async handler, which the existing engine-side timeout
+  // already handles on its own without any reconciliation involved.
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(30_000)
+  blockEventLoopMs?: number;
 }
 
 export class SystemPingResult {
