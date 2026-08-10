@@ -6,7 +6,14 @@ import { validate } from "class-validator";
 import { Queue, Worker, type Job } from "bullmq";
 import Redis from "ioredis";
 import { InjectPinoLogger, PinoLogger } from "nestjs-pino";
-import { boundedShutdown, type EventConsumerManifest, type EventRegistry, type ShutdownOutcomeTracker } from "@myev/shared";
+import {
+  boundedShutdown,
+  deriveEventConsumerJobType,
+  type EventConsumerJobEnvelope,
+  type EventConsumerManifest,
+  type EventRegistry,
+  type ShutdownOutcomeTracker,
+} from "@myev/shared";
 import type { WorkerConfig } from "../config/configuration";
 import { EVENT_REGISTRY } from "./events.module";
 import { WorkerHeartbeatService } from "../heartbeat/worker-heartbeat.service";
@@ -427,7 +434,12 @@ export class OutboxRelayManager implements OnApplicationBootstrap, OnApplication
     row: ClaimedDomainEvent,
     correlationId: string,
   ): Promise<{ dispatched: boolean; skipped: boolean; consumerJobsCreated: number; ownershipLost: boolean }> {
-    const consumers = this.eventRegistry.getConsumersForEventType(row.eventType);
+    // Milestone 8.3 Phase 3 — deprecated manifests remain registered
+    // (their already-created BackgroundJobs stay executable, and manual
+    // retry keeps working) but receive no NEW fan-out. Narrowest
+    // possible filter, at this call site only — EventRegistry itself is
+    // untouched.
+    const consumers = this.eventRegistry.getConsumersForEventType(row.eventType).filter((candidate) => candidate.status === "active");
 
     if (consumers.length === 0) {
       // MILESTONE 8.1's own frozen Zero-Consumer Manifest Semantics
@@ -524,17 +536,40 @@ export class OutboxRelayManager implements OnApplicationBootstrap, OnApplication
     const validationErrors = await validate(payload);
     const idempotencyKey = `event:${row.id}:consumer:${manifest.consumerName}`;
     // Deterministic, documented jobType derivation for a relayed
-    // event-consumer job — deliberately NOT yet a registered
-    // ProcessorManifest (Milestone 8.3's "consumer processing helper" is
-    // explicitly out of this milestone's scope). Until that exists,
+    // event-consumer job — the single shared helper (Milestone 8.3
+    // Phase 1), never a second, independently-maintained template.
+    // Deliberately NOT yet a registered ProcessorManifest (Milestone
+    // 8.3's execution runtime is Phase 4+ scope). Until that exists,
     // BullMqWorkerManager's own already-proven "no ProcessorManifest/
     // handler bound for job type" permanent-failure path applies to
-    // these jobs unchanged — expected and accepted for this milestone,
+    // these jobs unchanged — expected and accepted for this phase,
     // which is fan-out/creation only, never execution.
-    const jobType = `event.${manifest.consumerName}.v${manifest.eventContractVersion}`;
+    const jobType = deriveEventConsumerJobType(manifest.consumerName, manifest.eventContractVersion);
+
+    // Milestone 8.3 Phase 3 — the canonical, durable reference envelope.
+    // Built once, reused verbatim as BOTH BackgroundJob.payloadMetadata
+    // and the BullMQ job.data below (and, on the permanent-failure path,
+    // createPermanentFailureJob's own payloadMetadata) — never the
+    // business `payload` validated above, which after this point is used
+    // only for the validation gate itself. correlationId/causationId are
+    // read from the DomainEvent row itself (`row.correlationId`/
+    // `row.causationId`), never this relay tick's own `correlationId`
+    // parameter (that remains BackgroundJob.correlationId's own,
+    // separate operational-tracing value, set unchanged below) — the
+    // two are deliberately distinct concepts, per
+    // EventConsumerJobEnvelope's own doc comment.
+    const envelope: EventConsumerJobEnvelope = {
+      domainEventId: row.id,
+      eventType: row.eventType,
+      eventVersion: row.eventVersion,
+      consumerName: manifest.consumerName,
+      workspaceId: row.workspaceId,
+      correlationId: row.correlationId,
+      causationId: row.causationId,
+    };
 
     if (validationErrors.length > 0) {
-      return this.createPermanentFailureJob(row, manifest, idempotencyKey, jobType, payload, correlationId);
+      return this.createPermanentFailureJob(row, manifest, idempotencyKey, jobType, envelope, correlationId);
     }
 
     let jobRow: { id: string; status: string; errorCode: string | null };
@@ -546,7 +581,7 @@ export class OutboxRelayManager implements OnApplicationBootstrap, OnApplication
             workspaceId: row.workspaceId,
             jobType,
             queueName: manifest.queue,
-            payloadMetadata: payload as unknown as Prisma.InputJsonValue,
+            payloadMetadata: envelope as unknown as Prisma.InputJsonValue,
             maxAttempts: manifest.defaultRetryPolicy?.maxAttempts ?? 1,
             idempotencyKey,
             correlationId,
@@ -597,7 +632,7 @@ export class OutboxRelayManager implements OnApplicationBootstrap, OnApplication
     const wasFailedReplay = wasReplay && jobRow.status === "FAILED";
 
     try {
-      await this.getDispatchQueue(manifest.queue).add(jobType, payload, {
+      await this.getDispatchQueue(manifest.queue).add(jobType, envelope, {
         jobId: jobRow.id,
         attempts: 1,
         removeOnComplete: { age: 3_600 },
@@ -649,7 +684,7 @@ export class OutboxRelayManager implements OnApplicationBootstrap, OnApplication
     manifest: EventConsumerManifest,
     idempotencyKey: string,
     jobType: string,
-    payload: object,
+    envelope: EventConsumerJobEnvelope,
     correlationId: string,
   ): Promise<ConsumerDispatchOutcome> {
     try {
@@ -659,7 +694,13 @@ export class OutboxRelayManager implements OnApplicationBootstrap, OnApplication
             workspaceId: row.workspaceId,
             jobType,
             queueName: manifest.queue,
-            payloadMetadata: payload as unknown as Prisma.InputJsonValue,
+            // Milestone 8.3 Phase 3 — same canonical envelope shape as
+            // the success path (dispatchToConsumer), never the business
+            // payload: a future manual retry of this dead-lettered row
+            // re-sends BackgroundJob.payloadMetadata verbatim, so it
+            // must already satisfy the same envelope contract a bound
+            // ProcessorManifest will expect.
+            payloadMetadata: envelope as unknown as Prisma.InputJsonValue,
             maxAttempts: manifest.defaultRetryPolicy?.maxAttempts ?? 1,
             idempotencyKey,
             correlationId,
