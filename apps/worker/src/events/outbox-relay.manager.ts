@@ -775,6 +775,13 @@ export class OutboxRelayManager implements OnApplicationBootstrap, OnApplication
     return result.count > 0;
   }
 
+  /**
+   * DEFECT-1F-005 (final call site). Same rationale as
+   * BullMqWorkerManager.getQueue()'s own doc comment — this Queue's
+   * underlying RedisConnection is `shared: true` (this.connection is a
+   * live ioredis instance), so a zero-listener 'error' emission is
+   * otherwise possible. Attached once, at construction.
+   */
   private getDispatchQueue(queueName: string): Queue {
     if (!this.connection) {
       throw new Error("OutboxRelayManager.getDispatchQueue() called before onApplicationBootstrap");
@@ -782,6 +789,9 @@ export class OutboxRelayManager implements OnApplicationBootstrap, OnApplication
     let queue = this.dispatchQueues.get(queueName);
     if (!queue) {
       queue = new Queue(queueName, { connection: this.connection });
+      queue.on("error", (error) => {
+        this.logger.error({ err: error, queueName }, "outbox relay dispatch queue error");
+      });
       this.dispatchQueues.set(queueName, queue);
     }
     return queue;
@@ -793,7 +803,11 @@ export class OutboxRelayManager implements OnApplicationBootstrap, OnApplication
    * onApplicationShutdown for the full rationale (Worker.close(true)
    * for BullMQ's own internally-duplicated blocking connection,
    * connection.disconnect() for the caller-owned one, neither awaited
-   * in the force phase).
+   * in the force phase). DEFECT-1F-005: the force phase now also closes
+   * every cached dispatchQueues entry — previously only the graceful
+   * phase did, leaving a Queue created while Redis was unreachable
+   * orphaned past shutdown (same gap already fixed in
+   * BullMqWorkerManager.onApplicationShutdown).
    */
   async onApplicationShutdown(): Promise<void> {
     this.shuttingDown = true;
@@ -814,6 +828,9 @@ export class OutboxRelayManager implements OnApplicationBootstrap, OnApplication
       },
       () => {
         this.tickWorker?.close(true).catch(() => undefined);
+        for (const queue of this.dispatchQueues.values()) {
+          queue.close().catch(() => undefined);
+        }
         this.connection?.disconnect();
       },
       deadlineMs,

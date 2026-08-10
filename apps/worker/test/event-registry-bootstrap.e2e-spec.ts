@@ -25,6 +25,15 @@ import { EVENT_REGISTRY } from "../src/events/events.module";
  * test-only fixture never wired into this real AppModule.
  */
 describe("Worker (e2e) — Event Registry bootstrap", () => {
+  // Module 1F Phase A hardening: this file previously never set its own
+  // WORKER_QUEUES, unlike every sibling spec file's identical idempotent
+  // `??=` line — it depended entirely on an earlier file in the same
+  // maxWorkers:1 Jest run (or an externally-exported shell value) having
+  // already set it, which is exactly the kind of file-execution-order
+  // dependency this suite's own test-isolation discipline elsewhere
+  // deliberately avoids.
+  process.env.WORKER_QUEUES = process.env.WORKER_QUEUES ?? "SYSTEM";
+
   let moduleRef: TestingModule;
   let prisma: PrismaService;
   let heartbeat: WorkerHeartbeatService;

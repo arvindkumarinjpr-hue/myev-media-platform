@@ -567,6 +567,15 @@ export class BackgroundJobsService implements OnModuleDestroy {
     let queue = this.queues.get(queueName);
     if (!queue) {
       queue = new Queue(queueName, { connection: this.redisConnection });
+      // DEFECT-1F-005 (final call site, apps/api mirror of the same
+      // gap already fixed across apps/worker's managers). This Queue's
+      // underlying RedisConnection is `shared: true` (this.redisConnection
+      // is a live ioredis instance, not connection options), so a
+      // zero-listener 'error' emission on the Queue object itself would
+      // otherwise be possible. Attached once, at construction.
+      queue.on("error", (error) => {
+        this.logger.error({ err: error, queueName }, "background job dispatch queue error");
+      });
       this.queues.set(queueName, queue);
     }
     return queue;
@@ -652,11 +661,17 @@ export class BackgroundJobsService implements OnModuleDestroy {
    * onApplicationShutdown doc comment for the full rationale). This
    * process never runs a BullMQ Worker (it only enqueues, never
    * executes), so there is no BullMQ-internal blocking connection to
-   * force-close here — redisConnection.disconnect() is the complete
-   * force story for this component. idempotencyRedis's own cleanup is
-   * untouched — it is already correctly bounded (lazyConnect,
-   * maxRetriesPerRequest: 1, retryStrategy: () => null, plain
-   * .disconnect() on shutdown) and was never part of this defect.
+   * force-close here. idempotencyRedis's own cleanup is untouched — it
+   * is already correctly bounded (lazyConnect, maxRetriesPerRequest: 1,
+   * retryStrategy: () => null, plain .disconnect() on shutdown) and was
+   * never part of this defect.
+   *
+   * DEFECT-1F-005: the force phase now also closes every cached
+   * `this.queues` entry — previously only the graceful phase did
+   * (mirroring the exact gap already fixed in
+   * BullMqWorkerManager.onApplicationShutdown in apps/worker), leaving a
+   * Queue created while Redis was unreachable orphaned, still retrying,
+   * past this process's own shutdown.
    */
   async onModuleDestroy(): Promise<void> {
     const deadlineMs = this.config.get("redisShutdownDeadlineMs", { infer: true });
@@ -667,6 +682,9 @@ export class BackgroundJobsService implements OnModuleDestroy {
         await this.redisConnection?.quit();
       },
       () => {
+        for (const queue of this.queues.values()) {
+          queue.close().catch(() => undefined);
+        }
         this.redisConnection?.disconnect();
       },
       deadlineMs,

@@ -10,6 +10,11 @@ jobs:
   validate:
     name: Lint, Typecheck, Test, Build
     runs-on: ubuntu-latest
+    # Module 1F Phase A hardening: a fast-fail backstop only, not a fix for
+    # slow tests — the observed healthy baseline for this job is ~1.5
+    # minutes; this gives ~6x margin before treating it as genuinely hung
+    # rather than merely slow.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -43,6 +48,9 @@ jobs:
   docker-validate:
     name: Docker Compose Config & Build
     runs-on: ubuntu-latest
+    # Module 1F Phase A hardening: fast-fail backstop only. Healthy
+    # baseline is ~2.5 minutes; ~6x margin before treating as hung.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -55,6 +63,14 @@ jobs:
   e2e:
     name: E2E Tests (Postgres + Redis + Mailpit + MinIO)
     runs-on: ubuntu-latest
+    # Module 1F Phase A hardening: fast-fail backstop only, not a fix for
+    # slow tests and not something later steps should be tuned against.
+    # The observed healthy baseline for this whole job (setup + Worker E2E
+    # + API E2E) is ~7-8 minutes; this gives roughly 3x margin before
+    # treating the job as genuinely hung rather than merely slow — chosen
+    # deliberately looser than the other two jobs' margin, since this one's
+    # own step durations are the least deterministic of the three.
+    timeout-minutes: 25
     # GitHub-hosted service containers — ephemeral, per-job, torn down when
     # the job ends. Exposing their ports to the runner's localhost here is
     # not a departure from the "zero host-port exposure" rule in

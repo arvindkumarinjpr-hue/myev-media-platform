@@ -479,6 +479,16 @@ export class SchedulerTickManager implements OnApplicationBootstrap, OnApplicati
     );
   }
 
+  /**
+   * DEFECT-1F-005 (final call site). Same rationale as
+   * BullMqWorkerManager.getQueue()'s own doc comment: this Queue's
+   * underlying RedisConnection is constructed with `shared: true`
+   * (verified against the installed bullmq@6.0.8 source — `this.connection`
+   * is a live ioredis instance, not connection options), so a zero-listener
+   * 'error' emission on the Queue object itself would otherwise be
+   * possible. Attached once, at construction, never re-attached on a
+   * cache hit.
+   */
   private getDispatchQueue(queueName: string): Queue {
     if (!this.connection) {
       throw new Error("SchedulerTickManager.getDispatchQueue() called before onApplicationBootstrap");
@@ -486,6 +496,9 @@ export class SchedulerTickManager implements OnApplicationBootstrap, OnApplicati
     let queue = this.dispatchQueues.get(queueName);
     if (!queue) {
       queue = new Queue(queueName, { connection: this.connection });
+      queue.on("error", (error) => {
+        this.logger.error({ err: error, queueName }, "scheduler dispatch queue error");
+      });
       this.dispatchQueues.set(queueName, queue);
     }
     return queue;
@@ -534,6 +547,9 @@ export class SchedulerTickManager implements OnApplicationBootstrap, OnApplicati
       },
       () => {
         this.tickWorker?.close(true).catch(() => undefined);
+        for (const queue of this.dispatchQueues.values()) {
+          queue.close().catch(() => undefined);
+        }
         this.connection?.disconnect();
       },
       deadlineMs,

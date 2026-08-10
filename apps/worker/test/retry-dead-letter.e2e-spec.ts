@@ -9,6 +9,7 @@ import { WorkerHeartbeatService } from "../src/heartbeat/worker-heartbeat.servic
 import { BullMqWorkerManager } from "../src/bullmq/bullmq-worker.manager";
 import { SchedulerTickManager } from "../src/scheduler/scheduler-tick.manager";
 import { BackgroundJobReconciliationManager } from "../src/reconciliation/background-job-reconciliation.manager";
+import { OutboxRelayManager } from "../src/events/outbox-relay.manager";
 import type { BackgroundJob, BackgroundJobHistory } from "../../api/generated/prisma";
 
 /**
@@ -393,6 +394,26 @@ describe("Worker (e2e) — retry, backoff, and dead-letter", () => {
           };
           await brokenReconcilerInternals.tickWorker?.close(true);
           brokenReconcilerInternals.connection?.disconnect();
+
+          // Module 1F Phase A hardening: Milestone 8.2's OutboxRelayManager
+          // was, until now, the one manager in this same AppModule missing
+          // from this treatment entirely (this test predates it too,
+          // exactly like the two above) — same characteristic, same fix.
+          // Also has its own cached dispatchQueues, force-closed here too
+          // for the same reason getQueue()'s cached queues need it above.
+          const brokenOutboxRelay = brokenModuleRef.get(OutboxRelayManager);
+          const brokenOutboxRelayInternals = brokenOutboxRelay as unknown as {
+            tickWorker?: { close: (force?: boolean) => Promise<void> };
+            dispatchQueues?: Map<string, { close: () => Promise<void> }>;
+            connection?: { disconnect: () => void };
+          };
+          await brokenOutboxRelayInternals.tickWorker?.close(true);
+          if (brokenOutboxRelayInternals.dispatchQueues) {
+            for (const queue of brokenOutboxRelayInternals.dispatchQueues.values()) {
+              await queue.close().catch(() => undefined);
+            }
+          }
+          brokenOutboxRelayInternals.connection?.disconnect();
 
           await Promise.race([brokenModuleRef.close(), new Promise((resolve) => setTimeout(resolve, 3_000))]);
         }
