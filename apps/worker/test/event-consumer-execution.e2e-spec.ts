@@ -704,5 +704,96 @@ describe("Worker (e2e) — Milestone 8.3 Phase 4 event consumer execution", () =
       expect("transactionRunner" in deps).toBe(false);
       expect("advisoryLockAcquirer" in deps).toBe(false);
     });
+
+    /**
+     * Milestone 8.3 Phase 5 M3 — Category B's own frozen contract
+     * (event-consumer-runtime.ts's own doc comment) explicitly documents
+     * "a race here is possible and accepted" under concurrent delivery of
+     * the same (domainEventId, consumerName), unlike Category A's
+     * advisory-lock-serialized exclusivity (proven separately, above,
+     * under the "concurrent duplicate execution" describe block). This
+     * proves that documented AT-LEAST-ONCE behavior against real
+     * concurrency for the first time — not a stronger, invented
+     * exactly-once requirement. `find`/`create` race against real
+     * Postgres with no lock: multiple concurrent callers may each see
+     * `find` -> null and invoke the external effect before any of them
+     * commits `create`; ProcessedEvent's own unique constraint
+     * (eventId, consumerName) then admits exactly one of those `create`
+     * calls, surfacing a Postgres unique-constraint violation
+     * (Prisma P2002) to every other caller whose `create` lost the race —
+     * an expected, analyzable consequence of the accepted race, not an
+     * undocumented failure mode. In production that rejection is an
+     * ordinary thrown error from the caller's own ProcessorHandler,
+     * which BullMqWorkerManager.process()'s existing, unmodified retry
+     * path already treats as transient and retries — on that retry,
+     * `find` correctly observes the now-durable ProcessedEvent and
+     * returns ALREADY_PROCESSED, so the system already self-heals via
+     * the pre-existing generic retry engine without any lock in Category
+     * B. No production code is touched by this test.
+     */
+    it("concurrent delivery (20 simultaneous attempts): deterministic idempotency key on every execution, AT-LEAST-ONCE external-effect semantics, exactly one durable ProcessedEvent, and a clean post-race ALREADY_PROCESSED", async () => {
+      const queueRegistry = moduleRef.get<QueueRegistry>(QUEUE_REGISTRY);
+      const handler = queueRegistry.getHandler(deriveEventConsumerJobType(CATEGORY_B_CONSUMER_NAME, 1))!;
+      const event = await publishTracked(CATEGORY_B_EVENT_TYPE, { note: "category-b-concurrency" });
+      const envelope = testEnvelope(event.id, CATEGORY_B_EVENT_TYPE, 1, CATEGORY_B_CONSUMER_NAME);
+
+      // Reconfirmed inline for this specific race, not merely assumed
+      // from the sibling test above.
+      const deps: CategoryBConsumerDeps = { processedEventStore: new PrismaProcessedEventStore(prisma) };
+      expect("transactionRunner" in deps).toBe(false);
+
+      const CONCURRENCY = 20;
+      const attempts = Array.from({ length: CONCURRENCY }, (_, i) => handler(envelope, testContext(`concurrency-${i}`)));
+      const settled = await Promise.allSettled(attempts);
+
+      const executed = settled.filter((r) => r.status === "fulfilled" && (r.value as EventConsumerExecutionOutcome<unknown>).outcome === "EXECUTED");
+      const alreadyProcessed = settled.filter((r) => r.status === "fulfilled" && (r.value as EventConsumerExecutionOutcome<unknown>).outcome === "ALREADY_PROCESSED");
+      const rejected = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+
+      // Every settled outcome must be one of these three known shapes.
+      // Anything else would be exactly the "undocumented exception class
+      // escaping normal Category B execution" this test exists to rule out.
+      expect(executed.length + alreadyProcessed.length + rejected.length).toBe(CONCURRENCY);
+
+      // Every rejection must be the specific, known Postgres
+      // unique-constraint violation on ProcessedEvent's own
+      // (eventId, consumerName) constraint — the frozen contract's own
+      // documented consequence of the accepted race. Nothing else may
+      // surface here.
+      for (const r of rejected) {
+        expect(r.reason).toBeInstanceOf(Prisma.PrismaClientKnownRequestError);
+        expect((r.reason as Prisma.PrismaClientKnownRequestError).code).toBe("P2002");
+      }
+
+      // The unique constraint guarantees exactly one caller's create()
+      // can ever succeed — deterministic regardless of how many
+      // concurrent callers raced past find().
+      expect(executed).toHaveLength(1);
+
+      // AT-LEAST-ONCE, not exactly-once, by design: the frozen contract's
+      // essential requirement is more than one external-effect
+      // invocation under a genuine race — not a specific fixed count.
+      // No upper bound is asserted either: this test must not fail
+      // merely because the external effect fired more than once.
+      expect(categoryBTestDouble.calls.length).toBeGreaterThan(1);
+
+      // Deterministic identity: every external-effect invocation that
+      // occurred received the identical, correctly-derived idempotency
+      // key — never a per-attempt or random variant.
+      const expectedKey = deriveExternalIdempotencyKey(event.id, CATEGORY_B_CONSUMER_NAME);
+      for (const call of categoryBTestDouble.calls) {
+        expect(call.idempotencyKey).toBe(expectedKey);
+      }
+
+      const processed = await prisma.processedEvent.findMany({ where: { eventId: event.id, consumerName: CATEGORY_B_CONSUMER_NAME } });
+      expect(processed).toHaveLength(1);
+
+      // Post-race delivery: the race has fully settled — a further
+      // delivery must be clean, not another race.
+      const callsBeforePostRace = categoryBTestDouble.calls.length;
+      const postRace = (await handler(envelope, testContext("concurrency-post-race"))) as EventConsumerExecutionOutcome<unknown>;
+      expect(postRace.outcome).toBe("ALREADY_PROCESSED");
+      expect(categoryBTestDouble.calls.length).toBe(callsBeforePostRace);
+    }, 20_000);
   });
 });
