@@ -11,6 +11,7 @@ import { AuthModule } from "./modules/auth/auth.module";
 import { WorkspacesModule } from "./modules/workspaces/workspaces.module";
 import { WorkspaceMembersModule } from "./modules/workspace-members/workspace-members.module";
 import { ProjectsModule } from "./modules/projects/projects.module";
+import { KnowledgePacksModule } from "./modules/knowledge-packs/knowledge-packs.module";
 import { MediaAssetsModule } from "./modules/media-assets/media-assets.module";
 import { ContentModule } from "./modules/content/content.module";
 import { BackgroundJobsModule } from "./modules/background-jobs/background-jobs.module";
@@ -48,6 +49,7 @@ import type { AppConfig } from "./config/configuration";
     WorkspacesModule,
     WorkspaceMembersModule,
     ProjectsModule,
+    KnowledgePacksModule,
     MediaAssetsModule,
     ContentModule,
     BackgroundJobsModule,

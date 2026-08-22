@@ -1419,6 +1419,16 @@ model KnowledgePack {
   id       String @id @default(uuid()) @db.Uuid
   publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
 
+  // Phase 2.2: a human-identifying label, needed for list/create/get to be
+  // usable at all — every other named entity in this schema
+  // (workspaces/projects/brands/keyword_sets) already has one; Database
+  // Design's own §5.3 field summary omitted it (an abbreviated listing,
+  // not an exhaustive one — matches how "brand name required" in FR-KP-001's
+  // Validation Rules is otherwise unrepresentable as any concrete column).
+  // Not an architectural decision — no ACR precedent exists anywhere in
+  // this repo for adding a plain, universally-precedented name field.
+  name String
+
   workspaceId String    @map("workspace_id") @db.Uuid
   workspace   Workspace @relation(fields: [workspaceId], references: [id])
 

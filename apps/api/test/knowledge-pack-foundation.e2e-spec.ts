@@ -60,7 +60,7 @@ describe("Knowledge Pack Engine — Phase 2.1 database foundation (e2e)", () => 
     const { workspaceId, userId } = await setupWorkspace();
     const id = randomUUID();
     const pack = await ctx.prisma.knowledgePack.create({
-      data: { id, workspaceId, lineageRootId: id, status: "DRAFT", createdById: userId },
+      data: { id, workspaceId, lineageRootId: id, name: "Test Pack", status: "DRAFT", createdById: userId },
     });
 
     expect(pack.id).toBe(id);
@@ -79,7 +79,7 @@ describe("Knowledge Pack Engine — Phase 2.1 database foundation (e2e)", () => 
     const wsB = await setupWorkspace();
     const rootA = randomUUID();
     await ctx.prisma.knowledgePack.create({
-      data: { id: rootA, workspaceId: wsA.workspaceId, lineageRootId: rootA, status: "DRAFT", createdById: wsA.userId },
+      data: { id: rootA, workspaceId: wsA.workspaceId, lineageRootId: rootA, name: "Test Pack", status: "DRAFT", createdById: wsA.userId },
     });
 
     const foundInOwnWorkspace = await ctx.prisma.knowledgePack.findFirst({ where: { id: rootA, workspaceId: wsA.workspaceId } });
@@ -96,12 +96,12 @@ describe("Knowledge Pack Engine — Phase 2.1 database foundation (e2e)", () => 
     const { workspaceId, userId } = await setupWorkspace();
     const v1Id = randomUUID();
     const v1 = await ctx.prisma.knowledgePack.create({
-      data: { id: v1Id, workspaceId, lineageRootId: v1Id, versionNumber: 1, status: "ARCHIVED", createdById: userId },
+      data: { id: v1Id, workspaceId, lineageRootId: v1Id, name: "Test Pack", versionNumber: 1, status: "ARCHIVED", createdById: userId },
     });
     const v2 = await ctx.prisma.knowledgePack.create({
       data: {
         workspaceId,
-        lineageRootId: v1.lineageRootId,
+        lineageRootId: v1.lineageRootId, name: "Test Pack",
         currentVersionOfId: v1.id,
         versionNumber: 2,
         status: "ACTIVE",
@@ -124,14 +124,14 @@ describe("Knowledge Pack Engine — Phase 2.1 database foundation (e2e)", () => 
     const { workspaceId, userId } = await setupWorkspace();
     const rootId = randomUUID();
     await ctx.prisma.knowledgePack.create({
-      data: { id: rootId, workspaceId, lineageRootId: rootId, versionNumber: 1, status: "ACTIVE", createdById: userId },
+      data: { id: rootId, workspaceId, lineageRootId: rootId, name: "Test Pack", versionNumber: 1, status: "ACTIVE", createdById: userId },
     });
 
     // A second row in the SAME lineage, also ACTIVE — must be rejected by
     // knowledge_packs_one_active_per_lineage, not merely discouraged.
     await expect(
       ctx.prisma.knowledgePack.create({
-        data: { workspaceId, lineageRootId: rootId, currentVersionOfId: rootId, versionNumber: 2, status: "ACTIVE", createdById: userId },
+        data: { workspaceId, lineageRootId: rootId, name: "Test Pack", currentVersionOfId: rootId, versionNumber: 2, status: "ACTIVE", createdById: userId },
       }),
     ).rejects.toThrow();
 
@@ -139,7 +139,7 @@ describe("Knowledge Pack Engine — Phase 2.1 database foundation (e2e)", () => 
     // named index, not some unrelated failure masking a real bug.
     try {
       await ctx.prisma.knowledgePack.create({
-        data: { workspaceId, lineageRootId: rootId, currentVersionOfId: rootId, versionNumber: 3, status: "ACTIVE", createdById: userId },
+        data: { workspaceId, lineageRootId: rootId, name: "Test Pack", currentVersionOfId: rootId, versionNumber: 3, status: "ACTIVE", createdById: userId },
       });
       throw new Error("expected the second ACTIVE insert to be rejected");
     } catch (error) {
@@ -156,7 +156,7 @@ describe("Knowledge Pack Engine — Phase 2.1 database foundation (e2e)", () => 
       expect(prismaError.meta?.target).toEqual(["lineage_root_id"]);
     }
 
-    const activeRows = await ctx.prisma.knowledgePack.findMany({ where: { lineageRootId: rootId, status: "ACTIVE" } });
+    const activeRows = await ctx.prisma.knowledgePack.findMany({ where: { lineageRootId: rootId, name: "Test Pack", status: "ACTIVE" } });
     expect(activeRows).toHaveLength(1);
 
     await cleanupKnowledgePacks(workspaceId);
@@ -166,8 +166,8 @@ describe("Knowledge Pack Engine — Phase 2.1 database foundation (e2e)", () => 
     const { workspaceId, userId } = await setupWorkspace();
     const rootA = randomUUID();
     const rootB = randomUUID();
-    await ctx.prisma.knowledgePack.create({ data: { id: rootA, workspaceId, lineageRootId: rootA, status: "ACTIVE", createdById: userId } });
-    await ctx.prisma.knowledgePack.create({ data: { id: rootB, workspaceId, lineageRootId: rootB, status: "ACTIVE", createdById: userId } });
+    await ctx.prisma.knowledgePack.create({ data: { id: rootA, workspaceId, lineageRootId: rootA, name: "Test Pack", status: "ACTIVE", createdById: userId } });
+    await ctx.prisma.knowledgePack.create({ data: { id: rootB, workspaceId, lineageRootId: rootB, name: "Test Pack", status: "ACTIVE", createdById: userId } });
 
     const active = await ctx.prisma.knowledgePack.findMany({ where: { workspaceId, status: "ACTIVE" } });
     expect(active).toHaveLength(2);
@@ -182,20 +182,20 @@ describe("Knowledge Pack Engine — Phase 2.1 database foundation (e2e)", () => 
     // Predecessor, ARCHIVED (not ACTIVE) — coexists freely with an Active
     // successor in the same lineage.
     await ctx.prisma.knowledgePack.create({
-      data: { id: rootId, workspaceId, lineageRootId: rootId, versionNumber: 1, status: "ARCHIVED", createdById: userId },
+      data: { id: rootId, workspaceId, lineageRootId: rootId, name: "Test Pack", versionNumber: 1, status: "ARCHIVED", createdById: userId },
     });
     await ctx.prisma.knowledgePack.create({
-      data: { workspaceId, lineageRootId: rootId, currentVersionOfId: rootId, versionNumber: 2, status: "ACTIVE", createdById: userId },
+      data: { workspaceId, lineageRootId: rootId, name: "Test Pack", currentVersionOfId: rootId, versionNumber: 2, status: "ACTIVE", createdById: userId },
     });
 
     // A row that WOULD violate the index if not soft-deleted — proves the
     // index's "deleted_at IS NULL" clause, not just its "status='ACTIVE'" clause.
     const softDeletedDuplicate = await ctx.prisma.knowledgePack.create({
-      data: { workspaceId, lineageRootId: rootId, versionNumber: 3, status: "ACTIVE", createdById: userId, deletedAt: new Date() },
+      data: { workspaceId, lineageRootId: rootId, name: "Test Pack", versionNumber: 3, status: "ACTIVE", createdById: userId, deletedAt: new Date() },
     });
     expect(softDeletedDuplicate.deletedAt).not.toBeNull();
 
-    const activeCount = await ctx.prisma.knowledgePack.count({ where: { lineageRootId: rootId, status: "ACTIVE", deletedAt: null } });
+    const activeCount = await ctx.prisma.knowledgePack.count({ where: { lineageRootId: rootId, name: "Test Pack", status: "ACTIVE", deletedAt: null } });
     expect(activeCount).toBe(1);
 
     await cleanupKnowledgePacks(workspaceId);
@@ -205,7 +205,7 @@ describe("Knowledge Pack Engine — Phase 2.1 database foundation (e2e)", () => 
     const { workspaceId, userId } = await setupWorkspace();
     const id = randomUUID();
     const pack = await ctx.prisma.knowledgePack.create({
-      data: { id, workspaceId, lineageRootId: id, status: "DRAFT", createdById: userId },
+      data: { id, workspaceId, lineageRootId: id, name: "Test Pack", status: "DRAFT", createdById: userId },
     });
     expect(pack.lockVersion).toBe(1);
 
@@ -241,7 +241,7 @@ describe("Knowledge Pack Engine — Phase 2.1 database foundation (e2e)", () => 
 
     const packId = randomUUID();
     await ctx.prisma.knowledgePack.create({
-      data: { id: packId, workspaceId: workspace.id, lineageRootId: packId, status: "ACTIVE", createdById: user.id },
+      data: { id: packId, workspaceId: workspace.id, lineageRootId: packId, name: "Test Pack", status: "ACTIVE", createdById: user.id },
     });
     await ctx.prisma.project.update({ where: { id: projectRow.id }, data: { knowledgePackId: packId } });
 
@@ -260,7 +260,7 @@ describe("Knowledge Pack Engine — Phase 2.1 database foundation (e2e)", () => 
 
     const packInOtherWorkspaceId = randomUUID();
     await ctx.prisma.knowledgePack.create({
-      data: { id: packInOtherWorkspaceId, workspaceId: wsB.workspaceId, lineageRootId: packInOtherWorkspaceId, status: "ACTIVE", createdById: wsB.userId },
+      data: { id: packInOtherWorkspaceId, workspaceId: wsB.workspaceId, lineageRootId: packInOtherWorkspaceId, name: "Test Pack", status: "ACTIVE", createdById: wsB.userId },
     });
 
     // projectRow.workspaceId is wsA; the pack's workspaceId is wsB — the
@@ -279,7 +279,7 @@ describe("Knowledge Pack Engine — Phase 2.1 database foundation (e2e)", () => 
     const wsB = await setupWorkspace();
     const predecessorInOtherWorkspaceId = randomUUID();
     await ctx.prisma.knowledgePack.create({
-      data: { id: predecessorInOtherWorkspaceId, workspaceId: wsB.workspaceId, lineageRootId: predecessorInOtherWorkspaceId, status: "ACTIVE", createdById: wsB.userId },
+      data: { id: predecessorInOtherWorkspaceId, workspaceId: wsB.workspaceId, lineageRootId: predecessorInOtherWorkspaceId, name: "Test Pack", status: "ACTIVE", createdById: wsB.userId },
     });
 
     await expect(
@@ -287,6 +287,7 @@ describe("Knowledge Pack Engine — Phase 2.1 database foundation (e2e)", () => 
         data: {
           workspaceId: wsA.workspaceId,
           lineageRootId: randomUUID(),
+          name: "Test Pack",
           currentVersionOfId: predecessorInOtherWorkspaceId,
           status: "DRAFT",
           createdById: wsA.userId,
@@ -302,7 +303,7 @@ describe("Knowledge Pack Engine — Phase 2.1 database foundation (e2e)", () => 
     const { workspaceId, userId } = await setupWorkspace();
     const id = randomUUID();
     const pack = await ctx.prisma.knowledgePack.create({
-      data: { id, workspaceId, lineageRootId: id, status: "DRAFT", createdById: userId },
+      data: { id, workspaceId, lineageRootId: id, name: "Test Pack", status: "DRAFT", createdById: userId },
     });
     const source = await ctx.prisma.knowledgeSource.create({
       data: { knowledgePackId: pack.id, sourceType: "GOVERNMENT", url: "https://example.gov" },
