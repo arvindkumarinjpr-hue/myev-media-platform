@@ -265,37 +265,10 @@ describe("Knowledge Pack Validation + Activation (e2e)", () => {
     await cleanupKnowledgePacks(workspace.id);
   });
 
-  it("a Draft that is a successor version (currentVersionOfId set) is refused — Phase 2.4's supersession workflow, not this endpoint", async () => {
-    const ws = await createWorkspaceAsOwner(ctx, ownerAccessToken);
-    const workspace = await ctx.prisma.workspace.findUniqueOrThrow({ where: { publicId: ws.publicId } });
-    const rootPackPublicId = await createDraftPack(ws);
-    const successorPackPublicId = await createDraftPack(ws);
-
-    const root = await ctx.prisma.knowledgePack.findFirstOrThrow({ where: { workspaceId: workspace.id, publicId: rootPackPublicId } });
-    // No endpoint can produce this state yet (Phase 2.4) — set it directly
-    // to prove the guard exists ahead of that machinery.
-    await ctx.prisma.knowledgePack.updateMany({
-      where: { workspaceId: workspace.id, publicId: successorPackPublicId },
-      data: { currentVersionOfId: root.id },
-    });
-
-    const res = await request(ctx.app.getHttpServer())
-      .post(`/api/v1/workspaces/${ws.publicId}/knowledge-packs/${successorPackPublicId}/validate`)
-      .set("Authorization", `Bearer ${ownerAccessToken}`)
-      .set("X-Workspace-Id", ws.publicId)
-      .expect(409);
-    expect(res.body.code).toBe("KNOWLEDGE_CONFLICT");
-    expect(res.body.message).toMatch(/successor/i);
-
-    // Confirm nothing was silently mutated — still DRAFT, predecessor untouched.
-    const successorAfter = await ctx.prisma.knowledgePack.findFirstOrThrow({ where: { publicId: successorPackPublicId } });
-    expect(successorAfter.status).toBe("DRAFT");
-    const rootAfter = await ctx.prisma.knowledgePack.findFirstOrThrow({ where: { publicId: rootPackPublicId } });
-    expect(rootAfter.status).toBe("DRAFT");
-
-    await ctx.prisma.knowledgePack.updateMany({ where: { publicId: successorPackPublicId }, data: { currentVersionOfId: null } });
-    await cleanupKnowledgePacks(workspace.id);
-  });
+  // The "successor Draft is refused" guard that used to live here was
+  // Phase 2.3's placeholder for a supersession workflow that didn't exist
+  // yet. Phase 2.4 built that workflow — successor validation/activation
+  // is now real behavior, covered in knowledge-pack-versioning.e2e-spec.ts.
 
   it("concurrency — two simultaneous validate calls on the same Draft: exactly one activates, the other is rejected", async () => {
     const ws = await createWorkspaceAsOwner(ctx, ownerAccessToken);

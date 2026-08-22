@@ -186,23 +186,135 @@ export class KnowledgePacksService {
   }
 
   /**
-   * Phase 2.3 — Validation + Activation, first-version (root) only. A Draft
-   * with `currentVersionOfId` set is a successor awaiting the Phase 2.4
-   * supersession workflow (cloning, predecessor archival, the RESTRICT
-   * check on the predecessor) — that machinery does not exist yet, so this
-   * method explicitly refuses to touch such a Draft rather than fake any
-   * part of that behavior. See MODULE_2_KNOWLEDGE_PACK_ARCHITECTURE_V1.0.md
-   * §7 and §17.
+   * Phase 2.4 §9 — creates a new Draft version by cloning the complete
+   * current configuration of an Active predecessor: both root JSONB
+   * columns and all 6 child tables, each cloned child receiving its own
+   * new row identity, never shared with the predecessor. The predecessor
+   * itself is never mutated by this call — it stays ACTIVE and immutable.
+   * This is the sole supported path from Active content to a new editable
+   * snapshot (Phase 2.2's update() already rejects non-Draft edits).
+   *
+   * `knowledge_packs_one_successor_per_predecessor` (this phase's new
+   * partial unique index) is the concurrency backstop: two concurrent
+   * calls racing to version the same predecessor can only ever produce one
+   * successor, never two divergent ones with colliding version_numbers.
+   */
+  async createVersion(workspaceId: string, publicId: string, actorUserId: string, context: RequestContext): Promise<KnowledgePackWithChildren> {
+    const existing = await this.findOne(workspaceId, publicId);
+    if (existing.status !== "ACTIVE") {
+      throw new ConflictException({ code: "KNOWLEDGE_CONFLICT", message: "A new version can only be created from an Active Knowledge Pack." });
+    }
+
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const newId = randomUUID();
+        const v2 = await tx.knowledgePack.create({
+          data: {
+            id: newId,
+            workspaceId,
+            projectId: existing.projectId,
+            name: existing.name,
+            industryProfile: existing.industryProfile as Prisma.InputJsonValue,
+            publishingStrategy: existing.publishingStrategy as Prisma.InputJsonValue,
+            versionNumber: existing.versionNumber + 1,
+            currentVersionOfId: existing.id,
+            lineageRootId: existing.lineageRootId,
+            status: "DRAFT",
+            createdById: actorUserId,
+          },
+        });
+
+        if (existing.knowledgeSources.length > 0) {
+          await tx.knowledgeSource.createMany({
+            data: existing.knowledgeSources.map((s) => ({ knowledgePackId: newId, sourceType: s.sourceType, url: s.url })),
+          });
+        }
+        if (existing.promptTemplates.length > 0) {
+          // Template revisions carry forward as-is (§6 two-layer model) —
+          // cloning is not itself a template edit.
+          await tx.promptTemplate.createMany({
+            data: existing.promptTemplates.map((p) => ({ knowledgePackId: newId, contentType: p.contentType, promptBody: p.promptBody, versionNumber: p.versionNumber })),
+          });
+        }
+        if (existing.seoRules.length > 0) {
+          await tx.knowledgePackSeoRule.createMany({
+            data: existing.seoRules.map((r) => ({
+              knowledgePackId: newId,
+              primaryKeywords: r.primaryKeywords as Prisma.InputJsonValue,
+              secondaryKeywords: r.secondaryKeywords as Prisma.InputJsonValue,
+              internalLinkingPolicy: r.internalLinkingPolicy as Prisma.InputJsonValue,
+              schemaPreferences: r.schemaPreferences as Prisma.InputJsonValue,
+            })),
+          });
+        }
+        if (existing.brandGuidelines.length > 0) {
+          await tx.brandGuideline.createMany({
+            data: existing.brandGuidelines.map((b) => ({
+              knowledgePackId: newId,
+              toneOfVoice: b.toneOfVoice,
+              terminology: b.terminology as Prisma.InputJsonValue,
+              ctaRules: b.ctaRules,
+              logoAssetId: b.logoAssetId,
+            })),
+          });
+        }
+        if (existing.keywordSets.length > 0) {
+          await tx.keywordSet.createMany({
+            data: existing.keywordSets.map((k) => ({ knowledgePackId: newId, name: k.name, keywords: k.keywords as Prisma.InputJsonValue })),
+          });
+        }
+        if (existing.competitors.length > 0) {
+          await tx.competitor.createMany({
+            data: existing.competitors.map((c) => ({ knowledgePackId: newId, domain: c.domain, notes: c.notes })),
+          });
+        }
+
+        await this.audit.recordWithinTransaction(tx, {
+          action: "KNOWLEDGE_PACK_CREATED",
+          actorUserId,
+          workspaceId,
+          entityType: "knowledge_pack",
+          entityId: v2.publicId,
+          ipAddress: context.ipAddress,
+          beforeState: { clonedFrom: existing.publicId, clonedFromVersionNumber: existing.versionNumber },
+          afterState: { versionNumber: v2.versionNumber, currentVersionOfId: existing.publicId },
+        });
+
+        return tx.knowledgePack.findUniqueOrThrow({ where: { id: newId }, include: KNOWLEDGE_PACK_INCLUDE });
+      });
+    } catch (err) {
+      if (err instanceof PrismaNS.PrismaClientKnownRequestError && err.code === "P2002") {
+        // knowledge_packs_one_successor_per_predecessor — a concurrent
+        // request already created the next version from this same
+        // predecessor first.
+        throw new ConflictException({ code: "KNOWLEDGE_CONFLICT", message: "A successor version already exists for this Knowledge Pack; only one open successor is allowed at a time." });
+      }
+      throw err;
+    }
+  }
+
+  /** Phase 2.4 §10 — every version in one lineage, oldest first, with each row's immediate predecessor resolved to its public_id (ADR-013 — the internal current_version_of never leaves this layer). */
+  async listVersions(workspaceId: string, publicId: string) {
+    const existing = await this.findOne(workspaceId, publicId);
+    return this.prisma.knowledgePack.findMany({
+      where: { workspaceId, lineageRootId: existing.lineageRootId, deletedAt: null },
+      orderBy: { versionNumber: "asc" },
+      include: { currentVersionOf: { select: { publicId: true } } },
+    });
+  }
+
+  /**
+   * Phase 2.3 (first version) + Phase 2.4 (successor supersession) —
+   * Validation + Activation, per §7. A first-version Draft
+   * (`currentVersionOfId === null`) runs the 4 FR-KP-005 gates only — there
+   * is no predecessor to protect. A successor Draft additionally runs the
+   * 5th gate (Owner Decision 7 RESTRICT: no Project may still reference the
+   * predecessor) and, on success, archives the predecessor and activates
+   * the successor atomically in the same transaction. See
+   * MODULE_2_KNOWLEDGE_PACK_ARCHITECTURE_V1.0.md §7/§8.
    */
   async validate(workspaceId: string, publicId: string, actorUserId: string, context: RequestContext): Promise<KnowledgePackWithChildren> {
     const existing = await this.findOne(workspaceId, publicId);
-
-    if (existing.currentVersionOfId !== null) {
-      throw new ConflictException({
-        code: "KNOWLEDGE_CONFLICT",
-        message: "This Knowledge Pack is a successor version; activation of successor versions is not available until Phase 2.4 (version supersession).",
-      });
-    }
 
     // A rejection (failed gates) must still durably commit its DRAFT
     // revert and its audit record — but Prisma's interactive $transaction
@@ -217,16 +329,29 @@ export class KnowledgePacksService {
         data: { status: "VALIDATING" },
       });
       if (toValidating.count === 0) {
-        // Existence and successor-status were already confirmed above — a
-        // zero-row guarded update here can only mean a concurrent caller
-        // already moved this Draft out of DRAFT (another validate() call in
-        // flight, or an edit raced this one). Nothing was written in this
-        // transaction attempt, so rollback-via-throw is correct here.
+        // Existence was already confirmed above — a zero-row guarded
+        // update here can only mean a concurrent caller already moved this
+        // Draft out of DRAFT (another validate() call in flight, or an
+        // edit raced this one). Nothing was written in this transaction
+        // attempt, so rollback-via-throw is correct here.
         throw new ConflictException({ code: "KNOWLEDGE_CONFLICT", message: "Only a Draft Knowledge Pack version may be validated." });
       }
 
       const pack = await tx.knowledgePack.findUniqueOrThrow({ where: { id: existing.id }, include: KNOWLEDGE_PACK_INCLUDE });
       const failures = this.runValidationGates(pack);
+
+      // Gate 5 — Project-reference RESTRICT on the predecessor (§7/§8).
+      // Only applies to a successor; a first version has no predecessor.
+      let predecessor: KnowledgePack | null = null;
+      if (pack.currentVersionOfId !== null) {
+        predecessor = await tx.knowledgePack.findUniqueOrThrow({ where: { id: pack.currentVersionOfId } });
+        const restrictingProjectCount = await tx.project.count({ where: { knowledgePackId: predecessor.id, deletedAt: null } });
+        if (restrictingProjectCount > 0) {
+          failures.push(
+            `Blocked by ${restrictingProjectCount} Project(s) still referencing the predecessor version; reassign them before this version can activate (Owner Decision 7, RESTRICT).`,
+          );
+        }
+      }
 
       if (failures.length > 0) {
         await tx.knowledgePack.updateMany({ where: { id: existing.id, status: "VALIDATING" }, data: { status: "DRAFT" } });
@@ -243,6 +368,20 @@ export class KnowledgePacksService {
       }
 
       try {
+        if (predecessor) {
+          // Archive-before-activate ordering is mandatory (§7) — the
+          // partial unique index rejects the reverse order at the
+          // statement level, since both rows would momentarily satisfy
+          // (lineage_root_id, status='ACTIVE') simultaneously.
+          const archived = await tx.knowledgePack.updateMany({
+            where: { id: predecessor.id, status: "ACTIVE" },
+            data: { status: "ARCHIVED", archivedAt: new Date() },
+          });
+          if (archived.count === 0) {
+            throw new ConflictException({ code: "KNOWLEDGE_CONFLICT", message: "The predecessor version changed unexpectedly during supersession — retry." });
+          }
+        }
+
         const toActive = await tx.knowledgePack.updateMany({ where: { id: existing.id, status: "VALIDATING" }, data: { status: "ACTIVE" } });
         if (toActive.count === 0) {
           throw new ConflictException({ code: "KNOWLEDGE_CONFLICT", message: "Knowledge Pack state changed unexpectedly during activation." });
@@ -250,16 +389,26 @@ export class KnowledgePacksService {
       } catch (err) {
         if (err instanceof PrismaNS.PrismaClientKnownRequestError && err.code === "P2002") {
           // knowledge_packs_one_active_per_lineage — another Active version
-          // already exists for this lineage. Unreachable via today's API
-          // (Phase 2.3 only ever activates a pack that is its own lineage
-          // root), but the DB invariant is the final backstop regardless of
-          // how a row's lineage_root_id came to collide with an existing
-          // Active row's. Rolling back (rethrow) leaves the Draft untouched.
+          // already exists for this lineage. The DB invariant is the final
+          // backstop regardless of how the collision arose. Rolling back
+          // (rethrow) leaves both rows exactly as they were pre-transaction.
           throw new ConflictException({ code: "KNOWLEDGE_CONFLICT", message: "Another Active version already exists for this Knowledge Pack lineage." });
         }
         throw err;
       }
 
+      if (predecessor) {
+        await this.audit.recordWithinTransaction(tx, {
+          action: "KNOWLEDGE_PACK_ARCHIVED",
+          actorUserId,
+          workspaceId,
+          entityType: "knowledge_pack",
+          entityId: predecessor.publicId,
+          ipAddress: context.ipAddress,
+          beforeState: { status: "ACTIVE" },
+          afterState: { status: "ARCHIVED", supersededBy: existing.publicId },
+        });
+      }
       await this.audit.recordWithinTransaction(tx, {
         action: "KNOWLEDGE_PACK_ACTIVATED",
         actorUserId,
@@ -267,8 +416,8 @@ export class KnowledgePacksService {
         entityType: "knowledge_pack",
         entityId: existing.publicId,
         ipAddress: context.ipAddress,
-        beforeState: { status: "DRAFT" },
-        afterState: { status: "ACTIVE" },
+        beforeState: { status: predecessor ? "VALIDATING" : "DRAFT" },
+        afterState: predecessor ? { status: "ACTIVE", supersedes: predecessor.publicId } : { status: "ACTIVE" },
       });
 
       return { kind: "activated", pack: await tx.knowledgePack.findUniqueOrThrow({ where: { id: existing.id }, include: KNOWLEDGE_PACK_INCLUDE }) };
@@ -280,7 +429,7 @@ export class KnowledgePacksService {
     return outcome.pack;
   }
 
-  /** The 4 FR-KP-005 gates. No Project-reference RESTRICT check here — that only guards a predecessor being superseded (Phase 2.4/2.5), and Phase 2.3 never has one. */
+  /** The 4 FR-KP-005 gates, common to every Draft regardless of lineage position. Gate 5 (Project-reference RESTRICT on a predecessor) only applies to a successor and is evaluated separately in validate(), since it has no meaning for a first version. */
   private runValidationGates(pack: KnowledgePackWithChildren): string[] {
     const failures: string[] = [];
 
