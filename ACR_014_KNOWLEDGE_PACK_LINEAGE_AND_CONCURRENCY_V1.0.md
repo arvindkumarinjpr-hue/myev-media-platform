@@ -4,13 +4,13 @@
 
 ## Knowledge Pack Version Lineage, Activation Atomicity, and Concurrency Control
 
-**Version:** 1.0
-**Status:** PENDING APPROVAL
+**Version:** 1.1
+**Status:** APPROVED / CLOSED
 **Phase:** Post-Phase-0 (Module 2 pre-implementation)
 **Requester:** Claude (session governance execution, per Owner-directed architecture checkpoint sequence, 2026-08-22)
-**Technical Reviewer:** Knowledge Engine — Technical Owner per `AI_CONTENT_DATABASE_AND_ENTITY_DESIGN_V1.0.md` Appendix G's Data Ownership Matrix (role/team designation; no individual named in any frozen document)
+**Technical Reviewer:** Arvind, fulfilling the "Knowledge Engine" Technical Owner role per `AI_CONTENT_DATABASE_AND_ENTITY_DESIGN_V1.0.md` Appendix G's Data Ownership Matrix. No document in this repository names a distinct individual for "Knowledge Engine," and no separate staffed team exists — Arvind is the sole Owner role across every ADR and ACR in this repository's history. Recorded transparently: the same person fulfills both required approval roles in this solo-ownership project, which the Approval Matrix does not prohibit.
 **Architecture Owner:** Owner role (Arvind), per `ARCHITECTURE_CHANGE_REQUEST_PROCESS_V1.0.md`'s own Roles table
-**Document State:** DRAFT — this ACR record itself is not a frozen Phase-0 document; it does not require its own ACR to create or edit, per `ARCHITECTURE_CHANGE_REQUEST_PROCESS_V1.0.md`'s Scope ("Applies to every document marked `Document State: FROZEN`")
+**Document State:** APPROVED / CLOSED — this ACR record itself is not a frozen Phase-0 document; it does not require its own ACR to create or edit, per `ARCHITECTURE_CHANGE_REQUEST_PROCESS_V1.0.md`'s Scope ("Applies to every document marked `Document State: FROZEN`")
 
 ---
 
@@ -66,10 +66,14 @@ See ADR-014's own Alternatives Considered section (`ARCHITECTURE_DECISION_RECORD
 
 ## 8. Approval
 
-- [ ] Technical Reviewer (Knowledge Engine) sign-off
-- [ ] Architecture Owner (Arvind) sign-off
-- [ ] ADR-014 written (`ARCHITECTURE_DECISION_RECORDS_V1.0.md`, drafted alongside this ACR, pending the same approval)
-- [ ] Frozen documents version-bumped (§6)
-- [ ] ACR marked Approved/Closed
+- [x] Technical Reviewer (Arvind, fulfilling the Knowledge Engine role — see header) sign-off
+- [x] Architecture Owner (Arvind) sign-off
+- [x] ADR-014 written (`ARCHITECTURE_DECISION_RECORDS_V1.0.md`)
+- [x] Frozen documents version-bumped (§6)
+- [x] ACR marked Approved/Closed
 
-**Status: PENDING — awaiting explicit human approval before this ACR may be marked Approved/Closed, per `ARCHITECTURE_CHANGE_REQUEST_PROCESS_V1.0.md`'s Roles section (Architecture Owner holds "final approval authority for anything touching frozen architecture"). Not self-approved.**
+**Architecture Owner approval statement, recorded verbatim:**
+
+> "As Architecture Owner, I approve ACR-014: the Knowledge Pack `lineage_root_id` lineage-identity column and its partial unique index (at most one non-deleted ACTIVE row per lineage), root-only `knowledge_packs.lock_version` for aggregate-scoped optimistic concurrency, archive-before-activate atomic supersession, synchronous VALIDATING resolution with the Project-reference RESTRICT check integrated as an equal-weight precondition, no automatic Project reassignment, and the `KP_VALIDATE`/`KP_ARCHIVE` permissions (no separate `KP_ACTIVATE`) — as recorded in ADR-014 and applied to `AI_CONTENT_DATABASE_AND_ENTITY_DESIGN_V1.0.md` (v1.2), `AI_CONTENT_ROLE_PERMISSION_MATRIX_V1.0.md` (v1.1), and `ARCHITECTURE_DECISION_RECORDS_V1.0.md` (v1.1). This approval authorizes the architecture. Phase 2.1 implementation is separately authorized by execution instruction."
+
+**Status: APPROVED / CLOSED, 2026-08-22.**
