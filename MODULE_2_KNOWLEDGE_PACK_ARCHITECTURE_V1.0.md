@@ -5,10 +5,10 @@
 ## Module 2 — Knowledge Pack Engine — Architecture Record
 
 **Version:** 1.0
-**Status:** FROZEN pending ACR-014 approval
+**Status:** PROPOSED under ACR-014 — not yet approved
 **Phase:** Module 2 pre-implementation
-**Approved:** Architecture decisions approved by Owner (Arvind), 2026-08-22 — subject to ACR-014's formal approval before the schema/permission portions may be implemented
-**Document State:** This is a new, standalone record — not a Phase-0 frozen document, and does not itself require an ACR to create or edit. It consolidates already-approved decisions; it does not introduce new architecture.
+**Approved:** Not yet. Architecture decisions were designed and directed by Owner (Arvind) through a checkpoint/review sequence on 2026-08-22, but that design-review direction is not itself the formal ACR-014 approval this repository's governance process requires — see `ACR_014_KNOWLEDGE_PACK_LINEAGE_AND_CONCURRENCY_V1.0.md` for the pending Technical Reviewer and Architecture Owner sign-off gates.
+**Document State:** This is a new, standalone record — not a Phase-0 frozen document, and does not itself require an ACR to create or edit. It consolidates the architecture proposed under ACR-014; it does not introduce new architecture.
 
 ---
 
@@ -185,13 +185,13 @@ Domain events (§13), the Project-reassignment capability's own design (§8), re
 | Decision | Status |
 |---|---|
 | Aggregate boundary, 6 child tables | FROZEN |
-| Lineage model (`lineage_root_id` vs `current_version_of`) | FROZEN, pending ACR-014 |
-| One-Active-per-lineage enforcement (partial unique index) | FROZEN, pending ACR-014 |
-| Archive-before-activate transaction ordering | FROZEN |
-| Project-reference RESTRICT, no auto-reassignment | FROZEN (Owner Decision 7) |
-| `lock_version` on aggregate root only | FROZEN, pending ACR-014 |
-| `KP_VALIDATE`/`KP_ARCHIVE`, no `KP_ACTIVATE` | FROZEN, pending ACR-014 |
-| VALIDATING synchronous, never durable | FROZEN |
+| Lineage model (`lineage_root_id` vs `current_version_of`) | PROPOSED, pending ACR-014 |
+| One-Active-per-lineage enforcement (partial unique index) | PROPOSED, pending ACR-014 |
+| Archive-before-activate transaction ordering | PROPOSED, pending ACR-014 |
+| Project-reference RESTRICT, no auto-reassignment | PROPOSED, pending ACR-014 (Owner Decision 7) |
+| `lock_version` on aggregate root only | PROPOSED, pending ACR-014 |
+| `KP_VALIDATE`/`KP_ARCHIVE`, no `KP_ACTIVATE` | PROPOSED, pending ACR-014 |
+| VALIDATING synchronous, never durable | PROPOSED, pending ACR-014 |
 | No domain events in V1 | FROZEN |
 | No background jobs | FROZEN |
 | Version cloning (full, all 9 areas) | FROZEN |
