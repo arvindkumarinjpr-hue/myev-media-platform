@@ -238,6 +238,15 @@ enum AuditAction {
   PROJECT_UPDATED
   PROJECT_ARCHIVED
   PROJECT_RESTORED
+  // Module 2 Phase 2.1 (ACR-014): schema-level only in this phase — no
+  // application code writes these yet. Wired by the Phase 2.2/2.3
+  // service layer.
+  KNOWLEDGE_PACK_CREATED
+  KNOWLEDGE_PACK_UPDATED
+  KNOWLEDGE_PACK_VALIDATION_REJECTED
+  KNOWLEDGE_PACK_ACTIVATED
+  KNOWLEDGE_PACK_ARCHIVED
+  KNOWLEDGE_PACK_DELETED
   MEDIA_ASSET_UPLOAD_INTENT_CREATED
   MEDIA_ASSET_VERIFICATION_CLAIMED
   MEDIA_ASSET_ACTIVATED
@@ -339,6 +348,8 @@ model User {
   createdBackgroundJobs  BackgroundJob[]       @relation("BackgroundJobCreatedBy")
   createdScheduledJobs   ScheduledJob[]        @relation("ScheduledJobCreatedBy")
   updatedScheduledJobs   ScheduledJob[]        @relation("ScheduledJobUpdatedBy")
+  createdKnowledgePacks  KnowledgePack[]       @relation("KnowledgePackCreatedBy")
+  updatedKnowledgePacks  KnowledgePack[]       @relation("KnowledgePackUpdatedBy")
 
   @@map("users")
 }
@@ -548,6 +559,7 @@ model Workspace {
   backgroundJobs          BackgroundJob[]
   domainEvents            DomainEvent[]
   scheduledJobs           ScheduledJob[]
+  knowledgePacks          KnowledgePack[]
 
   @@index([slug])
   @@index([status])
@@ -667,6 +679,18 @@ model Project {
   slug   String
   status ProjectStatus @default(ACTIVE)
 
+  // Module 2 Phase 2.1 (ACR-014): the exact Knowledge Pack version this
+  // Project is currently using — a direct FK, no fallback/resolution
+  // logic (MODULE_2_KNOWLEDGE_PACK_ARCHITECTURE_V1.0.md §8). Already
+  // frozen in AI_CONTENT_DATABASE_AND_ENTITY_DESIGN_V1.0.md §5.2 since
+  // Phase-0; never implementable until knowledge_packs existed. Workspace-
+  // safe composite FK — a Project can never reference a pack version in a
+  // different workspace. No automatic reassignment exists anywhere in
+  // this codebase (RESTRICT — enforced at the application layer when a
+  // pack version is archived while still referenced here).
+  knowledgePackId     String?        @map("knowledge_pack_id") @db.Uuid
+  activeKnowledgePack KnowledgePack? @relation("ProjectActiveKnowledgePack", fields: [knowledgePackId, workspaceId], references: [id, workspaceId])
+
   ownerId String? @map("owner_id") @db.Uuid
   owner   User?   @relation("ProjectOwner", fields: [ownerId], references: [id])
 
@@ -682,6 +706,7 @@ model Project {
   mediaAssets      MediaAsset[]
   contentItems     ContentItem[]            @relation("ContentItemProject")
   contentSeries    ContentSeries[]          @relation("ContentSeriesProject")
+  knowledgePacks   KnowledgePack[]          @relation("KnowledgePackProject")
 
   // Module 1E: workspace-safe composite FK target for content_items and
   // content_series' projectId — see MODULE 1E ENGINEERING PLAN
@@ -695,6 +720,7 @@ model Project {
   @@index([slug])
   @@index([status])
   @@index([ownerId])
+  @@index([knowledgePackId])
   @@map("projects")
 }
 
@@ -817,6 +843,9 @@ model MediaAsset {
   // Module 1E: back-relation for content_items.featuredMediaAssetId's
   // own workspace-safe composite FK into this table.
   featuredInContentItems ContentItem[] @relation("ContentItemFeaturedMedia")
+
+  // Module 2 Phase 2.1: back-relation for brand_guidelines.logoAssetId.
+  brandGuidelines BrandGuideline[]
 
   // Safeguard 1: version numbers can never duplicate within one asset
   // group, expressible directly (unlike the two partial indexes above).
@@ -1353,4 +1382,214 @@ model ProcessedEvent {
 
   @@unique([eventId, consumerName])
   @@map("processed_events")
+}
+
+// Module 2 Phase 2.1: Knowledge Pack Engine — database/domain foundation.
+// See MODULE_2_KNOWLEDGE_PACK_ARCHITECTURE_V1.0.md and ACR-014
+// (ARCHITECTURE_DECISION_RECORDS_V1.0.md ADR-014) for the full design —
+// not redesigned here, only implemented.
+
+enum KnowledgePackStatus {
+  DRAFT
+  VALIDATING
+  ACTIVE
+  ARCHIVED
+}
+
+enum KnowledgeSourceType {
+  GOVERNMENT
+  ASSOCIATION
+  COMPANY
+  PUBLICATION
+  RSS
+}
+
+// Aggregate root (one row per version). lineageRootId and
+// currentVersionOfId are deliberately distinct, never-conflated concepts
+// (ADR-014): lineageRootId is the permanent identity of one logical
+// Knowledge Pack across every version it will ever have (equal to the
+// root version's own id, copied forward unchanged on every successor,
+// never recomputed); currentVersionOfId is only the immediate-predecessor
+// pointer (linked-list). The partial unique index enforcing "at most one
+// non-deleted ACTIVE row per lineageRootId" is not expressible in
+// Prisma's schema DSL — same limitation already worked around for
+// media_assets_one_active_version_per_group — hand-written in this
+// migration's raw SQL.
+model KnowledgePack {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  // Workspace-safe composite FK — a pack may be workspace-wide (null) or
+  // scoped to one project, but can never reference a project in a
+  // different workspace.
+  projectId String?  @map("project_id") @db.Uuid
+  project   Project? @relation("KnowledgePackProject", fields: [projectId, workspaceId], references: [id, workspaceId])
+
+  industryProfile    Json @default("{}") @map("industry_profile")
+  publishingStrategy Json @default("{}") @map("publishing_strategy")
+
+  versionNumber Int @default(1) @map("version_number")
+
+  // Immediate-predecessor pointer only (ADR-014) — workspace-safe
+  // composite self-FK, so a lineage can never cross a workspace boundary.
+  currentVersionOfId String?         @map("current_version_of") @db.Uuid
+  currentVersionOf   KnowledgePack?  @relation("KnowledgePackVersionChain", fields: [currentVersionOfId, workspaceId], references: [id, workspaceId])
+  supersededBy       KnowledgePack[] @relation("KnowledgePackVersionChain")
+
+  // Permanent lineage identity (ADR-014) — see model comment above.
+  // Enforces "at most one non-deleted ACTIVE row per lineage" via the
+  // hand-written partial unique index in this migration.
+  lineageRootId String @map("lineage_root_id") @db.Uuid
+
+  // Aggregate-root-only optimistic concurrency (ADR-014) — protects the
+  // whole aggregate, including child-table mutations performed through
+  // aggregate-level operations. No child table carries its own
+  // lock_version.
+  lockVersion Int @default(1) @map("lock_version")
+
+  status KnowledgePackStatus @default(DRAFT)
+
+  createdById String  @map("created_by") @db.Uuid
+  createdBy   User    @relation("KnowledgePackCreatedBy", fields: [createdById], references: [id])
+  updatedById String? @map("updated_by") @db.Uuid
+  updatedBy   User?   @relation("KnowledgePackUpdatedBy", fields: [updatedById], references: [id])
+
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+  archivedAt DateTime? @map("archived_at")
+  deletedAt  DateTime? @map("deleted_at")
+
+  knowledgeSources KnowledgeSource[]
+  promptTemplates  PromptTemplate[]
+  seoRules         KnowledgePackSeoRule[]
+  brandGuidelines  BrandGuideline[]
+  keywordSets      KeywordSet[]
+  competitors      Competitor[]
+
+  // Projects currently using this exact version as their active pack —
+  // see MODULE_2_KNOWLEDGE_PACK_ARCHITECTURE_V1.0.md §8: no automatic
+  // reassignment exists; a version cannot be archived while any Project
+  // still references it (RESTRICT).
+  activeForProjects Project[] @relation("ProjectActiveKnowledgePack")
+
+  // Workspace-safe composite FK target for projectId/currentVersionOfId
+  // above and for projects.knowledge_pack_id.
+  @@unique([id, workspaceId])
+  @@index([workspaceId])
+  @@index([projectId])
+  @@index([lineageRootId])
+  @@index([status])
+  @@map("knowledge_packs")
+}
+
+model KnowledgeSource {
+  id String @id @default(uuid()) @db.Uuid
+
+  knowledgePackId String        @map("knowledge_pack_id") @db.Uuid
+  knowledgePack   KnowledgePack @relation(fields: [knowledgePackId], references: [id])
+
+  sourceType KnowledgeSourceType @map("source_type")
+  url        String
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([knowledgePackId])
+  @@map("knowledge_sources")
+}
+
+model PromptTemplate {
+  id String @id @default(uuid()) @db.Uuid
+
+  knowledgePackId String        @map("knowledge_pack_id") @db.Uuid
+  knowledgePack   KnowledgePack @relation(fields: [knowledgePackId], references: [id])
+
+  contentType ContentType @map("content_type")
+  promptBody  String      @map("prompt_body")
+
+  // Template-level revision counter — independent of
+  // knowledge_packs.version_number (ADR-014, two intentionally
+  // coexisting versioning layers). Free to advance while the parent
+  // pack is still DRAFT; frozen the instant the parent becomes ACTIVE.
+  versionNumber Int @default(1) @map("version_number")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([knowledgePackId])
+  @@index([knowledgePackId, contentType])
+  @@map("prompt_templates")
+}
+
+model KnowledgePackSeoRule {
+  id String @id @default(uuid()) @db.Uuid
+
+  knowledgePackId String        @map("knowledge_pack_id") @db.Uuid
+  knowledgePack   KnowledgePack @relation(fields: [knowledgePackId], references: [id])
+
+  primaryKeywords       Json @default("[]") @map("primary_keywords")
+  secondaryKeywords     Json @default("[]") @map("secondary_keywords")
+  internalLinkingPolicy Json @default("{}") @map("internal_linking_policy")
+  schemaPreferences     Json @default("{}") @map("schema_preferences")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([knowledgePackId])
+  @@map("seo_rules")
+}
+
+model BrandGuideline {
+  id String @id @default(uuid()) @db.Uuid
+
+  knowledgePackId String        @map("knowledge_pack_id") @db.Uuid
+  knowledgePack   KnowledgePack @relation(fields: [knowledgePackId], references: [id])
+
+  toneOfVoice String? @map("tone_of_voice")
+  terminology Json    @default("{}")
+  ctaRules    String? @map("cta_rules")
+
+  logoAssetId String?     @map("logo_asset_id") @db.Uuid
+  logoAsset   MediaAsset? @relation(fields: [logoAssetId], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([knowledgePackId])
+  @@map("brand_guidelines")
+}
+
+model KeywordSet {
+  id String @id @default(uuid()) @db.Uuid
+
+  knowledgePackId String        @map("knowledge_pack_id") @db.Uuid
+  knowledgePack   KnowledgePack @relation(fields: [knowledgePackId], references: [id])
+
+  name     String
+  keywords Json   @default("[]")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([knowledgePackId])
+  @@map("keyword_sets")
+}
+
+model Competitor {
+  id String @id @default(uuid()) @db.Uuid
+
+  knowledgePackId String        @map("knowledge_pack_id") @db.Uuid
+  knowledgePack   KnowledgePack @relation(fields: [knowledgePackId], references: [id])
+
+  domain String
+  notes  String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([knowledgePackId])
+  @@map("competitors")
 }
