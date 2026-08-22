@@ -47,7 +47,7 @@ export function ListSectionShell<T>({
       ))}
       {!readOnly && (
         <button type="button" onClick={() => onChange([...items, emptyRow()])} className={styles.addButton}>
-          + Add
+          + {addLabel}
         </button>
       )}
     </section>

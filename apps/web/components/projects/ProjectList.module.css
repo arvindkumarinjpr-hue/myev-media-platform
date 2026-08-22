@@ -30,3 +30,10 @@
   font-family: inherit;
   font-style: italic;
 }
+
+.packCell {
+  font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}

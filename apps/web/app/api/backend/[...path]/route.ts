@@ -1,7 +1,13 @@
 import { cookies } from "next/headers";
 import { NextResponse, type NextRequest } from "next/server";
 import { backendUrl } from "../../../../lib/config";
-import { ACCESS_TOKEN_COOKIE, ACCESS_TOKEN_COOKIE_MAX_AGE_SECONDS, REFRESH_TOKEN_COOKIE } from "../../../../lib/auth-cookies";
+import {
+  ACCESS_TOKEN_COOKIE,
+  ACCESS_TOKEN_COOKIE_MAX_AGE_SECONDS,
+  authCookieOptions,
+  REFRESH_TOKEN_COOKIE,
+  REFRESH_TOKEN_COOKIE_MAX_AGE_SECONDS,
+} from "../../../../lib/auth-cookies";
 
 /**
  * The one place the browser's own requests ever leave this app's origin.
@@ -18,6 +24,15 @@ async function handle(request: NextRequest, path: string[]): Promise<Response> {
   const accessToken = cookieStore.get(ACCESS_TOKEN_COOKIE)?.value;
   if (!accessToken) {
     return NextResponse.json({ code: "AUTH_TOKEN_INVALID", message: "Not signed in." }, { status: 401 });
+  }
+
+  // Every segment here becomes a literal path component forwarded
+  // verbatim to the backend — reject anything that isn't (`..` could
+  // otherwise be used to walk the forwarded path outside `/api/v1/*`;
+  // an empty segment can only arise from a malformed/double-slashed URL).
+  // No legitimate backend route ever needs either.
+  if (path.length === 0 || path.some((segment) => segment === ".." || segment === "")) {
+    return NextResponse.json({ code: "INVALID_PROXY_PATH", message: "Invalid request path." }, { status: 400 });
   }
 
   const targetPath = path.join("/");
@@ -45,21 +60,9 @@ async function handle(request: NextRequest, path: string[]): Promise<Response> {
       backendRes = await doFetch(refreshed.accessToken);
       const payload = await backendRes.text();
       const response = new NextResponse(payload, { status: backendRes.status, headers: { "Content-Type": "application/json" } });
-      response.cookies.set(ACCESS_TOKEN_COOKIE, refreshed.accessToken, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "lax",
-        path: "/",
-        maxAge: ACCESS_TOKEN_COOKIE_MAX_AGE_SECONDS,
-      });
+      response.cookies.set(ACCESS_TOKEN_COOKIE, refreshed.accessToken, authCookieOptions(ACCESS_TOKEN_COOKIE_MAX_AGE_SECONDS));
       if (refreshed.refreshTokenValue) {
-        response.cookies.set(REFRESH_TOKEN_COOKIE, refreshed.refreshTokenValue, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === "production",
-          sameSite: "lax",
-          path: "/",
-          maxAge: 60 * 60 * 24 * 30,
-        });
+        response.cookies.set(REFRESH_TOKEN_COOKIE, refreshed.refreshTokenValue, authCookieOptions(REFRESH_TOKEN_COOKIE_MAX_AGE_SECONDS));
       }
       return response;
     }

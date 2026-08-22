@@ -2,6 +2,7 @@
 
 import type { SeoRule } from "../../../lib/types";
 import { ListSectionShell } from "./ListSectionShell";
+import { jsonTextareaProps } from "./jsonTextareaProps";
 import styles from "./ListSectionShell.module.css";
 
 function toKeywordList(value: string): string[] {
@@ -37,6 +38,12 @@ export function SeoRulesSection({ value, onChange, readOnly }: { value: SeoRule[
             placeholder="Secondary keywords, comma-separated"
             className={styles.textInput}
           />
+          <textarea
+            {...jsonTextareaProps(item.internalLinkingPolicy, (v) => update({ ...item, internalLinkingPolicy: v }), readOnly, "Internal linking policy (JSON)")}
+            aria-label="Internal linking policy"
+            rows={1}
+          />
+          <textarea {...jsonTextareaProps(item.schemaPreferences, (v) => update({ ...item, schemaPreferences: v }), readOnly, "Schema preferences (JSON)")} aria-label="Schema preferences" rows={1} />
         </>
       )}
     />
