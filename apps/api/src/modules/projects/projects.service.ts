@@ -1,5 +1,5 @@
-import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
-import type { Project } from "../../../generated/prisma";
+import { ConflictException, Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
+import type { Prisma, Project } from "../../../generated/prisma";
 import { PrismaService } from "../../prisma/prisma.service";
 import { AuditService } from "../audit/audit.service";
 import { SlugReservationService } from "../workspaces/slug-reservation.service";
@@ -9,6 +9,12 @@ import type { UpdateProjectDto } from "./dto/update-project.dto";
 interface RequestContext {
   ipAddress?: string;
 }
+
+const PROJECT_ACTIVE_KNOWLEDGE_PACK_INCLUDE = {
+  activeKnowledgePack: { select: { publicId: true } },
+} satisfies Prisma.ProjectInclude;
+
+export type ProjectWithActiveKnowledgePack = Prisma.ProjectGetPayload<{ include: typeof PROJECT_ACTIVE_KNOWLEDGE_PACK_INCLUDE }>;
 
 @Injectable()
 export class ProjectsService {
@@ -42,12 +48,19 @@ export class ProjectsService {
     });
   }
 
-  async list(workspaceId: string): Promise<Project[]> {
-    return this.prisma.project.findMany({ where: { workspaceId, deletedAt: null }, orderBy: { createdAt: "asc" } });
+  async list(workspaceId: string): Promise<ProjectWithActiveKnowledgePack[]> {
+    return this.prisma.project.findMany({
+      where: { workspaceId, deletedAt: null },
+      orderBy: { createdAt: "asc" },
+      include: PROJECT_ACTIVE_KNOWLEDGE_PACK_INCLUDE,
+    });
   }
 
-  async findOne(workspaceId: string, projectPublicId: string): Promise<Project> {
-    const project = await this.prisma.project.findFirst({ where: { workspaceId, publicId: projectPublicId, deletedAt: null } });
+  async findOne(workspaceId: string, projectPublicId: string): Promise<ProjectWithActiveKnowledgePack> {
+    const project = await this.prisma.project.findFirst({
+      where: { workspaceId, publicId: projectPublicId, deletedAt: null },
+      include: PROJECT_ACTIVE_KNOWLEDGE_PACK_INCLUDE,
+    });
     if (!project) {
       // Cross-workspace / non-existent probe — enumeration-safe, same rule
       // as WorkspaceContextGuard (Module 1C Engineering Plan §2.B).
@@ -56,9 +69,50 @@ export class ProjectsService {
     return project;
   }
 
-  async update(workspaceId: string, projectPublicId: string, actorUserId: string, dto: UpdateProjectDto, context: RequestContext): Promise<Project> {
+  /**
+   * Phase 2.5 — `knowledgePackId` here is the explicit reassignment
+   * capability MODULE_2_KNOWLEDGE_PACK_ARCHITECTURE_V1.0.md §8 calls a
+   * dependency, not yet designed. No new permission (reuses PROJECT_UPDATE,
+   * already governing every other Project field) and no new endpoint —
+   * this is just another field on the same PATCH. Never touched by
+   * Knowledge Pack supersession/archival itself (Owner Decision 7 — no
+   * automatic reassignment, ever); this is the only place the FK moves.
+   */
+  async update(workspaceId: string, projectPublicId: string, actorUserId: string, dto: UpdateProjectDto, context: RequestContext): Promise<ProjectWithActiveKnowledgePack> {
     const project = await this.findOne(workspaceId, projectPublicId);
-    const beforeState = { name: project.name, slug: project.slug };
+    const beforeState: Record<string, unknown> = { name: project.name, slug: project.slug };
+    const afterStateExtra: Record<string, unknown> = {};
+
+    // undefined = field omitted, leave unchanged. null = explicit
+    // unassign. string = resolve to an Active, same-workspace Knowledge
+    // Pack's internal id (ADR-013 — the internal id itself never crosses
+    // this boundary either direction).
+    let resolvedKnowledgePackId: string | null | undefined;
+    if (dto.knowledgePackId !== undefined) {
+      beforeState.knowledgePackPublicId = project.activeKnowledgePack?.publicId ?? null;
+      if (dto.knowledgePackId === null) {
+        resolvedKnowledgePackId = null;
+        afterStateExtra.knowledgePackPublicId = null;
+      } else {
+        const pack = await this.prisma.knowledgePack.findFirst({
+          where: { publicId: dto.knowledgePackId, workspaceId, deletedAt: null },
+          select: { id: true, status: true },
+        });
+        if (!pack) {
+          throw new UnprocessableEntityException({ code: "PROJECT_VALIDATION_FAILED", message: "knowledgePackId does not reference a Knowledge Pack in this workspace.", details: ["knowledgePackId"] });
+        }
+        if (pack.status !== "ACTIVE") {
+          // A Project may only point at a currently-usable version — never
+          // a Draft (not yet real), never an Archived one (deliberately
+          // retired). This is also what keeps RESTRICT meaningful: the
+          // predecessor's block can only ever be lifted by pointing
+          // elsewhere, never by pointing at something not truly live.
+          throw new UnprocessableEntityException({ code: "PROJECT_VALIDATION_FAILED", message: "A Project may only be assigned to an Active Knowledge Pack version.", details: ["knowledgePackId"] });
+        }
+        resolvedKnowledgePackId = pack.id;
+        afterStateExtra.knowledgePackPublicId = dto.knowledgePackId;
+      }
+    }
 
     return this.prisma.$transaction(async (tx) => {
       if (dto.slug && dto.slug !== project.slug) {
@@ -70,7 +124,12 @@ export class ProjectsService {
 
       const updated = await tx.project.update({
         where: { id: project.id },
-        data: { ...(dto.name ? { name: dto.name } : {}), ...(dto.slug ? { slug: dto.slug } : {}) },
+        data: {
+          ...(dto.name ? { name: dto.name } : {}),
+          ...(dto.slug ? { slug: dto.slug } : {}),
+          ...(resolvedKnowledgePackId !== undefined ? { knowledgePackId: resolvedKnowledgePackId } : {}),
+        },
+        include: PROJECT_ACTIVE_KNOWLEDGE_PACK_INCLUDE,
       });
 
       await this.audit.recordWithinTransaction(tx, {
@@ -81,7 +140,7 @@ export class ProjectsService {
         entityId: project.publicId,
         ipAddress: context.ipAddress,
         beforeState,
-        afterState: { name: updated.name, slug: updated.slug },
+        afterState: { name: updated.name, slug: updated.slug, ...afterStateExtra },
       });
 
       return updated;

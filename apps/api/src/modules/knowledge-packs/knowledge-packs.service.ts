@@ -186,6 +186,54 @@ export class KnowledgePacksService {
   }
 
   /**
+   * Phase 2.5 §8/§12 — explicit archive. Only from ACTIVE (the lifecycle
+   * diagram, §6, has no other legal inbound edge to ARCHIVED besides this
+   * and supersession's own bundled archival). Same RESTRICT rule as
+   * supersession's gate 5 — no automatic Project reassignment, ever. A
+   * blocked attempt changes nothing, so unlike validate()'s gate failures
+   * it is a plain rejection, not an audited outcome (§16 calls out
+   * "validate (both outcomes, including the RESTRICT-blocked outcome)"
+   * specifically; it does not extend that same exception to archive).
+   */
+  async archive(workspaceId: string, publicId: string, actorUserId: string, context: RequestContext): Promise<KnowledgePackWithChildren> {
+    const existing = await this.findOne(workspaceId, publicId);
+    if (existing.status !== "ACTIVE") {
+      throw new ConflictException({ code: "KNOWLEDGE_CONFLICT", message: "Only an Active Knowledge Pack version may be archived." });
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      // Checked inside the same transaction as the guarded update below —
+      // not before it — so nothing can reassign a Project onto this
+      // version between the check and the write.
+      const restrictingProjectCount = await tx.project.count({ where: { knowledgePackId: existing.id, deletedAt: null } });
+      if (restrictingProjectCount > 0) {
+        throw new ConflictException({
+          code: "KNOWLEDGE_CONFLICT",
+          message: `Blocked by ${restrictingProjectCount} Project(s) still referencing this version; reassign them before it can be archived (Owner Decision 7, RESTRICT).`,
+        });
+      }
+
+      const guarded = await tx.knowledgePack.updateMany({ where: { id: existing.id, status: "ACTIVE" }, data: { status: "ARCHIVED", archivedAt: new Date() } });
+      if (guarded.count === 0) {
+        throw new ConflictException({ code: "KNOWLEDGE_CONFLICT", message: "Knowledge Pack state changed unexpectedly — retry." });
+      }
+
+      await this.audit.recordWithinTransaction(tx, {
+        action: "KNOWLEDGE_PACK_ARCHIVED",
+        actorUserId,
+        workspaceId,
+        entityType: "knowledge_pack",
+        entityId: existing.publicId,
+        ipAddress: context.ipAddress,
+        beforeState: { status: "ACTIVE" },
+        afterState: { status: "ARCHIVED" },
+      });
+
+      return tx.knowledgePack.findUniqueOrThrow({ where: { id: existing.id }, include: KNOWLEDGE_PACK_INCLUDE });
+    });
+  }
+
+  /**
    * Phase 2.4 §9 — creates a new Draft version by cloning the complete
    * current configuration of an Active predecessor: both root JSONB
    * columns and all 6 child tables, each cloned child receiving its own

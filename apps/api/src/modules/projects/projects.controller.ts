@@ -27,14 +27,14 @@ export class ProjectsController {
   @RequirePermission(PERMISSIONS.PROJECT_VIEW)
   async list(@CurrentWorkspace() workspace: WorkspaceContext) {
     const projects = await this.projectsService.list(workspace.id);
-    return { data: projects.map((p) => ({ publicId: p.publicId, name: p.name, slug: p.slug, status: p.status })) };
+    return { data: projects.map((p) => ({ publicId: p.publicId, name: p.name, slug: p.slug, status: p.status, knowledgePackPublicId: p.activeKnowledgePack?.publicId ?? null })) };
   }
 
   @Get(":projectId")
   @RequirePermission(PERMISSIONS.PROJECT_VIEW)
   async findOne(@CurrentWorkspace() workspace: WorkspaceContext, @Param("projectId") projectId: string) {
     const project = await this.projectsService.findOne(workspace.id, projectId);
-    return { data: { publicId: project.publicId, name: project.name, slug: project.slug, status: project.status } };
+    return { data: { publicId: project.publicId, name: project.name, slug: project.slug, status: project.status, knowledgePackPublicId: project.activeKnowledgePack?.publicId ?? null } };
   }
 
   @Patch(":projectId")
@@ -46,7 +46,7 @@ export class ProjectsController {
     @Req() req: Request,
   ) {
     const project = await this.projectsService.update(workspace.id, projectId, workspace.userInternalId, dto, { ipAddress: req.ip });
-    return { data: { publicId: project.publicId, name: project.name, slug: project.slug } };
+    return { data: { publicId: project.publicId, name: project.name, slug: project.slug, knowledgePackPublicId: project.activeKnowledgePack?.publicId ?? null } };
   }
 
   @Post(":projectId/archive")
