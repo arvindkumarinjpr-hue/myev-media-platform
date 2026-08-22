@@ -12,3 +12,8 @@ apps/api/generated/
 minio-data/
 postgres-data/
 redis-data/
+# Playwright's own run artifacts (apps/web) — never source, always regenerated.
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/

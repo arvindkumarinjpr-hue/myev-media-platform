@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { login } from "../lib/api/auth";
 import { friendlyMessage } from "../lib/errors";
+import { safeNextPath } from "../lib/safe-redirect";
 import { ErrorBanner } from "./ui/Feedback";
 import styles from "../app/login/page.module.css";
 
@@ -22,8 +23,7 @@ export function LoginForm() {
     setError(null);
     try {
       await login(email, password);
-      const next = searchParams.get("next") ?? "/workspaces";
-      router.push(next);
+      router.push(safeNextPath(searchParams.get("next")));
       router.refresh();
     } catch (err) {
       setError(friendlyMessage(err));

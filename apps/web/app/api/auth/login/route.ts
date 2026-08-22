@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import { backendUrl } from "../../../../lib/config";
-import { ACCESS_TOKEN_COOKIE, ACCESS_TOKEN_COOKIE_MAX_AGE_SECONDS, REFRESH_TOKEN_COOKIE } from "../../../../lib/auth-cookies";
+import {
+  ACCESS_TOKEN_COOKIE,
+  ACCESS_TOKEN_COOKIE_MAX_AGE_SECONDS,
+  authCookieOptions,
+  REFRESH_TOKEN_COOKIE,
+  REFRESH_TOKEN_COOKIE_MAX_AGE_SECONDS,
+} from "../../../../lib/auth-cookies";
 
 /** Extracts just a named cookie's value out of a raw Set-Cookie header string — the backend's own cookie attributes (path, sameSite) are backend-specific and never reused verbatim here. */
 function extractCookieValue(setCookieHeader: string, name: string): string | null {
@@ -30,22 +36,9 @@ export async function POST(request: Request): Promise<Response> {
   const refreshTokenValue = refreshCookieHeader ? extractCookieValue(refreshCookieHeader, REFRESH_TOKEN_COOKIE) : null;
 
   const response = NextResponse.json({ data: { user: payload.data.user } });
-  response.cookies.set(ACCESS_TOKEN_COOKIE, payload.data.access_token as string, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: "/",
-    maxAge: ACCESS_TOKEN_COOKIE_MAX_AGE_SECONDS,
-  });
+  response.cookies.set(ACCESS_TOKEN_COOKIE, payload.data.access_token as string, authCookieOptions(ACCESS_TOKEN_COOKIE_MAX_AGE_SECONDS));
   if (refreshTokenValue) {
-    response.cookies.set(REFRESH_TOKEN_COOKIE, refreshTokenValue, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      path: "/",
-      // 30 days, matching the backend's own refresh token TTL default.
-      maxAge: 60 * 60 * 24 * 30,
-    });
+    response.cookies.set(REFRESH_TOKEN_COOKIE, refreshTokenValue, authCookieOptions(REFRESH_TOKEN_COOKIE_MAX_AGE_SECONDS));
   }
   return response;
 }

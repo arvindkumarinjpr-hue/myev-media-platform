@@ -8,7 +8,17 @@ const createJestConfig = nextJest({ dir: "./" });
 const config = {
   testEnvironment: "jest-environment-jsdom",
   setupFilesAfterEnv: ["<rootDir>/jest.setup.ts"],
-  testPathIgnorePatterns: ["<rootDir>/.next/", "<rootDir>/node_modules/"],
+  // e2e/ holds Playwright specs (run via `pnpm test:e2e:browser`, not
+  // Jest) — Jest's own default testMatch also matches *.spec.ts, so
+  // without this it would try to run them itself and fail (they import
+  // @playwright/test, not Jest's globals, and need a real browser+backend).
+  testPathIgnorePatterns: ["<rootDir>/.next/", "<rootDir>/node_modules/", "<rootDir>/e2e/"],
+  // Phase 2.7 cleanup: testPathIgnorePatterns alone only excludes test
+  // *files* from .next/ — haste-map still scanned every file under it for
+  // module naming, tripping over .next/standalone's own copy of
+  // package.json ("Haste module naming collision: @myev/web"). This
+  // excludes the build output from that scan entirely.
+  modulePathIgnorePatterns: ["<rootDir>/.next/"],
 };
 
 export default createJestConfig(config);
