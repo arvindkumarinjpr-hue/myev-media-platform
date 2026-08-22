@@ -96,6 +96,14 @@ export class KnowledgePacksController {
     return { data: serialize(pack) };
   }
 
+  @Post(":knowledgePackId/archive")
+  @RequirePermission(PERMISSIONS.KP_ARCHIVE)
+  @HttpCode(HttpStatus.OK)
+  async archive(@CurrentWorkspace() workspace: WorkspaceContext, @Param("knowledgePackId") knowledgePackId: string, @Req() req: Request) {
+    const pack = await this.knowledgePacks.archive(workspace.id, knowledgePackId, workspace.userInternalId, { ipAddress: req.ip });
+    return { data: serialize(pack) };
+  }
+
   @Post(":knowledgePackId/versions")
   @RequirePermission(PERMISSIONS.KP_UPDATE)
   @HttpCode(HttpStatus.CREATED)
