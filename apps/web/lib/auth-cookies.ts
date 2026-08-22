@@ -1,0 +1,16 @@
+// Module 2 Phase 2.6 — the access token never reaches browser JS. It's set
+// here as its own httpOnly cookie (on this app's own origin) by
+// app/api/auth/login, read back only by server-side code (the backend
+// proxy route, middleware), and forwarded as `Authorization: Bearer` when
+// calling the real backend. The backend's own refresh_token cookie is
+// relayed through unchanged — this app never reads or sets its value
+// itself, only passes it along on refresh.
+export const ACCESS_TOKEN_COOKIE = "myev_access_token";
+export const REFRESH_TOKEN_COOKIE = "refresh_token";
+
+// Matches ACCESS_TOKEN_TTL_SECONDS's backend default (900s / 15min) — see
+// apps/api/src/config/configuration.ts. Kept as a constant here rather
+// than plumbed through an extra request round-trip; if the backend's TTL
+// ever changes, the proxy's refresh-on-401 path (not this cookie's own
+// maxAge) is what actually keeps the session alive past it.
+export const ACCESS_TOKEN_COOKIE_MAX_AGE_SECONDS = 900;

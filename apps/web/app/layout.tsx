@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 
 export const metadata: Metadata = {
   title: "MYEV Media",
-  description: "AI-powered EV content operating platform — Module 1A scaffold.",
+  description: "AI-powered EV content operating platform.",
 };
 
 export default function RootLayout({
