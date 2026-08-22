@@ -1445,6 +1445,10 @@ model KnowledgePack {
 
   // Immediate-predecessor pointer only (ADR-014) — workspace-safe
   // composite self-FK, so a lineage can never cross a workspace boundary.
+  // Phase 2.4: at most one non-deleted successor per predecessor, via the
+  // hand-written partial unique index `knowledge_packs_one_successor_per_predecessor`
+  // — protects concurrent version creation against duplicate/divergent
+  // successors (not expressible in this schema DSL).
   currentVersionOfId String?         @map("current_version_of") @db.Uuid
   currentVersionOf   KnowledgePack?  @relation("KnowledgePackVersionChain", fields: [currentVersionOfId, workspaceId], references: [id, workspaceId])
   supersededBy       KnowledgePack[] @relation("KnowledgePackVersionChain")

@@ -11,9 +11,10 @@ import { CreateKnowledgePackDto } from "./dto/create-knowledge-pack.dto";
 import { UpdateKnowledgePackDto } from "./dto/update-knowledge-pack.dto";
 
 /**
- * Phase 2.2 — Core CRUD (Draft only). Phase 2.3 adds validate/activate
- * below, first-version (root) only. No archive/versioning endpoints here —
- * see MODULE_2_KNOWLEDGE_PACK_ARCHITECTURE_V1.0.md §17, Phase 2.4+.
+ * Phase 2.2 — Core CRUD (Draft only). Phase 2.3 adds validate/activate,
+ * now covering both first-version and successor supersession (Phase 2.4).
+ * Phase 2.4 adds version creation/history. No explicit archive endpoint
+ * here — see MODULE_2_KNOWLEDGE_PACK_ARCHITECTURE_V1.0.md §17, Phase 2.5.
  */
 function serialize(pack: KnowledgePackWithChildren) {
   return {
@@ -93,5 +94,31 @@ export class KnowledgePacksController {
   async validate(@CurrentWorkspace() workspace: WorkspaceContext, @Param("knowledgePackId") knowledgePackId: string, @Req() req: Request) {
     const pack = await this.knowledgePacks.validate(workspace.id, knowledgePackId, workspace.userInternalId, { ipAddress: req.ip });
     return { data: serialize(pack) };
+  }
+
+  @Post(":knowledgePackId/versions")
+  @RequirePermission(PERMISSIONS.KP_UPDATE)
+  @HttpCode(HttpStatus.CREATED)
+  async createVersion(@CurrentWorkspace() workspace: WorkspaceContext, @Param("knowledgePackId") knowledgePackId: string, @Req() req: Request) {
+    const pack = await this.knowledgePacks.createVersion(workspace.id, knowledgePackId, workspace.userInternalId, { ipAddress: req.ip });
+    return { data: serialize(pack) };
+  }
+
+  @Get(":knowledgePackId/versions")
+  @RequirePermission(PERMISSIONS.KP_VIEW)
+  async listVersions(@CurrentWorkspace() workspace: WorkspaceContext, @Param("knowledgePackId") knowledgePackId: string) {
+    const versions = await this.knowledgePacks.listVersions(workspace.id, knowledgePackId);
+    return {
+      data: versions.map((v) => ({
+        publicId: v.publicId,
+        name: v.name,
+        status: v.status,
+        versionNumber: v.versionNumber,
+        currentVersionOfPublicId: v.currentVersionOf?.publicId ?? null,
+        createdAt: v.createdAt,
+        updatedAt: v.updatedAt,
+        archivedAt: v.archivedAt,
+      })),
+    };
   }
 }
