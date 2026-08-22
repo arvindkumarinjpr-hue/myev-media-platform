@@ -11,9 +11,9 @@ import { CreateKnowledgePackDto } from "./dto/create-knowledge-pack.dto";
 import { UpdateKnowledgePackDto } from "./dto/update-knowledge-pack.dto";
 
 /**
- * Phase 2.2 — Core CRUD (Draft only). No validate/activate/archive/
- * versioning endpoints here — see MODULE_2_KNOWLEDGE_PACK_ARCHITECTURE_V1.0.md
- * §17, Phase 2.3+.
+ * Phase 2.2 — Core CRUD (Draft only). Phase 2.3 adds validate/activate
+ * below, first-version (root) only. No archive/versioning endpoints here —
+ * see MODULE_2_KNOWLEDGE_PACK_ARCHITECTURE_V1.0.md §17, Phase 2.4+.
  */
 function serialize(pack: KnowledgePackWithChildren) {
   return {
@@ -85,5 +85,13 @@ export class KnowledgePacksController {
   async remove(@CurrentWorkspace() workspace: WorkspaceContext, @Param("knowledgePackId") knowledgePackId: string, @Req() req: Request) {
     await this.knowledgePacks.remove(workspace.id, knowledgePackId, workspace.userInternalId, { ipAddress: req.ip });
     return { data: { success: true } };
+  }
+
+  @Post(":knowledgePackId/validate")
+  @RequirePermission(PERMISSIONS.KP_VALIDATE)
+  @HttpCode(HttpStatus.OK)
+  async validate(@CurrentWorkspace() workspace: WorkspaceContext, @Param("knowledgePackId") knowledgePackId: string, @Req() req: Request) {
+    const pack = await this.knowledgePacks.validate(workspace.id, knowledgePackId, workspace.userInternalId, { ipAddress: req.ip });
+    return { data: serialize(pack) };
   }
 }

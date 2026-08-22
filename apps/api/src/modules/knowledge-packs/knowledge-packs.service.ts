@@ -1,9 +1,10 @@
 import { randomUUID } from "crypto";
 import { ConflictException, Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
-import type { KnowledgePack, Prisma } from "../../../generated/prisma";
+import { Prisma as PrismaNS, type KnowledgePack, type Prisma } from "../../../generated/prisma";
 import { PrismaService } from "../../prisma/prisma.service";
 import { AuditService } from "../audit/audit.service";
 import type { CreateKnowledgePackDto } from "./dto/create-knowledge-pack.dto";
+import { KNOWLEDGE_PACK_CONTENT_TYPES } from "./dto/knowledge-pack-child.dto";
 import type { UpdateKnowledgePackDto } from "./dto/update-knowledge-pack.dto";
 
 interface RequestContext {
@@ -182,6 +183,129 @@ export class KnowledgePacksService {
       entityId: existing.publicId,
       ipAddress: context.ipAddress,
     });
+  }
+
+  /**
+   * Phase 2.3 — Validation + Activation, first-version (root) only. A Draft
+   * with `currentVersionOfId` set is a successor awaiting the Phase 2.4
+   * supersession workflow (cloning, predecessor archival, the RESTRICT
+   * check on the predecessor) — that machinery does not exist yet, so this
+   * method explicitly refuses to touch such a Draft rather than fake any
+   * part of that behavior. See MODULE_2_KNOWLEDGE_PACK_ARCHITECTURE_V1.0.md
+   * §7 and §17.
+   */
+  async validate(workspaceId: string, publicId: string, actorUserId: string, context: RequestContext): Promise<KnowledgePackWithChildren> {
+    const existing = await this.findOne(workspaceId, publicId);
+
+    if (existing.currentVersionOfId !== null) {
+      throw new ConflictException({
+        code: "KNOWLEDGE_CONFLICT",
+        message: "This Knowledge Pack is a successor version; activation of successor versions is not available until Phase 2.4 (version supersession).",
+      });
+    }
+
+    // A rejection (failed gates) must still durably commit its DRAFT
+    // revert and its audit record — but Prisma's interactive $transaction
+    // treats ANY thrown error inside the callback as a rollback signal, so
+    // that outcome is returned as data here and only turned into a thrown
+    // exception once the transaction has actually committed, below.
+    type Outcome = { kind: "rejected"; failures: string[] } | { kind: "activated"; pack: KnowledgePackWithChildren };
+
+    const outcome = await this.prisma.$transaction(async (tx): Promise<Outcome> => {
+      const toValidating = await tx.knowledgePack.updateMany({
+        where: { id: existing.id, status: "DRAFT" },
+        data: { status: "VALIDATING" },
+      });
+      if (toValidating.count === 0) {
+        // Existence and successor-status were already confirmed above — a
+        // zero-row guarded update here can only mean a concurrent caller
+        // already moved this Draft out of DRAFT (another validate() call in
+        // flight, or an edit raced this one). Nothing was written in this
+        // transaction attempt, so rollback-via-throw is correct here.
+        throw new ConflictException({ code: "KNOWLEDGE_CONFLICT", message: "Only a Draft Knowledge Pack version may be validated." });
+      }
+
+      const pack = await tx.knowledgePack.findUniqueOrThrow({ where: { id: existing.id }, include: KNOWLEDGE_PACK_INCLUDE });
+      const failures = this.runValidationGates(pack);
+
+      if (failures.length > 0) {
+        await tx.knowledgePack.updateMany({ where: { id: existing.id, status: "VALIDATING" }, data: { status: "DRAFT" } });
+        await this.audit.recordWithinTransaction(tx, {
+          action: "KNOWLEDGE_PACK_VALIDATION_REJECTED",
+          actorUserId,
+          workspaceId,
+          entityType: "knowledge_pack",
+          entityId: existing.publicId,
+          ipAddress: context.ipAddress,
+          afterState: { status: "DRAFT", failures },
+        });
+        return { kind: "rejected", failures };
+      }
+
+      try {
+        const toActive = await tx.knowledgePack.updateMany({ where: { id: existing.id, status: "VALIDATING" }, data: { status: "ACTIVE" } });
+        if (toActive.count === 0) {
+          throw new ConflictException({ code: "KNOWLEDGE_CONFLICT", message: "Knowledge Pack state changed unexpectedly during activation." });
+        }
+      } catch (err) {
+        if (err instanceof PrismaNS.PrismaClientKnownRequestError && err.code === "P2002") {
+          // knowledge_packs_one_active_per_lineage — another Active version
+          // already exists for this lineage. Unreachable via today's API
+          // (Phase 2.3 only ever activates a pack that is its own lineage
+          // root), but the DB invariant is the final backstop regardless of
+          // how a row's lineage_root_id came to collide with an existing
+          // Active row's. Rolling back (rethrow) leaves the Draft untouched.
+          throw new ConflictException({ code: "KNOWLEDGE_CONFLICT", message: "Another Active version already exists for this Knowledge Pack lineage." });
+        }
+        throw err;
+      }
+
+      await this.audit.recordWithinTransaction(tx, {
+        action: "KNOWLEDGE_PACK_ACTIVATED",
+        actorUserId,
+        workspaceId,
+        entityType: "knowledge_pack",
+        entityId: existing.publicId,
+        ipAddress: context.ipAddress,
+        beforeState: { status: "DRAFT" },
+        afterState: { status: "ACTIVE" },
+      });
+
+      return { kind: "activated", pack: await tx.knowledgePack.findUniqueOrThrow({ where: { id: existing.id }, include: KNOWLEDGE_PACK_INCLUDE }) };
+    });
+
+    if (outcome.kind === "rejected") {
+      throw new UnprocessableEntityException({ code: "KNOWLEDGE_VALIDATION_FAILED", message: "Knowledge Pack failed activation validation.", details: outcome.failures });
+    }
+    return outcome.pack;
+  }
+
+  /** The 4 FR-KP-005 gates. No Project-reference RESTRICT check here — that only guards a predecessor being superseded (Phase 2.4/2.5), and Phase 2.3 never has one. */
+  private runValidationGates(pack: KnowledgePackWithChildren): string[] {
+    const failures: string[] = [];
+
+    if (pack.knowledgeSources.length === 0) {
+      failures.push("At least one trusted knowledge source is required (FR-KP-002).");
+    }
+
+    const missingContentTypes = KNOWLEDGE_PACK_CONTENT_TYPES.filter(
+      (contentType) => !pack.promptTemplates.some((template) => template.contentType === contentType),
+    );
+    if (missingContentTypes.length > 0) {
+      failures.push(`At least one prompt template is required for every content type; missing: ${missingContentTypes.join(", ")} (FR-KP-003).`);
+    }
+
+    const industryProfile = pack.industryProfile as Prisma.JsonObject | null;
+    if (!pack.name || pack.name.trim().length === 0 || !industryProfile || Object.keys(industryProfile).length === 0) {
+      failures.push("Brand name and a populated industry profile are required (FR-KP-001).");
+    }
+
+    const publishingStrategy = pack.publishingStrategy as Prisma.JsonObject | null;
+    if (!publishingStrategy || Object.keys(publishingStrategy).length === 0) {
+      failures.push("A publishing strategy is required (FR-KP-004).");
+    }
+
+    return failures;
   }
 
   /** Any collection present in `dto` wholesale-replaces the pack's current rows of that type — never a partial merge. */
