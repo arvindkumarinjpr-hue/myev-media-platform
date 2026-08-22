@@ -1,6 +1,6 @@
 # ARCHITECTURE_DECISION_RECORDS
 
-**Version:** 1.0
+**Version:** 1.1
 **Status:** FINAL
 **Phase:** Phase-0
 **Approved:** YES
@@ -152,9 +152,20 @@
 - **Approval Status:** Approved
 - **Date:** 2026-08-05
 
+## ADR-014 — Knowledge Pack Version Lineage, Activation Atomicity, and Concurrency Control
+
+- **Decision:** A Knowledge Pack version's permanent lineage identity (`lineage_root_id`) is tracked separately from its immediate-predecessor pointer (`current_version_of`); at most one non-deleted `ACTIVE` row is permitted per `lineage_root_id`, enforced by a PostgreSQL partial unique index, not application logic alone. Supersession (activating a successor version) archives the predecessor and activates the successor within one atomic transaction, in that order (archive-then-activate), gated on a Project-reference RESTRICT check integrated as an equal-weight precondition alongside FRD FR-KP-005's four existing activation rules — never a separate step that could leave `VALIDATING` durably unresolved. Optimistic concurrency (`lock_version`) is scoped to the `knowledge_packs` aggregate root only, protecting the whole aggregate including child-table mutations, not each child table independently. Two new permissions, `KP_VALIDATE` and `KP_ARCHIVE`, are added alongside the existing `KP_VIEW`/`KP_CREATE`/`KP_UPDATE`/`KP_DELETE`; no separate `KP_ACTIVATE` is introduced, since FRD §24.3 models validation and successful activation as one Content-Manager-triggered operation, not two.
+- **Context:** Module 2 (Knowledge Pack Engine) architecture design surfaced that `current_version_of` alone (an immediate-predecessor self-FK) cannot express "at most one Active version across an entire version chain" — a naive partial unique index keyed on `current_version_of` only prevents two sibling versions sharing one immediate parent from both being Active, not two non-adjacent versions in the same lineage. A `lineage_root_id` is required to express the true invariant FRD §24.3 already states ("Exactly one Active version at a time").
+- **Alternatives Considered:** (a) Deriving lineage membership by recursive traversal of `current_version_of` at query time, with no dedicated lineage column and no database-level uniqueness constraint. (b) Permitting multiple simultaneously-`ACTIVE` versions within one lineage, resolved by "most recent wins" at read time. (c) Activating the successor before archiving the predecessor. (d) A `lock_version` column on every child table in addition to the aggregate root. (e) A separate `KP_ACTIVATE` permission distinct from `KP_VALIDATE`. (f) Automatic reassignment of any Project's `knowledge_pack_id` from a superseded version to its successor as part of the activation transaction. (g) Allowing `VALIDATING` to persist as a durable, externally-observable intermediate row-state across more than one transaction.
+- **Reason:** (a) rejected — recursive traversal on every read is unnecessary query cost and provides no database-level backstop against a concurrent write race; a denormalized, indexed column is the standard resolution and costs nothing at write time. (b) rejected — directly contradicts FRD §24.3's explicit "exactly one Active version at a time" business rule. (c) rejected — with the partial unique index in place, activating a successor while the predecessor is still `ACTIVE` violates the index immediately, since both rows would momentarily satisfy the same `(lineage_root_id, status='ACTIVE')` condition; archive-then-activate is the only ordering the constraint permits. (d) rejected — no authoritative requirement identifies a need for child resources to support independent concurrent mutation outside the aggregate boundary; adding it speculatively is unjustified schema surface, reversible later if a real need emerges. (e) rejected — FRD §24.3's own state table shows validation and activation as one System-driven transition following one Content-Manager-triggered action, not two independently authorizable steps. (f) rejected — directly contradicts Database Design's own Cascade Strategy, which specifies RESTRICT ("blocked until projects are reassigned") for pack archival while a Project still references the version being archived; automatic reassignment would silently defeat a rule already frozen in that document. (g) rejected — no authoritative document licenses a durable `VALIDATING` state resolving to anything other than `Active` or `Draft`, and a durable unresolved intermediate state would contradict FRD §24.3's own two-outcome resolution ("Any rule fails → returns to Draft with itemized failures").
+- **Consequences:** `knowledge_packs` gains two columns (`lineage_root_id`, `lock_version`) beyond Database Design §5.3's originally-frozen list, plus a partial unique index. The Role & Permission Matrix's Knowledge Packs category gains two permission constants. No child table gains a `lock_version` column in V1. Every future module reading an active Knowledge Pack version must snapshot its exact row `id` (already required by the existing immutable-historical-reference rule in the Cascade Strategy) rather than assume "the currently Active row for this lineage" remains stable across time.
+- **Affected Documents:** Database & Entity Design (§5.3, §6), Role & Permission Matrix (Knowledge Packs category), this document (Architecture Decision Records).
+- **Approval Status:** Approved (ACR-014, closed 2026-08-22 — see `ACR_014_KNOWLEDGE_PACK_LINEAGE_AND_CONCURRENCY_V1.0.md`)
+- **Date:** 2026-08-22
+
 ---
 
-**Version:** 1.0
+**Version:** 1.1
 **Status:** FINAL
 **Phase:** Phase-0
 **Approved:** YES

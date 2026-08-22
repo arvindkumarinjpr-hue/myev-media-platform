@@ -4,7 +4,7 @@
 
 ## Role & Permission Matrix
 
-**Version:** 1.0\
+**Version:** 1.1\
 **Status:** FINAL
 **Phase:** Phase-0
 **Approved:** YES
@@ -154,6 +154,8 @@ Read-only role.
 -   KP_CREATE
 -   KP_UPDATE
 -   KP_DELETE
+-   KP_VALIDATE (ACR-014/ADR-014 — triggers the Draft→Validating→Active/Draft validation and activation workflow; validation and successful activation remain one operation, no separate KP_ACTIVATE)
+-   KP_ARCHIVE (ACR-014/ADR-014 — explicit Active→Archived transition, distinct from KP_DELETE, which remains Draft-only soft deletion)
 
 ## Research
 

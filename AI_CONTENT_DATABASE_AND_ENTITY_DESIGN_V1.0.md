@@ -2,7 +2,7 @@
 
 ## Database & Entity Design Specification
 
-**Version:** 1.1
+**Version:** 1.2
 **Status:** FINAL
 **Approved:** YES
 **Implementation Ready:** YES
@@ -80,7 +80,15 @@
 
 ### 5.3 Knowledge Pack
 
-**knowledge_packs** — workspace_id, project_id (nullable — pack may be workspace-wide), industry_profile (JSONB), publishing_strategy (JSONB), version_number, current_version_of (self-FK, nullable). Status: `DRAFT`, `VALIDATING`, `ACTIVE`, `ARCHIVED` (§24.3, exact).
+**knowledge_packs** — workspace_id, project_id (nullable — pack may be workspace-wide), industry_profile (JSONB), publishing_strategy (JSONB), version_number, current_version_of (self-FK, nullable — immediate-predecessor pointer only), lineage_root_id (UUID, NOT NULL, indexed — permanent lineage identity; equals the row's own `id` on the root version, copied forward unchanged on every successor, never recomputed; ACR-014/ADR-014), lock_version (INTEGER, NOT NULL, default 1 — optimistic-concurrency token for the aggregate root; protects the whole aggregate, including child-table mutations performed through aggregate-level operations; no child table carries its own `lock_version` in V1; ACR-014/ADR-014). Status: `DRAFT`, `VALIDATING`, `ACTIVE`, `ARCHIVED` (§24.3, exact).
+
+*Lineage invariant (ACR-014/ADR-014):* `current_version_of` and `lineage_root_id` are distinct, never-conflated concepts — the former is a linked-list pointer to the immediate predecessor, the latter is the permanent identity shared by every version in one logical chain. FRD §24.3's "exactly one Active version at a time" is enforced as at most one non-deleted `ACTIVE` row per `lineage_root_id`, via:
+```sql
+CREATE UNIQUE INDEX knowledge_packs_one_active_per_lineage
+  ON knowledge_packs (lineage_root_id)
+  WHERE status = 'ACTIVE' AND deleted_at IS NULL;
+```
+Application-level checks may supplement this for clearer error messages but never substitute for it. Supersession archives the predecessor before activating the successor, within one transaction (archive-then-activate is the only ordering this index permits without a momentary two-Active-rows violation); a Project referencing the predecessor via `projects.knowledge_pack_id` blocks the archival step (RESTRICT, consistent with the Cascade Strategy below) — reassignment is a separate, explicit operation, never an automatic side effect of activation.
 
 **knowledge_sources** — knowledge_pack_id, source_type (government/association/company/publication/rss), url.
 
@@ -197,6 +205,7 @@
 - `ai_jobs(status, created_at)` composite.
 - `notifications(user_id, read_at)` composite.
 - Time-series tables indexed on `(workspace_id, metric_date)`.
+- `knowledge_packs_one_active_per_lineage` — partial unique index on `(lineage_root_id) WHERE status = 'ACTIVE' AND deleted_at IS NULL` (§5.3, ACR-014/ADR-014).
 
 ## 7. Entity Lifecycle / State Machines
 
@@ -397,7 +406,7 @@ This is a Directed Acyclic Graph — no back-edges exist. Identity and System/Au
 
 ---
 
-**Version:** V1.1
+**Version:** V1.2
 **Status:** FINAL
 **Approved:** YES
 **Implementation Ready:** YES
