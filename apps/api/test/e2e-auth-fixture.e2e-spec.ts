@@ -37,17 +37,28 @@ describe("E2E auth fixture — direct-AuthService session helpers (e2e)", () => 
     expect(res.body.data.publicId).toBeTruthy();
   });
 
-  it("loginAsPlatformOwner() caches one session per app instance — repeated calls return the identical token, both still valid", async () => {
+  it("loginAsPlatformOwner() mints a fresh, independently-valid session on every call — not cached/reused across calls", async () => {
     const first = await loginAsPlatformOwner(ctx);
     const second = await loginAsPlatformOwner(ctx);
 
-    expect(second.accessToken).toBe(first.accessToken);
+    // Two distinct sessions for the identical owner — deliberately not
+    // memoized (see this helper's own doc comment: a cached session was
+    // tried and reverted after it surfaced a real mid-file token-expiry
+    // regression). Same user, same email, but each call is a real,
+    // independent login.
+    expect(second.accessToken).not.toBe(first.accessToken);
     expect(second.publicId).toBe(first.publicId);
 
     await request(ctx.app.getHttpServer())
       .post("/api/v1/workspaces")
+      .set("Authorization", `Bearer ${first.accessToken}`)
+      .send({ name: "First session still valid", slug: `auth-fixture-first-${Date.now()}` })
+      .expect(201);
+
+    await request(ctx.app.getHttpServer())
+      .post("/api/v1/workspaces")
       .set("Authorization", `Bearer ${second.accessToken}`)
-      .send({ name: "Cached session still valid", slug: `auth-fixture-cached-${Date.now()}` })
+      .send({ name: "Second session still valid", slug: `auth-fixture-second-${Date.now()}` })
       .expect(201);
   });
 
