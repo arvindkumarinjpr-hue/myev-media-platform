@@ -11,8 +11,12 @@
     "test": "jest"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
+    "@google/genai": "^0.15.0",
+    "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
     "cron-parser": "^5.7.0",
+    "openai": "^4.79.1",
     "reflect-metadata": "^0.2.2"
   },
   "devDependencies": {
