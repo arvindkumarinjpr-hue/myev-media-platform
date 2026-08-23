@@ -8,5 +8,9 @@ import { KnowledgePacksService } from "./knowledge-packs.service";
   imports: [AuthModule, WorkspacesModule],
   controllers: [KnowledgePacksController],
   providers: [KnowledgePacksService],
+  // Module 3 Phase 3.2: AiAgentsModule reuses findOne() for exact
+  // Knowledge Pack version resolution rather than duplicating its
+  // workspace-scoping/not-found logic.
+  exports: [KnowledgePacksService],
 })
 export class KnowledgePacksModule {}
