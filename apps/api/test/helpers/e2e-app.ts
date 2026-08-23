@@ -4,6 +4,7 @@ import cookieParser from "cookie-parser";
 import Redis from "ioredis";
 import request from "supertest";
 import { AppModule } from "../../src/app.module";
+import { AuthService } from "../../src/modules/auth/auth.service";
 import { PrismaService } from "../../src/prisma/prisma.service";
 import { PasswordHashService } from "../../src/common/crypto/password-hash.service";
 
@@ -136,7 +137,34 @@ export async function teardownE2eApp({ app, redis, prisma }: E2eApp): Promise<vo
   await app.close();
 }
 
-/** Creates an ACTIVE, non-Platform-Owner test user directly (bypassing HTTP) and logs them in. */
+/**
+ * CI test-infrastructure fix: the E2E suite's shared IP-keyed login rate
+ * limit (10/60s, auth.controller.ts's own LOGIN_RATE_LIMIT) is enforced
+ * only in AuthController.login() — the HTTP layer above AuthService — not
+ * in AuthService.login() itself. Every feature-test helper below that
+ * only needs a *working, guard-accepted* session (never testing login
+ * itself — that remains auth.e2e-spec.ts's job, still exercising the real
+ * `POST /api/v1/auth/login` endpoint end-to-end, rate limit included)
+ * calls AuthService.login() directly instead. This is the exact same
+ * session-creation/JWT-signing code path a real HTTP login uses
+ * (SessionsService.createFamily + the same access-token signing), so the
+ * resulting token is fully real and indistinguishable to SessionGuard/
+ * PermissionGuard from one minted via HTTP — only the outer HTTP
+ * rate-limit wrapper is bypassed, and that wrapper is a per-endpoint
+ * throttle, not part of what makes a session/token valid. No production
+ * source changes; this reuses an already-injectable NestJS service
+ * exactly as every other test helper in this file already reuses
+ * PrismaService/PasswordHashService directly.
+ *
+ * Three spec files (media-assets, workspace-concurrency,
+ * workspace-membership) still call the real HTTP login endpoint inline
+ * for their own invitation-acceptance flows — those are deliberately
+ * left untouched: they are proving that a freshly-activated account can
+ * actually log in, which is itself part of what each of those tests
+ * verifies, not incidental setup.
+ */
+
+/** Creates an ACTIVE, non-Platform-Owner test user directly (bypassing HTTP) and logs them in via AuthService directly (see module doc comment above). */
 export async function createActiveUserAndLogin(
   ctx: E2eApp,
   label: string,
@@ -149,25 +177,45 @@ export async function createActiveUserAndLogin(
   });
   await ctx.prisma.userPasswordHistory.create({ data: { userId: user.id, passwordHash } });
 
-  const res = await request(ctx.app.getHttpServer()).post("/api/v1/auth/login").send({ email, password }).expect(200);
-  return { userId: user.id, publicId: user.publicId, email, accessToken: res.body.data.access_token as string };
+  const authService = ctx.app.get(AuthService);
+  const { accessToken } = await authService.login(email, password, {});
+  return { userId: user.id, publicId: user.publicId, email, accessToken };
 }
+
+// One real Platform Owner login per bootstrapped app instance — every
+// call within the same spec file's lifetime (many files call this once
+// per `it()`, not once per file) reuses the same session/token rather
+// than minting a fresh one every time. Keyed by the INestApplication
+// instance itself so a second, independently-bootstrapped E2eApp (e.g.
+// redis-shutdown.e2e-spec.ts's deliberately-broken-Redis variant) never
+// shares another test's cached session.
+const ownerSessionCache = new WeakMap<E2eApp["app"], { accessToken: string; publicId: string; email: string }>();
 
 /**
  * The partial unique index on users(is_platform_owner) permits at most one
  * ACTIVE Platform Owner in the whole database — tests cannot mint their
  * own fixture owner alongside whatever the seed script already created.
- * Instead, log in as the real one (same env vars the seed script itself
- * reads), exactly as any real client would.
+ * Instead, authenticate as the real one (same env vars the seed script
+ * itself reads) via AuthService directly (see module doc comment above)
+ * — same real session/token a login through the HTTP endpoint would
+ * produce, cached per app instance since repeated re-authentication as
+ * the identical owner within one file is pure redundant setup, not a
+ * new thing being tested.
  */
 export async function loginAsPlatformOwner(ctx: E2eApp): Promise<{ accessToken: string; publicId: string; email: string }> {
+  const cached = ownerSessionCache.get(ctx.app);
+  if (cached) return cached;
+
   const email = process.env.BOOTSTRAP_OWNER_EMAIL ?? "owner@myevmedia.com";
   const password = process.env.BOOTSTRAP_OWNER_PASSWORD;
   if (!password) {
     throw new Error("BOOTSTRAP_OWNER_PASSWORD must be set for e2e tests that act as the Platform Owner.");
   }
-  const res = await request(ctx.app.getHttpServer()).post("/api/v1/auth/login").send({ email, password }).expect(200);
-  return { accessToken: res.body.data.access_token as string, publicId: res.body.data.user.publicId as string, email };
+  const authService = ctx.app.get(AuthService);
+  const { accessToken, user } = await authService.login(email, password, {});
+  const result = { accessToken, publicId: user.publicId, email };
+  ownerSessionCache.set(ctx.app, result);
+  return result;
 }
 
 export async function createWorkspaceAsOwner(
