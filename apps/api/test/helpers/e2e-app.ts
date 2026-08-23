@@ -182,15 +182,6 @@ export async function createActiveUserAndLogin(
   return { userId: user.id, publicId: user.publicId, email, accessToken };
 }
 
-// One real Platform Owner login per bootstrapped app instance — every
-// call within the same spec file's lifetime (many files call this once
-// per `it()`, not once per file) reuses the same session/token rather
-// than minting a fresh one every time. Keyed by the INestApplication
-// instance itself so a second, independently-bootstrapped E2eApp (e.g.
-// redis-shutdown.e2e-spec.ts's deliberately-broken-Redis variant) never
-// shares another test's cached session.
-const ownerSessionCache = new WeakMap<E2eApp["app"], { accessToken: string; publicId: string; email: string }>();
-
 /**
  * The partial unique index on users(is_platform_owner) permits at most one
  * ACTIVE Platform Owner in the whole database — tests cannot mint their
@@ -198,14 +189,23 @@ const ownerSessionCache = new WeakMap<E2eApp["app"], { accessToken: string; publ
  * Instead, authenticate as the real one (same env vars the seed script
  * itself reads) via AuthService directly (see module doc comment above)
  * — same real session/token a login through the HTTP endpoint would
- * produce, cached per app instance since repeated re-authentication as
- * the identical owner within one file is pure redundant setup, not a
- * new thing being tested.
+ * produce.
+ *
+ * Deliberately NOT cached/memoized across calls: an earlier version of
+ * this fix cached one session per bootstrapped app instance, reused for
+ * every call across a whole spec file's lifetime. That reuses a single
+ * access token (15 min TTL, ACCESS_TOKEN_TTL_SECONDS) across a
+ * potentially much longer wall-clock span than any one login's TTL was
+ * ever meant to cover, which surfaced a real, if intermittent,
+ * mid-file 401 under slow/loaded conditions
+ * (workspace-lifecycle.e2e-spec.ts, which alone calls this 8 times).
+ * AuthService.login() itself isn't rate-limited (only the HTTP
+ * controller wrapper above it is — see the module doc comment), so
+ * minting a fresh token on every call fully avoids the original 429
+ * without reintroducing any expiry risk — this restores the exact
+ * per-call-fresh-session semantics the old HTTP-based helper always had.
  */
 export async function loginAsPlatformOwner(ctx: E2eApp): Promise<{ accessToken: string; publicId: string; email: string }> {
-  const cached = ownerSessionCache.get(ctx.app);
-  if (cached) return cached;
-
   const email = process.env.BOOTSTRAP_OWNER_EMAIL ?? "owner@myevmedia.com";
   const password = process.env.BOOTSTRAP_OWNER_PASSWORD;
   if (!password) {
@@ -213,9 +213,7 @@ export async function loginAsPlatformOwner(ctx: E2eApp): Promise<{ accessToken: 
   }
   const authService = ctx.app.get(AuthService);
   const { accessToken, user } = await authService.login(email, password, {});
-  const result = { accessToken, publicId: user.publicId, email };
-  ownerSessionCache.set(ctx.app, result);
-  return result;
+  return { accessToken, publicId: user.publicId, email };
 }
 
 export async function createWorkspaceAsOwner(
