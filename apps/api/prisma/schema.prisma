@@ -297,6 +297,12 @@ enum AuditAction {
   SCHEDULE_ENABLED
   SCHEDULE_DISABLED
   SCHEDULE_DELETED
+  // Module 3 Phase 3.2: only the moment of triggering intent is audited,
+  // mirroring JOB_CANCELLATION_REQUESTED/SCHEDULE_TRIGGERED's identical
+  // reasoning above — a job's own completion/failure is operational
+  // telemetry, fully captured in ai_jobs.status + ai_job_steps, not a
+  // second business event.
+  AI_EXECUTION_REQUESTED
 }
 
 model User {
@@ -350,6 +356,7 @@ model User {
   updatedScheduledJobs   ScheduledJob[]        @relation("ScheduledJobUpdatedBy")
   createdKnowledgePacks  KnowledgePack[]       @relation("KnowledgePackCreatedBy")
   updatedKnowledgePacks  KnowledgePack[]       @relation("KnowledgePackUpdatedBy")
+  createdAiJobs          AiJob[]               @relation("AiJobCreatedBy")
 
   @@map("users")
 }
@@ -560,6 +567,7 @@ model Workspace {
   domainEvents            DomainEvent[]
   scheduledJobs           ScheduledJob[]
   knowledgePacks          KnowledgePack[]
+  aiJobs                  AiJob[]
 
   @@index([slug])
   @@index([status])
@@ -1489,6 +1497,12 @@ model KnowledgePack {
   // still references it (RESTRICT).
   activeForProjects Project[] @relation("ProjectActiveKnowledgePack")
 
+  // Module 3 Phase 3.2: every AI Job records the EXACT Knowledge Pack
+  // version it executed against (never the lineage root) — see AiJob
+  // below and AI_AGENT_FRAMEWORK_V1.0.md's Knowledge-Pack-driven design
+  // principle / ADR-004.
+  aiJobs AiJob[]
+
   // Workspace-safe composite FK target for projectId/currentVersionOfId
   // above and for projects.knowledge_pack_id.
   @@unique([id, workspaceId])
@@ -1606,4 +1620,116 @@ model Competitor {
 
   @@index([knowledgePackId])
   @@map("competitors")
+}
+
+// Module 3 Phase 3.2 — AI_CONTENT_DATABASE_AND_ENTITY_DESIGN_V1.0.md
+// §24.8 (exact enum), §5.5 ("ai_jobs" field list). ADR-005 resolved the
+// earlier three-way ambiguity between ai_jobs/background_jobs/BullMQ
+// itself: `ai_jobs` is the sole authoritative business record for AI
+// work — DB Design §5.12 explicitly reserves `background_jobs`/
+// `job_history` for non-AI, non-publishing system maintenance only, so
+// this table is never a `background_jobs` row and vice versa.
+enum AiJobStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  TIMED_OUT
+}
+
+// Phase 3.2 executes this synchronously end-to-end (see AgentExecutorService)
+// — durable async dispatch through Module 1F's Queue Engine is real,
+// scoped future work (see PR description), not silently pulled forward
+// here. Every execution, sync or future-async, persists through this
+// same table regardless of dispatch mechanism.
+model AiJob {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  // Registry-resolved identifier/version — not an FK. Mirrors
+  // ProcessorManifest's own "the registry is a compile-time/bootstrap-time
+  // construct, not a DB table" convention (see AgentRegistry in
+  // @myev/shared). agentVersion is a DB Design §5.5 field-list addition
+  // (same class of justified, documented addition as
+  // KnowledgePack.name in Phase 2.2) — required for execution-provenance
+  // reproducibility (Part 4/9 of Phase 3.2's own spec).
+  agentName    String @map("agent_name")
+  agentVersion Int    @map("agent_version")
+
+  triggeringModule String @map("triggering_module")
+
+  // The EXACT Knowledge Pack version row this job executed against —
+  // never the lineage root, never implicitly re-resolved to "latest
+  // active" after the fact (ADR-004 + Module 2's own non-substitution
+  // principle, reused verbatim here for execution provenance).
+  knowledgePackId String        @map("knowledge_pack_id") @db.Uuid
+  knowledgePack   KnowledgePack @relation(fields: [knowledgePackId, workspaceId], references: [id, workspaceId])
+
+  inputPayload  Json  @map("input_payload")
+  outputPayload Json? @map("output_payload")
+
+  providerUsed String?  @map("provider_used")
+  modelUsed    String?  @map("model_used")
+  tokenUsage   Json?    @map("token_usage")
+  // Precision matches typical per-token vendor pricing (fractional cents
+  // per 1K tokens) — no cost/pricing table exists yet (Part 13 of Phase
+  // 3.2's own spec: persist usage metadata without inventing fake
+  // pricing logic), so this stays nullable until a real pricing source
+  // is designed.
+  costEstimate Decimal? @map("cost_estimate") @db.Decimal(10, 6)
+
+  status AiJobStatus @default(QUEUED)
+
+  // Same safe-error discipline as BackgroundJob.errorMessageSafe — curated
+  // text only, never a raw stack trace or AIProviderError's own raw SDK
+  // detail.
+  errorCode        String? @map("error_code")
+  errorMessageSafe String? @map("error_message_safe")
+
+  // Seeded from the triggering request's correlation id — propagated
+  // through every ai_job_steps row, mirrors BackgroundJob.correlationId.
+  correlationId String @map("correlation_id")
+
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+
+  // Nullable — mirrors BackgroundJob.createdById exactly: NOT NULL
+  // whenever a human/API caller triggered this job, null only for a
+  // genuine system-triggered execution.
+  createdById String? @map("created_by") @db.Uuid
+  createdBy   User?   @relation("AiJobCreatedBy", fields: [createdById], references: [id])
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  steps AiJobStep[]
+
+  @@index([workspaceId])
+  @@index([status])
+  @@index([status, createdAt])
+  @@index([knowledgePackId])
+  @@index([correlationId])
+  @@map("ai_jobs")
+}
+
+// Append-only step log — mirrors BackgroundJobHistory's own shape/
+// discipline (no deletedAt, never updated after insert).
+model AiJobStep {
+  id String @id @default(uuid()) @db.Uuid
+
+  aiJobId String @map("ai_job_id") @db.Uuid
+  aiJob   AiJob  @relation(fields: [aiJobId], references: [id])
+
+  stepName   String      @map("step_name")
+  stepStatus AiJobStatus @map("step_status")
+
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+
+  @@index([aiJobId])
+  @@map("ai_job_steps")
 }
