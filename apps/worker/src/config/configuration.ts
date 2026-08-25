@@ -59,6 +59,15 @@ export interface WorkerConfig {
   // comment.
   backgroundJobReconciliationIntervalMs: number;
   backgroundJobReconciliationBatchSize: number;
+  // Module 3 Phase 3.4 — real vendor credentials, read here only, mirroring
+  // apps/api's own identical AppConfig.ai shape (see that file's doc
+  // comment for the full rationale — an empty apiKey leaves that provider
+  // unconfigured rather than crashing this process).
+  ai: {
+    openai: { apiKey: string; model: string };
+    anthropic: { apiKey: string; model: string };
+    gemini: { apiKey: string; model: string };
+  };
 }
 
 export class WorkerConfigError extends Error {
@@ -140,5 +149,10 @@ export default function configuration(): WorkerConfig {
     outboxRelayClaimLeaseMs,
     backgroundJobReconciliationIntervalMs,
     backgroundJobReconciliationBatchSize,
+    ai: {
+      openai: { apiKey: process.env.OPENAI_API_KEY ?? "", model: process.env.OPENAI_MODEL ?? "gpt-4o" },
+      anthropic: { apiKey: process.env.ANTHROPIC_API_KEY ?? "", model: process.env.ANTHROPIC_MODEL ?? "claude-3-5-sonnet-20241022" },
+      gemini: { apiKey: process.env.GEMINI_API_KEY ?? "", model: process.env.GEMINI_MODEL ?? "gemini-1.5-pro" },
+    },
   };
 }

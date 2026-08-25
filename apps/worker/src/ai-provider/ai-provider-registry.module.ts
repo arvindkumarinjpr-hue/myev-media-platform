@@ -1,5 +1,8 @@
 import { Global, Module } from "@nestjs/common";
-import { AIProviderRegistryBuilder, FakeProvider, type AIProviderRegistry } from "@myev/shared";
+import { ConfigModule, ConfigService } from "@nestjs/config";
+import type { AIProviderRegistry } from "@myev/shared";
+import type { WorkerConfig } from "../config/configuration";
+import { buildAiProviderRegistry } from "./ai-provider-client-factory";
 
 export const AI_PROVIDER_REGISTRY = Symbol("AI_PROVIDER_REGISTRY");
 
@@ -16,31 +19,22 @@ export const AI_PROVIDER_REGISTRY = Symbol("AI_PROVIDER_REGISTRY");
  * logic, only DI bootstrap wiring, the same shape QueueRegistryModule
  * itself already has on both sides.
  *
- * Only FakeProvider is registered — see apps/api's own identical module
- * for the full rationale (no real business agent exists yet that needs a
- * real provider).
+ * Module 3 Phase 3.4: real providers are registered whenever configured
+ * (see apps/api's identical module for the full rationale — this file's
+ * own ai-provider-client-factory.ts is a separate copy, not a shared
+ * one, for the same cross-process reason everything else here is
+ * duplicated). FakeProvider and the Phase 3.3 test fixtures stay
+ * registered only outside production.
  */
 @Global()
 @Module({
+  imports: [ConfigModule],
   providers: [
     {
       provide: AI_PROVIDER_REGISTRY,
-      useFactory: (): AIProviderRegistry => {
-        const builder = new AIProviderRegistryBuilder();
-        builder.register(new FakeProvider("structured_success", { echo: "test-echo-agent-default-response" }));
-        // Module 3 Phase 3.3 test-only fixtures — deterministic
-        // retry/permanent-failure/timeout proof against this real,
-        // already-running worker process, mirroring the existing
-        // precedent of test-only fixture hooks living directly in a
-        // production registration (e.g. SystemPingPayload's own
-        // failUntilAttempt/permanentFailure). Distinct FakeProvider ids,
-        // never "fake" — see FakeProvider's own id-configurability
-        // rationale.
-        builder.register(new FakeProvider("flaky_then_success", {}, 1, "fake-flaky"));
-        builder.register(new FakeProvider("permanent_error", {}, 1, "fake-permanent"));
-        builder.register(new FakeProvider("timeout", {}, 1, "fake-timeout"));
-        return builder.freeze();
-      },
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService<WorkerConfig, true>): Promise<AIProviderRegistry> =>
+        buildAiProviderRegistry(configService.get("ai", { infer: true }), configService.get("env", { infer: true })),
     },
   ],
   exports: [AI_PROVIDER_REGISTRY],

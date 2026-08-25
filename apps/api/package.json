@@ -19,9 +19,11 @@
     "seed": "ts-node --transpile-only prisma/seed.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
     "@aws-sdk/client-s3": "^3.1103.0",
     "@aws-sdk/s3-presigned-post": "^3.1103.0",
     "@aws-sdk/s3-request-presigner": "^3.1103.0",
+    "@google/genai": "^0.15.0",
     "@myev/shared": "workspace:*",
     "@nestjs/common": "^10.4.15",
     "@nestjs/config": "^3.3.0",
@@ -37,6 +39,7 @@
     "ioredis": "^5.4.2",
     "nestjs-pino": "^4.3.1",
     "nodemailer": "^6.9.16",
+    "openai": "^4.79.1",
     "pino": "^9.6.0",
     "pino-http": "^10.3.0",
     "reflect-metadata": "^0.2.2",
