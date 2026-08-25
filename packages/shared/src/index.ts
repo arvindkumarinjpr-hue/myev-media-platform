@@ -38,3 +38,4 @@ export * from "./agent-framework/agent-execution-request";
 export * from "./agent-framework/agent-execution-error";
 export * from "./agent-framework/agent-execution-result";
 export * from "./agent-framework/test-agent";
+export * from "./queue/jobs/ai-execute";

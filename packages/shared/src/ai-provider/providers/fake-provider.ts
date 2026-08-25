@@ -4,7 +4,7 @@ import type { AIRequest } from "../ai-request";
 import type { AIResponse } from "../ai-response";
 import { parseStructuredOutput } from "../structured-output";
 
-export type FakeProviderMode = "success" | "structured_success" | "transient_error" | "permanent_error" | "timeout" | "rate_limit";
+export type FakeProviderMode = "success" | "structured_success" | "transient_error" | "permanent_error" | "timeout" | "rate_limit" | "flaky_then_success";
 
 /**
  * Module 3 Phase 3.1 — a deterministic fake AIProvider for unit/E2E
@@ -15,16 +15,42 @@ export type FakeProviderMode = "success" | "structured_success" | "transient_err
  * real API keys to be deterministic.
  */
 export class FakeProvider implements AIProvider {
-  readonly id = "fake";
+  readonly id: string;
+
+  // Stateful across calls on this one instance, deliberately — a real
+  // durable-dispatch caller (Module 3 Phase 3.3) reuses the SAME
+  // long-lived provider instance across BullMQ retry attempts within one
+  // worker process, so this genuinely proves "transient failure, then
+  // retry, then eventual success on the same durable job" rather than
+  // always-fails-until-exhausted ("transient_error" mode's own behavior).
+  private callCount = 0;
 
   constructor(
     private readonly mode: FakeProviderMode = "success",
     private readonly structuredPayload: Record<string, unknown> = {},
-  ) {}
+    private readonly failuresBeforeSuccess = 1,
+    // Defaults to "fake" — every existing call site that never passed a
+    // 4th argument keeps registering under the exact same id as before.
+    // Only a caller registering MULTIPLE FakeProvider instances in one
+    // registry (Module 3 Phase 3.3's own durable-retry/permanent-failure/
+    // timeout test fixtures — AIProviderRegistryBuilder rejects a
+    // duplicate id) needs to pass a distinct one.
+    id = "fake",
+  ) {
+    this.id = id;
+  }
 
   async execute(request: AIRequest, signal?: AbortSignal): Promise<AIResponse> {
     if (signal?.aborted) {
       throw new AIProviderError(AIProviderErrorCode.TIMEOUT, "Request was aborted before the fake provider could respond.", this.id);
+    }
+
+    if (this.mode === "flaky_then_success") {
+      this.callCount += 1;
+      if (this.callCount <= this.failuresBeforeSuccess) {
+        throw new AIProviderError(AIProviderErrorCode.TRANSIENT_NETWORK, `Fake provider: simulated transient failure (attempt ${this.callCount}/${this.failuresBeforeSuccess}).`, this.id);
+      }
+      // Falls through to the same success-path construction below.
     }
 
     switch (this.mode) {

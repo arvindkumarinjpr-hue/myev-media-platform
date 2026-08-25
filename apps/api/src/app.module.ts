@@ -13,6 +13,7 @@ import { WorkspaceMembersModule } from "./modules/workspace-members/workspace-me
 import { ProjectsModule } from "./modules/projects/projects.module";
 import { KnowledgePacksModule } from "./modules/knowledge-packs/knowledge-packs.module";
 import { AiAgentsModule } from "./modules/ai-agents/ai-agents.module";
+import { AiJobsModule } from "./modules/ai-jobs/ai-jobs.module";
 import { MediaAssetsModule } from "./modules/media-assets/media-assets.module";
 import { ContentModule } from "./modules/content/content.module";
 import { BackgroundJobsModule } from "./modules/background-jobs/background-jobs.module";
@@ -52,6 +53,7 @@ import type { AppConfig } from "./config/configuration";
     ProjectsModule,
     KnowledgePacksModule,
     AiAgentsModule,
+    AiJobsModule,
     MediaAssetsModule,
     ContentModule,
     BackgroundJobsModule,

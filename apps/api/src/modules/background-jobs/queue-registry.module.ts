@@ -1,5 +1,5 @@
 import { Global, Module } from "@nestjs/common";
-import { QueueRegistryBuilder, SYSTEM_PING_V1_MANIFEST, type QueueRegistry } from "@myev/shared";
+import { AI_EXECUTE_V1_MANIFEST, QueueRegistryBuilder, SYSTEM_PING_V1_MANIFEST, type QueueRegistry } from "@myev/shared";
 
 export const QUEUE_REGISTRY = Symbol("QUEUE_REGISTRY");
 
@@ -21,6 +21,10 @@ export const QUEUE_REGISTRY = Symbol("QUEUE_REGISTRY");
       useFactory: (): QueueRegistry => {
         const builder = new QueueRegistryBuilder();
         builder.registerManifest(SYSTEM_PING_V1_MANIFEST);
+        // Module 3 Phase 3.3 — manifest-only here too (this process never
+        // executes a job, only enqueues one — see this module's own doc
+        // comment above).
+        builder.registerManifest(AI_EXECUTE_V1_MANIFEST);
         return builder.freeze();
       },
     },

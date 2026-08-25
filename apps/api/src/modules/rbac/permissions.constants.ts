@@ -110,6 +110,16 @@ export const PERMISSIONS = {
   // permission system (Revision 3 §3/§12).
   SYSTEM_SCHEDULES_VIEW: "SYSTEM_SCHEDULES_VIEW",
   SYSTEM_SCHEDULES_MANAGE: "SYSTEM_SCHEDULES_MANAGE",
+
+  // Module 3 Phase 3.3: absent from the frozen AI_CONTENT_ROLE_PERMISSION_MATRIX_V1.0.md's
+  // formal Permission Categories, same "Missing constant identified"
+  // precedent as JOB_VIEW/JOB_MANAGE above. Generic (agent-agnostic) —
+  // gates the durable AI Job submission/read primitive itself, not any
+  // specific content-type's own RESEARCH_RUN/BLOG_CREATE/VIDEO_CREATE
+  // (those remain the real per-content-type gates once real business
+  // agents exist in a later phase).
+  AI_JOB_CREATE: "AI_JOB_CREATE",
+  AI_JOB_VIEW: "AI_JOB_VIEW",
 } as const;
 
 export type PermissionConstant = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -142,6 +152,7 @@ export const PERMISSION_CATEGORIES: Record<string, PermissionConstant[]> = {
     PERMISSIONS.SYSTEM_SCHEDULES_MANAGE,
   ],
   Content: [PERMISSIONS.BLOG_VIEW, PERMISSIONS.VIDEO_VIEW, PERMISSIONS.CONTENT_SERIES_MANAGE],
+  AI: [PERMISSIONS.AI_JOB_CREATE, PERMISSIONS.AI_JOB_VIEW],
 };
 
 /**
@@ -214,6 +225,14 @@ export const ROLE_PERMISSIONS: Record<string, PermissionConstant[]> = {
     PERMISSIONS.BLOG_VIEW,
     PERMISSIONS.VIDEO_VIEW,
     PERMISSIONS.CONTENT_SERIES_MANAGE,
+    // Module 3 Phase 3.3: same operational/system tier as JOB_VIEW/
+    // JOB_MANAGE above — Administrator-and-up only for now, since a
+    // generic "submit any registered agent" capability is a broad,
+    // system-level power until real per-content-type RUN permissions
+    // (RESEARCH_RUN, BLOG_CREATE, etc.) become the actual business gate
+    // in a later phase with real agents.
+    PERMISSIONS.AI_JOB_CREATE,
+    PERMISSIONS.AI_JOB_VIEW,
   ],
   "Content Manager": [
     PERMISSIONS.PROJECT_VIEW,
@@ -246,6 +265,12 @@ export const ROLE_PERMISSIONS: Record<string, PermissionConstant[]> = {
     PERMISSIONS.BLOG_VIEW,
     PERMISSIONS.VIDEO_VIEW,
     PERMISSIONS.CONTENT_SERIES_MANAGE,
+    // Module 3 Phase 3.3: Content Manager already triggers agent-adjacent
+    // work (RESEARCH_RUN, BLOG_CREATE, VIDEO_CREATE above) — the natural
+    // role to also submit/view generic AI job executions once real
+    // business agents exist.
+    PERMISSIONS.AI_JOB_CREATE,
+    PERMISSIONS.AI_JOB_VIEW,
   ],
   "Content Writer": [
     PERMISSIONS.RESEARCH_RUN,
