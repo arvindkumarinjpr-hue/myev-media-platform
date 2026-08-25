@@ -101,6 +101,17 @@ export interface AppConfig {
     // this is the value application code validates against first.
     reviewCommentMaxLength: number;
   };
+  ai: {
+    // Module 3 Phase 3.4 — real vendor credentials, read here only (never
+    // in packages/shared, never hardcoded, never sent to the web bundle).
+    // An empty apiKey means that provider is left unconfigured: the
+    // registry factory simply does not register it, so a request naming
+    // it fails cleanly through the existing AIProviderRegistry.resolve()
+    // "unknown provider" error rather than crashing platform startup.
+    openai: { apiKey: string; model: string };
+    anthropic: { apiKey: string; model: string };
+    gemini: { apiKey: string; model: string };
+  };
 }
 
 /**
@@ -196,5 +207,10 @@ export default (): AppConfig => ({
     maxStringValueLength: parseInt(process.env.CONTENT_MAX_STRING_VALUE_LENGTH ?? "200000", 10),
     base64HeuristicMinLength: parseInt(process.env.CONTENT_BASE64_HEURISTIC_MIN_LENGTH ?? "512", 10),
     reviewCommentMaxLength: parseInt(process.env.CONTENT_REVIEW_COMMENT_MAX_LENGTH ?? "2000", 10),
+  },
+  ai: {
+    openai: { apiKey: process.env.OPENAI_API_KEY ?? "", model: process.env.OPENAI_MODEL ?? "gpt-4o" },
+    anthropic: { apiKey: process.env.ANTHROPIC_API_KEY ?? "", model: process.env.ANTHROPIC_MODEL ?? "claude-3-5-sonnet-20241022" },
+    gemini: { apiKey: process.env.GEMINI_API_KEY ?? "", model: process.env.GEMINI_MODEL ?? "gemini-1.5-pro" },
   },
 });

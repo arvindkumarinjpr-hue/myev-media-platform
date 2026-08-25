@@ -1,5 +1,8 @@
 import { Global, Module } from "@nestjs/common";
-import { AIProviderRegistryBuilder, FakeProvider, type AIProviderRegistry } from "@myev/shared";
+import { ConfigModule, ConfigService } from "@nestjs/config";
+import type { AIProviderRegistry } from "@myev/shared";
+import type { AppConfig } from "../../config/configuration";
+import { buildAiProviderRegistry } from "./ai-provider-client-factory";
 
 export const AI_PROVIDER_REGISTRY = Symbol("AI_PROVIDER_REGISTRY");
 
@@ -8,31 +11,25 @@ export const AI_PROVIDER_REGISTRY = Symbol("AI_PROVIDER_REGISTRY");
  * QueueRegistryModule's exact @Global/useFactory/freeze-once pattern
  * (apps/api/src/modules/background-jobs/queue-registry.module.ts).
  *
- * Only FakeProvider is registered — the one agent this phase defines
- * (TEST_ECHO_AGENT_V1) only ever calls "fake" (Part 17's own "Use
- * FakeProvider. No live OpenAI/Anthropic/Gemini network calls in CI").
- * Wiring a real OpenAIProvider/AnthropicProvider/GeminiProvider requires
- * an injected vendor SDK client built from a real API key (Phase 3.1's
- * own injected-client discipline — this module never reads a secret
- * itself) — deliberately deferred to whichever future phase adds the
- * first real business agent that actually needs one, rather than wiring
- * unused credentials now.
+ * Module 3 Phase 3.4: real OpenAI/Anthropic/Gemini providers are now
+ * registered whenever their credentials are configured (see
+ * ai-provider-client-factory.ts — an unconfigured provider is simply
+ * skipped, never registered with an invalid client). FakeProvider stays
+ * registered only outside production (`config.env !== "production"`) —
+ * TEST_ECHO_AGENT_V1 and Phase 3.3's own retry/timeout/permanent-failure
+ * fixture agents still need it in dev/CI, but it must never be reachable
+ * in a real deployment. See ai-provider-client-factory.spec.ts for the
+ * regression proof.
  */
 @Global()
 @Module({
+  imports: [ConfigModule],
   providers: [
     {
       provide: AI_PROVIDER_REGISTRY,
-      useFactory: (): AIProviderRegistry => {
-        const builder = new AIProviderRegistryBuilder();
-        // "structured_success" — not the default "success" — because
-        // TEST_ECHO_AGENT_V1 declares an outputSchema: this is the mode
-        // that actually calls Phase 3.1's parseStructuredOutput
-        // internally, honoring outputFormat/structuredOutputSchema the
-        // same way a real adapter would.
-        builder.register(new FakeProvider("structured_success", { echo: "test-echo-agent-default-response" }));
-        return builder.freeze();
-      },
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService<AppConfig, true>): Promise<AIProviderRegistry> =>
+        buildAiProviderRegistry(configService.get("ai", { infer: true }), configService.get("env", { infer: true })),
     },
   ],
   exports: [AI_PROVIDER_REGISTRY],
