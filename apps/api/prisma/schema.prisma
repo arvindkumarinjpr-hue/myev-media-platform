@@ -1163,6 +1163,9 @@ model BackgroundJob {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   history BackgroundJobHistory[]
+  // Module 3 Phase 3.3 — present only when this row is dispatching an
+  // "ai.execute.v1" job; see AiJob.backgroundJobId's own comment.
+  aiJob   AiJob?
 
   // DEFECT-1F-003: idempotency uniqueness is enforced by two migration-only
   // PARTIAL unique indexes, not representable in Prisma's schema DSL (no
@@ -1660,6 +1663,26 @@ model AiJob {
   agentVersion Int    @map("agent_version")
 
   triggeringModule String @map("triggering_module")
+
+  // Module 3 Phase 3.3 — the durable dispatch/runtime record driving this
+  // AiJob's execution. Nullable: a synchronously-executed AiJob (Phase
+  // 3.2's own AgentExecutorService.execute(), still valid and unchanged)
+  // never has one; only a durably-submitted AiJob (Phase 3.3's own
+  // submission flow) does. Deliberately the ONLY linkage field —
+  // BackgroundJob itself carries no AI-specific columns at all (its own
+  // payloadMetadata JSON holds this AiJob's publicId, the minimum it
+  // needs to dispatch); DB Design §5.12 reserves background_jobs for
+  // non-AI/non-publishing infrastructure, and ADR-005 makes ai_jobs its
+  // own authoritative store — this FK is metadata connecting the two
+  // records, not a merge of their lifecycles. Also the fencing token for
+  // execution idempotency: the worker processor only advances this row
+  // past QUEUED when it currently equals the BackgroundJob id driving the
+  // attempt, so a stale/duplicate redelivery can't double-execute it.
+  // @unique — one BackgroundJob drives exactly one AiJob (its payload's
+  // aiJobPublicId is fixed at enqueue time), so this is a true 1:1, not a
+  // many-to-one.
+  backgroundJobId String?        @unique @map("background_job_id") @db.Uuid
+  backgroundJob   BackgroundJob? @relation(fields: [backgroundJobId], references: [id])
 
   // The EXACT Knowledge Pack version row this job executed against —
   // never the lineage root, never implicitly re-resolved to "latest

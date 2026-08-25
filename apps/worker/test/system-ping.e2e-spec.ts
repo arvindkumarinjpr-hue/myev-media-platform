@@ -137,9 +137,11 @@ describe("Worker (e2e) — system.ping.v1 end-to-end pipeline", () => {
   it("reports a live WorkerHeartbeat row for this process", async () => {
     const row = await prisma.workerHeartbeat.findUnique({ where: { workerId: heartbeat.workerId } });
     expect(row).not.toBeNull();
-    expect(row?.queueAssignments).toEqual(["SYSTEM"]);
-    // See the identical comment above — asserts the actually-configured
-    // value, not a literal that only happens to match a local run.
+    // Module 3 Phase 3.3: asserts the actually-configured value, not a
+    // literal that only happened to match before WORKER_QUEUES gained a
+    // second category (AI) — same principle as the applicationVersion
+    // assertion right below, now applied consistently to this one too.
+    expect(row?.queueAssignments).toEqual((process.env.WORKER_QUEUES as string).split(","));
     expect(row?.applicationVersion).toBe(process.env.WORKER_APPLICATION_VERSION);
   });
 });

@@ -147,7 +147,9 @@ jobs:
       STORAGE_BUCKET: myev-media-test
       # Module 1F: apps/worker's own e2e suite runs in this same job
       # (shares the Postgres/Redis service containers above).
-      WORKER_QUEUES: SYSTEM
+      # Module 3 Phase 3.3: AI added so the same background Worker started
+      # below also executes ai.execute.v1 jobs during the API E2E suite.
+      WORKER_QUEUES: SYSTEM,AI
       WORKER_APPLICATION_VERSION: ci-e2e
     steps:
       - uses: actions/checkout@v4

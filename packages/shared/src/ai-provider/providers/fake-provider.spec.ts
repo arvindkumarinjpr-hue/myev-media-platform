@@ -67,4 +67,25 @@ describe("FakeProvider", () => {
     const provider = new FakeProvider();
     expect(provider.getCapabilities()).toEqual([{ model: "fake-model-1", capability: "chat" }]);
   });
+
+  it("defaults to id \"fake\" when none is given, matching every pre-existing call site", () => {
+    expect(new FakeProvider().id).toBe("fake");
+  });
+
+  it("registers under a caller-supplied id when given one", () => {
+    expect(new FakeProvider("success", {}, 1, "fake-alt").id).toBe("fake-alt");
+  });
+
+  it("flaky_then_success mode fails transiently for exactly failuresBeforeSuccess calls, then succeeds — proving retry-then-succeed is possible on one long-lived instance", async () => {
+    const provider = new FakeProvider("flaky_then_success", {}, 2);
+
+    await expect(provider.execute(request())).rejects.toMatchObject({ code: AIProviderErrorCode.TRANSIENT_NETWORK });
+    await expect(provider.execute(request())).rejects.toMatchObject({ code: AIProviderErrorCode.TRANSIENT_NETWORK });
+    const result = await provider.execute(request());
+    expect(result.output).toBe("fake response to: hello");
+
+    // Stays succeeded on any further call — the counter never resets.
+    const again = await provider.execute(request());
+    expect(again.output).toBe("fake response to: hello");
+  });
 });
