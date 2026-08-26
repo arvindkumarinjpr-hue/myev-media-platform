@@ -58,7 +58,13 @@ export function ResearchDetail({ workspaceId, researchId }: { workspaceId: strin
         <ErrorBanner message={research.errorMessageSafe ?? "Research did not complete successfully."} />
       )}
 
-      {research.status === "COMPLETED" && research.result && (
+      {research.status === "COMPLETED" && research.result && (() => {
+        // Module 4 Phase 4.3 — findings only ever carry source IDs
+        // (RESEARCH_AGENT_V1's own structural citation enforcement);
+        // resolve each ID back to its real url via the backend-computed
+        // sources[] list for display.
+        const sourceById = new Map(research.result.sources.map((s) => [s.sourceId, s]));
+        return (
         <div className={styles.sections}>
           <section className={styles.section}>
             <h2>Summary</h2>
@@ -71,15 +77,23 @@ export function ResearchDetail({ workspaceId, researchId }: { workspaceId: strin
               <ul className={styles.findingsList}>
                 {research.result.findings.map((finding, i) => (
                   <li key={i}>
-                    <p>{finding.summary}</p>
+                    <div className={styles.findingHeader}>
+                      <p>{finding.summary}</p>
+                      <span className={finding.provenance === "source_backed" ? styles.provenanceSourceBacked : styles.provenanceAiInference}>
+                        {finding.provenance === "source_backed" ? "Source-backed" : "AI inference"}
+                      </span>
+                    </div>
                     {finding.evidence && <p className={styles.evidence}>{finding.evidence}</p>}
-                    {finding.sourceUrls.length > 0 && (
+                    {finding.sourceIds.length > 0 && (
                       <p className={styles.citations}>
-                        {finding.sourceUrls.map((url) => (
-                          <a key={url} href={url} target="_blank" rel="noreferrer" className={styles.citationLink}>
-                            {url}
-                          </a>
-                        ))}
+                        {finding.sourceIds.map((id) => {
+                          const source = sourceById.get(id);
+                          return source ? (
+                            <a key={id} href={source.url} target="_blank" rel="noreferrer" className={styles.citationLink}>
+                              {source.url}
+                            </a>
+                          ) : null;
+                        })}
                       </p>
                     )}
                   </li>
@@ -170,7 +184,8 @@ export function ResearchDetail({ workspaceId, researchId }: { workspaceId: strin
             </section>
           )}
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

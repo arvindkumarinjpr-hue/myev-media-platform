@@ -42,8 +42,8 @@ describe("ResearchDetail", () => {
     const completed = research({
       result: {
         executiveSummary: "Battery swap pilots are expanding.",
-        findings: [{ summary: "Multiple pilots underway.", evidence: "Cited government source.", sourceUrls: ["https://reachable.example/gov"] }],
-        sources: [{ url: "https://reachable.example/gov", sourceType: "GOVERNMENT", title: "EV Infra Report" }],
+        findings: [{ summary: "Multiple pilots underway.", evidence: "Cited government source.", sourceIds: ["S1"], provenance: "source_backed" }],
+        sources: [{ sourceId: "S1", url: "https://reachable.example/gov", sourceType: "GOVERNMENT", title: "EV Infra Report" }],
         trendSignals: [{ topic: "battery swap", direction: "rising", confidence: 70, evidence: "Pilot count increasing." }],
         keywordOpportunities: [{ keyword: "ev battery swap", intent: "informational", opportunityScore: 62, rationale: "High relevance, low competitor coverage." }],
         contentAngles: ["A city-by-city rollout comparison"],
@@ -60,12 +60,36 @@ describe("ResearchDetail", () => {
     expect(screen.getByText("A city-by-city rollout comparison")).toBeInTheDocument();
   });
 
+  it("labels a source-backed finding distinctly from an AI-inference finding, and resolves a citation ID to its real URL", async () => {
+    const completed = research({
+      result: {
+        executiveSummary: "Battery swap pilots are expanding.",
+        findings: [
+          { summary: "A cited, source-backed claim.", sourceIds: ["S1"], provenance: "source_backed" },
+          { summary: "The model's own unsupported inference.", sourceIds: [], provenance: "ai_inference" },
+        ],
+        sources: [{ sourceId: "S1", url: "https://reachable.example/gov", sourceType: "GOVERNMENT" }],
+        trendSignals: [],
+        keywordOpportunities: [],
+        contentAngles: [],
+      },
+    });
+    jest.spyOn(global, "fetch").mockResolvedValue(mockResponse({ data: completed }));
+    render(<ResearchDetail workspaceId="ws-1" researchId="res-1" />);
+
+    await waitFor(() => expect(screen.getByText("Source-backed")).toBeInTheDocument());
+    expect(screen.getByText("AI inference")).toBeInTheDocument();
+    // Appears twice: the resolved citation link inside the finding, and
+    // again in the Sources & Evidence section — both real, both correct.
+    expect(screen.getAllByRole("link", { name: "https://reachable.example/gov" })).toHaveLength(2);
+  });
+
   it("shows a duplicate-removed note when FR-RES-004 deduplication removed something", async () => {
     const completed = research({
       result: {
         executiveSummary: "Battery swap pilots are expanding.",
-        findings: [{ summary: "Multiple pilots underway.", evidence: "Cited government source.", sourceUrls: ["https://reachable.example/gov"] }],
-        sources: [{ url: "https://reachable.example/gov", sourceType: "GOVERNMENT", title: "EV Infra Report" }],
+        findings: [{ summary: "Multiple pilots underway.", evidence: "Cited government source.", sourceIds: ["S1"], provenance: "source_backed" }],
+        sources: [{ sourceId: "S1", url: "https://reachable.example/gov", sourceType: "GOVERNMENT", title: "EV Infra Report" }],
         trendSignals: [],
         keywordOpportunities: [],
         contentAngles: [],

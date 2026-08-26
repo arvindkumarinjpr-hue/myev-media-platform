@@ -52,6 +52,13 @@ export class ResearchService {
     // (a syntactically valid URL was configured) and still be
     // unreachable right now.
     const checked = await this.sourceProvider.checkReachable(pack.knowledgeSources.map((s) => ({ url: s.url, sourceType: s.sourceType })));
+    // Module 4 Phase 4.3 — a stable, per-run source ID assigned here
+    // (never derived from or guessable by the model) is what makes
+    // RESEARCH_AGENT_V1's own citation enforcement structural rather
+    // than a prompt-only promise: the model can only ever cite an ID it
+    // was actually handed, never invent one that resolves to a real,
+    // verified source.
+    const verifiedSources = checked.map((s, i) => ({ sourceId: `S${i + 1}`, ...s }));
 
     const job = await this.aiJobs.submit(
       workspaceId,
@@ -66,7 +73,7 @@ export class ResearchService {
           geography: dto.geography,
           language: dto.language,
           seedKeywords: dto.seedKeywords,
-          verifiedSources: checked,
+          verifiedSources,
         },
       },
       correlationId,

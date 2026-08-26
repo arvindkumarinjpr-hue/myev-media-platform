@@ -17,8 +17,25 @@ import type { AgentDefinition } from "../agent-definition";
  * living in packages/shared.
  */
 
-/** A single Knowledge Pack trusted source, already reachability-checked at Research submission time (apps/api's ResearchService) — never re-checked here, never fetched live during prompt construction (buildPrompt is synchronous, by Module 3's own AgentDefinition contract). */
+/**
+ * A single Knowledge Pack trusted source, already reachability-checked
+ * at Research submission time (apps/api's ResearchService) — never
+ * re-checked here, never fetched live during prompt construction
+ * (buildPrompt is synchronous, by Module 3's own AgentDefinition
+ * contract).
+ *
+ * Module 4 Phase 4.3 — sourceId is a stable, per-run identifier assigned
+ * by ResearchService.submit() (e.g. "S1", "S2"), never derived from or
+ * guessable by the model. It is the ONLY thing findings[] may cite
+ * (see buildPrompt/postProcessOutput below) — this is what makes source
+ * citation structurally enforceable rather than a prompt-only promise:
+ * the model can point at an id we handed it, but it cannot invent one
+ * that resolves to a real, verified source it was never given.
+ */
 export class VerifiedSourceInput {
+  @IsString()
+  sourceId!: string;
+
   @IsString()
   url!: string;
 
@@ -68,16 +85,32 @@ export class ResearchFinding {
   @IsString()
   evidence?: string;
 
-  // Must be a subset of the request's own verifiedSources[].url —
-  // buildPrompt's own system instructions forbid citing anything else;
-  // this is the structural half of "never fabricate citations" (the
-  // instructional half lives in the prompt itself).
+  // Module 4 Phase 4.3 — references VerifiedSourceInput.sourceId, never
+  // a raw URL. postProcessOutput (below) structurally validates every
+  // entry against the request's own verified source-ID set and drops
+  // anything unrecognized — the model cannot "promote" an arbitrary
+  // string into a verified citation merely by writing it here.
   @IsArray()
   @IsString({ each: true })
-  sourceUrls!: string[];
+  sourceIds!: string[];
+
+  // Computed by postProcessOutput, never model-authored (hence
+  // @IsOptional — the raw LLM response never includes it). Distinguishes
+  // "this finding cites at least one real, verified source" from
+  // "this is the model's own unsupported inference" — NOT a claim that
+  // the specific fact stated has been independently fact-checked.
+  @IsOptional()
+  @IsIn(["source_backed", "ai_inference"])
+  provenance?: "source_backed" | "ai_inference";
 }
 
 export class ResearchSourceOutput {
+  // Module 4 Phase 4.3 — cross-references ResearchFinding.sourceIds so
+  // the frontend can resolve a citation back to its real url/sourceType.
+  @IsOptional()
+  @IsString()
+  sourceId?: string;
+
   @IsString()
   url!: string;
 
@@ -153,6 +186,15 @@ export class ResearchDeduplicationSummary {
   reviewReason?: string;
 }
 
+// Module 4 Phase 4.3 — FR-RES-002's own business rule, applied
+// structurally: "Research must draw only from configured trusted
+// sources." Populated only by postProcessOutput, never the model.
+export class ResearchCitationIntegritySummary {
+  @IsInt()
+  @Min(0)
+  invalidCitationsRemoved!: number;
+}
+
 export class ResearchAgentOutput {
   @IsString()
   executiveSummary!: string;
@@ -162,13 +204,17 @@ export class ResearchAgentOutput {
   @Type(() => ResearchFinding)
   findings!: ResearchFinding[];
 
-  // The exact sources actually used — a subset of (never additions to)
-  // the request's own verifiedSources. Persisted for citation/provenance
-  // display; never fabricated URLs.
+  // Module 4 Phase 4.3 — no longer requested from the model at all
+  // (@IsOptional, absent from the prompt's own response-shape
+  // instruction below): postProcessOutput reconstructs this array
+  // entirely from real, verified Knowledge-Pack source records for
+  // every sourceId actually cited by a finding — never model-authored
+  // url/title text, so there is nothing here for the model to fabricate.
+  @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => ResearchSourceOutput)
-  sources!: ResearchSourceOutput[];
+  sources?: ResearchSourceOutput[];
 
   @IsArray()
   @ValidateNested({ each: true })
@@ -188,20 +234,26 @@ export class ResearchAgentOutput {
   @ValidateNested()
   @Type(() => ResearchDeduplicationSummary)
   deduplication?: ResearchDeduplicationSummary;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ResearchCitationIntegritySummary)
+  citationIntegrity?: ResearchCitationIntegritySummary;
 }
 
 function buildPrompt(input: ResearchAgentInput, context: AgentContext): { prompt: string; systemInstructions: string } {
   const reachable = input.verifiedSources.filter((s) => s.reachable);
-  const sourceList = reachable.length > 0 ? reachable.map((s) => `- [${s.sourceType}] ${s.url}`).join("\n") : "(none reachable — state this plainly in the executive summary, do not invent one)";
+  const sourceList = reachable.length > 0 ? reachable.map((s) => `- [${s.sourceId}] [${s.sourceType}] ${s.url}`).join("\n") : "(none reachable — state this plainly in the executive summary, cite nothing)";
 
   const systemInstructions = [
     "You are the Research Agent for an EV (electric vehicle) content platform.",
     "You produce structured research intelligence: an executive summary, findings, trend signals, and keyword opportunities.",
-    "CRITICAL — citation integrity: you may cite ONLY the exact URLs listed below under VERIFIED SOURCES. Never invent, guess, or hallucinate a URL. Every entry in findings[].sourceUrls and sources[] must be one of these exact URLs, verbatim. If none are reachable, say so in executiveSummary and leave findings[].sourceUrls / sources[] empty rather than fabricating one.",
+    "CRITICAL — citation integrity: findings[].sourceIds must contain ONLY the bracketed IDs (e.g. \"S1\") listed below under VERIFIED SOURCES — never a URL, never an ID you were not given, never one you invent. A citation referencing anything else will be discarded and that finding will be treated as your own unsupported inference, not evidence. If none are reachable, say so in executiveSummary and leave every finding's sourceIds empty.",
+    "Do not output a sources[] field yourself — it is built automatically from the sources you actually cite by ID.",
     "CRITICAL — trend integrity: every trendSignals[] entry must name concrete evidence for its direction (from the sources or the given context) in its own evidence field. Never assert a trend has no basis beyond your own impression.",
     "CRITICAL — keyword integrity: opportunityScore must be explainable — always fill in rationale. Do not invent search volume, CPC, or competition metrics; you have no access to real search data in this context.",
     "",
-    "VERIFIED SOURCES (the ONLY citable URLs):",
+    "VERIFIED SOURCES (cite ONLY by the bracketed ID):",
     sourceList,
     "",
     `WORKSPACE INDUSTRY PROFILE: ${JSON.stringify(context.industryProfile)}`,
@@ -217,7 +269,7 @@ function buildPrompt(input: ResearchAgentInput, context: AgentContext): { prompt
     input.language ? `Language: ${input.language}` : "",
     input.seedKeywords && input.seedKeywords.length > 0 ? `Seed keywords to consider: ${input.seedKeywords.join(", ")}` : "",
     "",
-    "Respond with a single JSON object matching the required ResearchAgentOutput schema exactly: executiveSummary, findings, sources, trendSignals, keywordOpportunities, contentAngles.",
+    "Respond with a single JSON object matching the required ResearchAgentOutput schema exactly: executiveSummary, findings (each with summary, evidence, sourceIds), trendSignals, keywordOpportunities, contentAngles.",
   ]
     .filter(Boolean)
     .join("\n");
@@ -289,29 +341,74 @@ function deduplicateSources(sources: ResearchSourceOutput[]): { deduped: Researc
   return { deduped, duplicatesRemoved };
 }
 
+// Module 4 Phase 4.3 — FR-RES-002's own business rule ("Research must
+// draw only from configured trusted sources") made structural rather
+// than a prompt-only promise. For every finding, keeps only the
+// sourceIds that match a REACHABLE entry in the request's own
+// verifiedSources — anything else (a raw URL, a misremembered ID, an
+// outright invention) is dropped, never "promoted" into a citation.
+// sources[] is then reconstructed entirely from real Knowledge-Pack
+// source records for whatever was actually cited, so nothing here is
+// ever model-authored text.
+function validateCitations(
+  findings: ResearchFinding[],
+  verifiedSources: VerifiedSourceInput[],
+): { findings: ResearchFinding[]; sources: ResearchSourceOutput[]; invalidCitationsRemoved: number } {
+  const byId = new Map(verifiedSources.filter((s) => s.reachable).map((s) => [s.sourceId, s]));
+
+  let invalidCitationsRemoved = 0;
+  const checkedFindings = findings.map((finding) => {
+    const validIds = (finding.sourceIds ?? []).filter((id) => {
+      const ok = byId.has(id);
+      if (!ok) invalidCitationsRemoved += 1;
+      return ok;
+    });
+    return { ...finding, sourceIds: validIds, provenance: (validIds.length > 0 ? "source_backed" : "ai_inference") as "source_backed" | "ai_inference" };
+  });
+
+  const citedIds = new Set(checkedFindings.flatMap((f) => f.sourceIds));
+  const sources: ResearchSourceOutput[] = [...citedIds].map((id) => {
+    const s = byId.get(id)!;
+    return { sourceId: s.sourceId, url: s.url, sourceType: s.sourceType };
+  });
+
+  return { findings: checkedFindings, sources, invalidCitationsRemoved };
+}
+
 // FR-RES-004: "Duplicate detection runs before the research package is
 // marked complete" — this runs as this agent's own postProcessOutput
 // hook (packages/shared/src/agent-framework/agent-definition.ts), on the
 // already schema-validated provider output, before the executor ever
 // persists ai_jobs.output_payload or marks the job COMPLETED. Never an
 // LLM step, so it is deterministic and reproducible for the same input.
-function postProcessOutput(output: ResearchAgentOutput): ResearchAgentOutput {
+// Citation validation runs first so dedup operates on an already-honest
+// citation set, not on findings that might still reference bogus IDs.
+function postProcessOutput(output: ResearchAgentOutput, input: ResearchAgentInput): ResearchAgentOutput {
+  const { findings: citationCheckedFindings, sources: reconstructedSources, invalidCitationsRemoved } = validateCitations(output.findings, input.verifiedSources);
+
   try {
-    const { deduped: findings, duplicatesRemoved: duplicateFindingsRemoved } = deduplicateFindings(output.findings);
-    const { deduped: sources, duplicatesRemoved: duplicateSourcesRemoved } = deduplicateSources(output.sources);
+    const { deduped: findings, duplicatesRemoved: duplicateFindingsRemoved } = deduplicateFindings(citationCheckedFindings);
+    const { deduped: sources, duplicatesRemoved: duplicateSourcesRemoved } = deduplicateSources(reconstructedSources);
     return {
       ...output,
       findings,
       sources,
+      citationIntegrity: { invalidCitationsRemoved },
       deduplication: { duplicateFindingsRemoved, duplicateSourcesRemoved, requiresManualReview: false },
     };
   } catch {
     // FR-RES-004's own error condition, applied literally: a failure in
     // this deterministic pass must never fail an otherwise-successful
-    // research job — the un-deduplicated output is kept and flagged for
-    // manual review instead. Never surfaces the raw internal error.
+    // research job — the citation-checked-but-un-deduplicated output is
+    // kept and flagged for manual review instead. Never surfaces the raw
+    // internal error. Citation validation itself has already succeeded
+    // by this point (it ran outside the try), so its own result is never
+    // discarded even if dedup specifically fails.
     return {
       ...output,
+      findings: citationCheckedFindings,
+      sources: reconstructedSources,
+      citationIntegrity: { invalidCitationsRemoved },
       deduplication: { duplicateFindingsRemoved: 0, duplicateSourcesRemoved: 0, requiresManualReview: true, reviewReason: "Automated deduplication could not be completed — findings and sources were not deduplicated." },
     };
   }

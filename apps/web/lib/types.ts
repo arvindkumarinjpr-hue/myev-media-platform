@@ -106,13 +106,21 @@ export interface ProjectSummary {
 // exactly (a research-shaped wrapper over the generic AiJob read model).
 export type ResearchStatus = "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED" | "TIMED_OUT";
 
+// Module 4 Phase 4.3 (FR-RES-002) — sourceIds reference ResearchSource.sourceId,
+// never a raw URL (RESEARCH_AGENT_V1's own postProcessOutput hook
+// structurally rejects anything else). provenance distinguishes a
+// finding backed by a real, verified citation from the model's own
+// unsupported inference — not a claim that the specific fact is
+// independently fact-checked.
 export interface ResearchFinding {
   summary: string;
   evidence?: string;
-  sourceUrls: string[];
+  sourceIds: string[];
+  provenance?: "source_backed" | "ai_inference";
 }
 
 export interface ResearchSource {
+  sourceId?: string;
   url: string;
   sourceType: string;
   title?: string;
@@ -142,6 +150,12 @@ export interface ResearchDeduplicationSummary {
   reviewReason?: string;
 }
 
+// Module 4 Phase 4.3 (FR-RES-002) — always present once status ===
+// "COMPLETED", same as deduplication above.
+export interface ResearchCitationIntegritySummary {
+  invalidCitationsRemoved: number;
+}
+
 export interface ResearchResult {
   executiveSummary: string;
   findings: ResearchFinding[];
@@ -150,6 +164,7 @@ export interface ResearchResult {
   keywordOpportunities: KeywordOpportunity[];
   contentAngles: string[];
   deduplication?: ResearchDeduplicationSummary;
+  citationIntegrity?: ResearchCitationIntegritySummary;
 }
 
 export interface Research {
