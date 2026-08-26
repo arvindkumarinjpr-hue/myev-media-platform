@@ -1,0 +1,72 @@
+import { render, screen, waitFor } from "@testing-library/react";
+import { ResearchDetail } from "./ResearchDetail";
+import { mockResponse } from "../../lib/test-mock-response";
+import type { Research } from "../../lib/types";
+
+function research(overrides: Partial<Research> = {}): Research {
+  return {
+    publicId: "res-1",
+    topic: "EV battery swap stations",
+    status: "COMPLETED",
+    knowledgePackVersionId: "kp-1",
+    agentVersion: 1,
+    providerUsed: "openai",
+    modelUsed: "gpt-4o",
+    tokenUsage: null,
+    generationSettings: null,
+    result: null,
+    errorCode: null,
+    errorMessageSafe: null,
+    correlationId: "corr-1",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    startedAt: "2026-01-01T00:00:01.000Z",
+    completedAt: "2026-01-01T00:00:05.000Z",
+    ...overrides,
+  };
+}
+
+describe("ResearchDetail", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("shows a pending message while QUEUED", async () => {
+    jest.spyOn(global, "fetch").mockResolvedValue(mockResponse({ data: research({ status: "QUEUED", completedAt: null, startedAt: null }) }));
+    render(<ResearchDetail workspaceId="ws-1" researchId="res-1" />);
+
+    await waitFor(() => expect(screen.getByText("Queued")).toBeInTheDocument());
+    expect(screen.getByText(/will update automatically/i)).toBeInTheDocument();
+  });
+
+  it("renders every section of a completed result — never mixing raw provider payloads into the display", async () => {
+    const completed = research({
+      result: {
+        executiveSummary: "Battery swap pilots are expanding.",
+        findings: [{ summary: "Multiple pilots underway.", evidence: "Cited government source.", sourceUrls: ["https://reachable.example/gov"] }],
+        sources: [{ url: "https://reachable.example/gov", sourceType: "GOVERNMENT", title: "EV Infra Report" }],
+        trendSignals: [{ topic: "battery swap", direction: "rising", confidence: 70, evidence: "Pilot count increasing." }],
+        keywordOpportunities: [{ keyword: "ev battery swap", intent: "informational", opportunityScore: 62, rationale: "High relevance, low competitor coverage." }],
+        contentAngles: ["A city-by-city rollout comparison"],
+      },
+    });
+    jest.spyOn(global, "fetch").mockResolvedValue(mockResponse({ data: completed }));
+    render(<ResearchDetail workspaceId="ws-1" researchId="res-1" />);
+
+    await waitFor(() => expect(screen.getByText("Battery swap pilots are expanding.")).toBeInTheDocument());
+    expect(screen.getByText("Multiple pilots underway.")).toBeInTheDocument();
+    expect(screen.getByText("EV Infra Report")).toBeInTheDocument();
+    expect(screen.getByText("battery swap")).toBeInTheDocument();
+    expect(screen.getByText("ev battery swap")).toBeInTheDocument();
+    expect(screen.getByText("A city-by-city rollout comparison")).toBeInTheDocument();
+  });
+
+  it("shows only the safe error message for a failed research — never a raw provider payload", async () => {
+    jest.spyOn(global, "fetch").mockResolvedValue(
+      mockResponse({ data: research({ status: "FAILED", result: null, errorCode: "PROVIDER_ERROR", errorMessageSafe: "The AI provider was temporarily unavailable." }) }),
+    );
+    render(<ResearchDetail workspaceId="ws-1" researchId="res-1" />);
+
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+    expect(screen.getByText("The AI provider was temporarily unavailable.")).toBeInTheDocument();
+  });
+});

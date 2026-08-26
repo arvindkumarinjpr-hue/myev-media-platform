@@ -126,4 +126,20 @@ export class AiJobSubmissionService {
     }
     return job;
   }
+
+  /**
+   * Module 4 Phase 4.1 — a small, generic extension (Module 3's own
+   * single-item GET was the only read primitive before this): lists this
+   * workspace's own ai_jobs rows, optionally scoped to one agent
+   * identifier. Reusable by any future business module wanting its own
+   * "list my AI jobs" view (Research is the first caller, via
+   * ResearchService.list()) — not Research-specific logic itself.
+   */
+  async findMany(workspaceId: string, filters: { agentIdentifier?: string } = {}): Promise<(AiJob & { knowledgePack: { publicId: string } })[]> {
+    return this.prisma.aiJob.findMany({
+      where: { workspaceId, deletedAt: null, ...(filters.agentIdentifier ? { agentName: filters.agentIdentifier } : {}) },
+      include: { knowledgePack: { select: { publicId: true } } },
+      orderBy: { createdAt: "desc" },
+    });
+  }
 }

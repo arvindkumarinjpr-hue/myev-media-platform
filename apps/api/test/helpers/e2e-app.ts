@@ -1,5 +1,5 @@
 import { ValidationPipe, type INestApplication } from "@nestjs/common";
-import { Test } from "@nestjs/testing";
+import { Test, type TestingModuleBuilder } from "@nestjs/testing";
 import cookieParser from "cookie-parser";
 import Redis from "ioredis";
 import request from "supertest";
@@ -25,8 +25,16 @@ export interface E2eApp {
   redis: Redis;
 }
 
-export async function bootstrapE2eApp(): Promise<E2eApp> {
-  const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+// Module 4 Phase 4.1: `configureModule` is an optional escape hatch for a
+// suite that needs its own DI override (e.g. RESEARCH_SOURCE_PROVIDER
+// swapped for a deterministic Fake) — the identical overrideProvider
+// pattern apps/worker's own test files already use, applied here for the
+// first time on the apps/api side. Every existing caller passes nothing
+// and gets byte-identical behavior to before this parameter existed.
+export async function bootstrapE2eApp(configureModule?: (builder: TestingModuleBuilder) => TestingModuleBuilder): Promise<E2eApp> {
+  let builder = Test.createTestingModule({ imports: [AppModule] });
+  if (configureModule) builder = configureModule(builder);
+  const moduleRef = await builder.compile();
   const app = moduleRef.createNestApplication();
   app.use(cookieParser());
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
