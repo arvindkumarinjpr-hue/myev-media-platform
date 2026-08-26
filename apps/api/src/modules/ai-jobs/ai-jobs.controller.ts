@@ -35,6 +35,10 @@ function serialize(job: AiJob & { knowledgePack: { publicId: string } }) {
     modelUsed: job.modelUsed,
     tokenUsage: job.tokenUsage,
     costEstimate: job.costEstimate,
+    // Module 3 Phase 3.5 — the exact temperature/maxTokens/timeoutMs
+    // resolveAgentExecution() resolved for this execution, completing
+    // the existing provenance fields above.
+    generationSettings: job.generationSettings,
     outputPayload: job.outputPayload,
     errorCode: job.errorCode,
     errorMessageSafe: job.errorMessageSafe,

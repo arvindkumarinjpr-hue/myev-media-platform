@@ -160,4 +160,76 @@ describe("Worker (e2e) — ai.execute.v1 against a production-style provider reg
     expect(finished.providerUsed).toBe("openai");
     expect(finished.outputPayload).toEqual({ text: "production-style provider response" });
   }, 30_000);
+
+  it("Module 3 Phase 3.5: an agent whose required provider is not registered in a production-style registry terminates cleanly FAILED — never stuck RUNNING, and a redelivery does not report a false success", async () => {
+    const UNCONFIGURED_AGENT: AgentDefinition<ProdProviderTestInput, object> = {
+      identifier: "test-unconfigured-provider-agent",
+      version: 1,
+      purpose: "Test-only agent proving an unconfigured provider terminates the durable pipeline cleanly instead of leaving the AiJob stuck RUNNING.",
+      type: "test",
+      // "anthropic" is deliberately never registered in this test's own
+      // provider registry below — simulating a real production
+      // environment where ANTHROPIC_API_KEY is not set.
+      providerPreference: { provider: "anthropic", model: "claude-3-5-sonnet-20241022" },
+      inputSchema: ProdProviderTestInput,
+      buildPrompt: (input) => ({ prompt: input.message }),
+      timeoutMs: 5_000,
+      executionPolicy: { maxAttempts: 1 },
+    };
+
+    const agentRegistryBuilder = new AgentRegistryBuilder();
+    agentRegistryBuilder.register(UNCONFIGURED_AGENT);
+    const unconfiguredAgentRegistry = agentRegistryBuilder.freeze();
+    // Deliberately empty — this is the "no credentials configured" case.
+    const emptyProviderRegistry = new AIProviderRegistryBuilder().freeze();
+
+    const unconfiguredModuleRef = await Test.createTestingModule({ imports: [AppModule] })
+      .overrideProvider(AGENT_REGISTRY)
+      .useValue(unconfiguredAgentRegistry)
+      .overrideProvider(AI_PROVIDER_REGISTRY)
+      .useValue(emptyProviderRegistry)
+      .compile();
+    await unconfiguredModuleRef.init();
+    const unconfiguredProcessor = unconfiguredModuleRef.get(AiExecuteProcessor);
+
+    try {
+      const { userId, workspaceId } = await createTestWorkspace();
+      const knowledgePackId = await createActiveKnowledgePack(workspaceId, userId);
+      const job = await prisma.aiJob.create({
+        data: {
+          workspaceId,
+          agentName: UNCONFIGURED_AGENT.identifier,
+          agentVersion: UNCONFIGURED_AGENT.version,
+          triggeringModule: "worker-e2e-test",
+          knowledgePackId,
+          inputPayload: { message: "should never reach a provider call" },
+          status: "QUEUED",
+          correlationId: randomUUID(),
+          createdById: userId,
+        },
+      });
+      const backgroundJob = await createBackgroundJobRow();
+      const ctx = { jobId: backgroundJob.id, correlationId: job.correlationId, attempt: 1, isCancelled: async () => false };
+
+      await expect(unconfiguredProcessor.handle({ aiJobPublicId: job.publicId }, ctx)).rejects.toThrow();
+
+      const finished = await prisma.aiJob.findUniqueOrThrow({ where: { id: job.id } });
+      expect(finished.status).toBe("FAILED");
+      expect(finished.errorCode).toBe("PROVIDER_NOT_CONFIGURED");
+      // Never claimed into RUNNING at all — resolution happens before
+      // the atomic claim, per this phase's own fix.
+      expect(finished.backgroundJobId).toBeNull();
+
+      // A redelivered attempt against the same (already-terminal) AiJob
+      // must stay a safe no-op, exactly like every other terminal-state
+      // redelivery — not a second attempt at a resolution that will only
+      // ever fail the same way.
+      const redelivered = await unconfiguredProcessor.handle({ aiJobPublicId: job.publicId }, { ...ctx, attempt: 2 });
+      expect(redelivered.aiJobPublicId).toBe(job.publicId);
+      const stillFinished = await prisma.aiJob.findUniqueOrThrow({ where: { id: job.id } });
+      expect(stillFinished.status).toBe("FAILED");
+    } finally {
+      await unconfiguredModuleRef.close();
+    }
+  }, 30_000);
 });

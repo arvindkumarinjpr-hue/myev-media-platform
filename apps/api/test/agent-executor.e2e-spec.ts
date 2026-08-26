@@ -392,4 +392,29 @@ describe("AgentExecutorService (e2e)", () => {
     expect(entries).toHaveLength(0);
     await cleanupKnowledgePacks(ws);
   });
+
+  it("Module 3 Phase 3.5: an agent whose required provider is not registered terminates cleanly FAILED/PROVIDER_NOT_CONFIGURED — the ai_jobs row already exists by this point, so it must never be left stuck QUEUED/RUNNING", async () => {
+    const ws = await createWorkspace();
+    const packPublicId = await createActivePack(ws);
+
+    // An empty provider registry — TEST_ECHO_AGENT_V1's own "fake"
+    // provider preference is never registered, simulating a real
+    // production environment where the required provider's credentials
+    // aren't configured.
+    const agentBuilder = new AgentRegistryBuilder();
+    agentBuilder.register(TEST_ECHO_AGENT_V1);
+    const agentRegistry = agentBuilder.freeze();
+    const providerRegistry = new AIProviderRegistryBuilder().freeze();
+    const executor = new AgentExecutorService(agentRegistry, providerRegistry, knowledgePacks, ctx.prisma, audit);
+
+    const result = await executor.execute(baseRequest({ workspaceId: ws.id, knowledgePackVersionId: packPublicId }), "test-harness");
+
+    expect(result.status).toBe("FAILED");
+    expect(result.failure?.code).toBe("PROVIDER_NOT_CONFIGURED");
+
+    const job = await ctx.prisma.aiJob.findFirstOrThrow({ where: { workspaceId: ws.id } });
+    expect(job.status).toBe("FAILED");
+    expect(job.errorCode).toBe("PROVIDER_NOT_CONFIGURED");
+    await cleanupKnowledgePacks(ws);
+  });
 });

@@ -1,4 +1,5 @@
 import type { ClassConstructor } from "class-transformer";
+import type { GenerationDefaults } from "../ai-provider/model-config";
 import type { AgentContext } from "./agent-context";
 
 /**
@@ -67,13 +68,24 @@ export interface AgentDefinition<TInput extends object = object, TOutput extends
   readonly timeoutMs: number;
 
   /**
-   * Describes this agent's retry posture for a FUTURE durable-dispatch
-   * caller (Module 1F's Queue Engine) — this phase's own AgentExecutor
-   * never retries internally (ADR-005: retry belongs to the async job
-   * layer, not the executor), so these numbers are inert metadata here,
-   * carried through for whenever real durable dispatch is designed.
+   * `maxAttempts` describes this agent's retry posture for the durable
+   * dispatch caller (Module 1F's Queue Engine) — still inert metadata
+   * here: the durable AI execution job type's own manifest-level
+   * `defaultRetryPolicy.maxAttempts` (packages/shared/src/queue/jobs/
+   * ai-execute.ts) is what actually governs attempt counting today (one
+   * job type, one retry policy, per Module 1F's own architecture) —
+   * carried through unused for whenever per-agent retry tuning is
+   * designed, same status as before Phase 3.3 landed durable dispatch.
+   *
+   * `generationDefaults` (Module 3 Phase 3.5) — this agent's own
+   * preferred temperature/maxTokens/timeoutMs, resolved by
+   * resolveAgentExecution() and passed through as the AIRequest's own
+   * explicit values, so it wins over whatever the resolved provider's
+   * OWN configured ModelConfig.defaults are (Phase 3.1's own
+   * resolveGenerationSettings, inside each adapter) — never forced: an
+   * unset field here still falls through to the provider's own default.
    */
-  readonly executionPolicy: { maxAttempts: number };
+  readonly executionPolicy: { maxAttempts: number; generationDefaults?: GenerationDefaults };
 
   readonly metadata?: Record<string, unknown>;
 }
