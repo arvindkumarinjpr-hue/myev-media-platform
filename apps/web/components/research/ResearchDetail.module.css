@@ -1,0 +1,149 @@
+.header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.pending {
+  color: #92400e;
+  background: #fef3c7;
+  padding: 0.75rem 1rem;
+  border-radius: 0.375rem;
+}
+
+.sections {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.section {
+  background: white;
+  padding: 1.25rem 1.5rem;
+  border-radius: 0.5rem;
+}
+
+.section h2 {
+  font-size: 1rem;
+  margin: 0 0 0.6rem;
+  color: #111827;
+}
+
+.findingsList,
+.sourcesList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.findingsList li {
+  border-bottom: 1px solid #f3f4f6;
+  padding-bottom: 0.75rem;
+}
+
+.findingsList li:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.evidence {
+  color: #6b7280;
+  font-size: 0.875rem;
+  margin: 0.25rem 0;
+}
+
+.citations {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.25rem 0 0;
+}
+
+.citationLink {
+  font-size: 0.8rem;
+  color: #1d4ed8;
+}
+
+.sourcesList li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.sourceType {
+  font-size: 0.75rem;
+  color: #6b7280;
+  text-transform: uppercase;
+}
+
+.emptyNote {
+  color: #9ca3af;
+  font-size: 0.9rem;
+}
+
+.trendList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.trendList li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.direction {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+}
+
+.rising {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.steady {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.declining {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.confidence {
+  font-size: 0.8rem;
+  color: #6b7280;
+}
+
+.keywordTable {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.keywordTable th {
+  text-align: left;
+  font-size: 0.8rem;
+  color: #6b7280;
+  padding: 0.5rem;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.keywordTable td {
+  padding: 0.5rem;
+  border-bottom: 1px solid #f3f4f6;
+  font-size: 0.9rem;
+}

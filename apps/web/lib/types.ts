@@ -101,3 +101,64 @@ export interface ProjectSummary {
   status: string;
   knowledgePackPublicId: string | null;
 }
+
+// Module 4 Phase 4.1 — mirrors ResearchController's own serialize() shape
+// exactly (a research-shaped wrapper over the generic AiJob read model).
+export type ResearchStatus = "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED" | "TIMED_OUT";
+
+export interface ResearchFinding {
+  summary: string;
+  evidence?: string;
+  sourceUrls: string[];
+}
+
+export interface ResearchSource {
+  url: string;
+  sourceType: string;
+  title?: string;
+}
+
+export interface TrendSignal {
+  topic: string;
+  direction: "rising" | "steady" | "declining";
+  confidence: number;
+  evidence: string;
+}
+
+export interface KeywordOpportunity {
+  keyword: string;
+  intent: "informational" | "transactional" | "navigational" | "unknown";
+  opportunityScore: number;
+  rationale: string;
+}
+
+export interface ResearchResult {
+  executiveSummary: string;
+  findings: ResearchFinding[];
+  sources: ResearchSource[];
+  trendSignals: TrendSignal[];
+  keywordOpportunities: KeywordOpportunity[];
+  contentAngles: string[];
+}
+
+export interface Research {
+  publicId: string;
+  topic: string | null;
+  status: ResearchStatus;
+  knowledgePackVersionId: string;
+  agentVersion: number;
+  providerUsed: string | null;
+  modelUsed: string | null;
+  tokenUsage: Record<string, unknown> | null;
+  generationSettings: Record<string, unknown> | null;
+  // Present (and schema-valid) only once status === "COMPLETED" — Module
+  // 3's own structured-output guarantee (Phase 3.1's parseStructuredOutput)
+  // means this is never a partially-valid or raw-text blob.
+  result: ResearchResult | null;
+  errorCode: string | null;
+  errorMessageSafe: string | null;
+  correlationId: string;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+}

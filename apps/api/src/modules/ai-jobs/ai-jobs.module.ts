@@ -19,5 +19,11 @@ import { AiJobsController } from "./ai-jobs.controller";
   imports: [AuthModule, AgentRegistryModule, KnowledgePacksModule, BackgroundJobsModule, AuditModule],
   controllers: [AiJobsController],
   providers: [AiJobSubmissionService],
+  // Module 4 Phase 4.1: ResearchModule reuses this generic durable
+  // submission/read service directly rather than building a second one
+  // (AiJobSubmissionService's own doc comment — "every future
+  // content-generation endpoint is meant to become a thin wrapper
+  // around this one primitive").
+  exports: [AiJobSubmissionService],
 })
 export class AiJobsModule {}
