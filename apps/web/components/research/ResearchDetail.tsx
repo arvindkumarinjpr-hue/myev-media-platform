@@ -88,6 +88,17 @@ export function ResearchDetail({ workspaceId, researchId }: { workspaceId: strin
             </section>
           )}
 
+          {research.result.deduplication?.requiresManualReview && (
+            <p className={styles.dedupWarning} role="status">
+              Automated duplicate detection could not be completed for this research — findings and sources below may include duplicates. Please review manually.
+            </p>
+          )}
+          {research.result.deduplication && !research.result.deduplication.requiresManualReview && (research.result.deduplication.duplicateFindingsRemoved > 0 || research.result.deduplication.duplicateSourcesRemoved > 0) && (
+            <p className={styles.dedupNote}>
+              {research.result.deduplication.duplicateFindingsRemoved} duplicate finding(s) and {research.result.deduplication.duplicateSourcesRemoved} duplicate source(s) were automatically removed.
+            </p>
+          )}
+
           <section className={styles.section}>
             <h2>Sources &amp; Evidence</h2>
             {research.result.sources.length > 0 ? (

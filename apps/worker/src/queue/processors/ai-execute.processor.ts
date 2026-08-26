@@ -8,6 +8,7 @@ import {
   PermanentProcessorError,
   resolveAgentExecution,
   type AgentContext,
+  type AgentDefinition,
   type AgentRegistry,
   type AIProviderRegistry,
   type AIRequest,
@@ -194,12 +195,14 @@ export class AiExecuteProcessor {
       const response = await provider.execute(aiRequest, controller.signal);
       clearTimeout(timeout);
 
+      const finalOutput = this.applyPostProcessing(definition, job.publicId, response.output);
+
       await this.recordStep(job.id, "provider_execution", "COMPLETED");
       await this.prisma.aiJob.update({
         where: { id: job.id },
         data: {
           status: "COMPLETED",
-          outputPayload: (typeof response.output === "string" ? { text: response.output } : response.output) as Prisma.InputJsonValue,
+          outputPayload: (typeof finalOutput === "string" ? { text: finalOutput } : finalOutput) as Prisma.InputJsonValue,
           providerUsed: response.provider,
           modelUsed: response.model,
           tokenUsage: response.usage as unknown as Prisma.InputJsonValue,
@@ -253,6 +256,26 @@ export class AiExecuteProcessor {
       throw new PermanentProcessorError(providerError.code, providerError.messageSafe);
     }
   };
+
+  /**
+   * Module 4 Phase 4.2 — invokes AgentDefinition.postProcessOutput when
+   * defined, on a successful response's output only. A hook that throws
+   * never fails the job (FR-RES-004's own "deduplication failure does
+   * not block the job" generalized to any future post-processing hook):
+   * the AI generation itself already succeeded, so the unprocessed
+   * output is persisted instead.
+   */
+  private applyPostProcessing(definition: AgentDefinition, aiJobPublicId: string, output: string | Record<string, unknown>): string | Record<string, unknown> {
+    if (!definition.postProcessOutput || typeof output !== "object") {
+      return output;
+    }
+    try {
+      return definition.postProcessOutput(output) as Record<string, unknown>;
+    } catch (err) {
+      this.logger.warn({ aiJobId: aiJobPublicId, agentIdentifier: definition.identifier, err: err instanceof Error ? err.message : String(err) }, "ai.execute.v1: postProcessOutput failed — persisting unprocessed output");
+      return output;
+    }
+  }
 
   /** `generationSettings` is omitted for a definition/resolution-level failure (unknown agent, unconfigured provider, missing Knowledge Pack) — no provider call was ever attempted, so there is nothing resolved to record. */
   private async terminal(aiJobId: string, status: AiJobStatus, errorCode: string, errorMessageSafe: string, generationSettings?: GenerationDefaults): Promise<void> {

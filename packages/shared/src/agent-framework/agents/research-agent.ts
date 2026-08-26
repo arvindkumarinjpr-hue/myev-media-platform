@@ -1,6 +1,6 @@
 import "reflect-metadata";
 import { Type } from "class-transformer";
-import { IsArray, IsIn, IsInt, IsOptional, IsString, Max, Min, ValidateNested } from "class-validator";
+import { IsArray, IsBoolean, IsIn, IsInt, IsOptional, IsString, Max, Min, ValidateNested } from "class-validator";
 import type { AgentContext } from "../agent-context";
 import type { AgentDefinition } from "../agent-definition";
 
@@ -127,6 +127,32 @@ export class KeywordOpportunity {
   rationale!: string;
 }
 
+// FR-RES-004 — Research Dataset Deduplication. Populated only by this
+// agent's own postProcessOutput hook (below), never by the provider —
+// the raw LLM response never includes this field, hence @IsOptional()
+// here even though postProcessOutput always fills it in before the
+// output is ever persisted.
+export class ResearchDeduplicationSummary {
+  @IsInt()
+  @Min(0)
+  duplicateFindingsRemoved!: number;
+
+  @IsInt()
+  @Min(0)
+  duplicateSourcesRemoved!: number;
+
+  // FR-RES-004's own error condition: "Deduplication failure does not
+  // block the job but flags the dataset for manual review." True only
+  // when the deterministic dedup pass itself threw — never a comment on
+  // the research content's own quality.
+  @IsBoolean()
+  requiresManualReview!: boolean;
+
+  @IsOptional()
+  @IsString()
+  reviewReason?: string;
+}
+
 export class ResearchAgentOutput {
   @IsString()
   executiveSummary!: string;
@@ -157,6 +183,11 @@ export class ResearchAgentOutput {
   @IsArray()
   @IsString({ each: true })
   contentAngles!: string[];
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ResearchDeduplicationSummary)
+  deduplication?: ResearchDeduplicationSummary;
 }
 
 function buildPrompt(input: ResearchAgentInput, context: AgentContext): { prompt: string; systemInstructions: string } {
@@ -194,6 +225,98 @@ function buildPrompt(input: ResearchAgentInput, context: AgentContext): { prompt
   return { prompt, systemInstructions };
 }
 
+// FR-RES-004 — near-duplicate detection over free text. Deliberately a
+// deterministic, explainable token-overlap check (Jaccard similarity on
+// normalized word sets) rather than a second LLM call: the FRD's own
+// error condition ("deduplication failure does not block the job") only
+// makes sense for a step with its own independent, non-AI failure mode,
+// and a model-only pass would offer no verifiable guarantee at all.
+const DUPLICATE_FINDING_SIMILARITY_THRESHOLD = 0.8;
+
+function normalizeForComparison(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^\w\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function jaccardSimilarity(a: string, b: string): number {
+  const setA = new Set(normalizeForComparison(a).split(" ").filter(Boolean));
+  const setB = new Set(normalizeForComparison(b).split(" ").filter(Boolean));
+  if (setA.size === 0 || setB.size === 0) {
+    return 0;
+  }
+  let intersection = 0;
+  for (const token of setA) {
+    if (setB.has(token)) {
+      intersection += 1;
+    }
+  }
+  const union = setA.size + setB.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
+function deduplicateFindings(findings: ResearchFinding[]): { deduped: ResearchFinding[]; duplicatesRemoved: number } {
+  const kept: ResearchFinding[] = [];
+  let duplicatesRemoved = 0;
+  for (const finding of findings) {
+    const isDuplicate = kept.some((k) => jaccardSimilarity(k.summary, finding.summary) >= DUPLICATE_FINDING_SIMILARITY_THRESHOLD);
+    if (isDuplicate) {
+      duplicatesRemoved += 1;
+    } else {
+      kept.push(finding);
+    }
+  }
+  return { deduped: kept, duplicatesRemoved };
+}
+
+// Sources are deduplicated on exact URL match (a source is either the
+// same trusted-source URL or it isn't — no fuzzy matching needed, unlike
+// findings' free-text summaries).
+function deduplicateSources(sources: ResearchSourceOutput[]): { deduped: ResearchSourceOutput[]; duplicatesRemoved: number } {
+  const seen = new Set<string>();
+  const deduped: ResearchSourceOutput[] = [];
+  let duplicatesRemoved = 0;
+  for (const source of sources) {
+    if (seen.has(source.url)) {
+      duplicatesRemoved += 1;
+    } else {
+      seen.add(source.url);
+      deduped.push(source);
+    }
+  }
+  return { deduped, duplicatesRemoved };
+}
+
+// FR-RES-004: "Duplicate detection runs before the research package is
+// marked complete" — this runs as this agent's own postProcessOutput
+// hook (packages/shared/src/agent-framework/agent-definition.ts), on the
+// already schema-validated provider output, before the executor ever
+// persists ai_jobs.output_payload or marks the job COMPLETED. Never an
+// LLM step, so it is deterministic and reproducible for the same input.
+function postProcessOutput(output: ResearchAgentOutput): ResearchAgentOutput {
+  try {
+    const { deduped: findings, duplicatesRemoved: duplicateFindingsRemoved } = deduplicateFindings(output.findings);
+    const { deduped: sources, duplicatesRemoved: duplicateSourcesRemoved } = deduplicateSources(output.sources);
+    return {
+      ...output,
+      findings,
+      sources,
+      deduplication: { duplicateFindingsRemoved, duplicateSourcesRemoved, requiresManualReview: false },
+    };
+  } catch {
+    // FR-RES-004's own error condition, applied literally: a failure in
+    // this deterministic pass must never fail an otherwise-successful
+    // research job — the un-deduplicated output is kept and flagged for
+    // manual review instead. Never surfaces the raw internal error.
+    return {
+      ...output,
+      deduplication: { duplicateFindingsRemoved: 0, duplicateSourcesRemoved: 0, requiresManualReview: true, reviewReason: "Automated deduplication could not be completed — findings and sources were not deduplicated." },
+    };
+  }
+}
+
 export const RESEARCH_AGENT_V1: AgentDefinition<ResearchAgentInput, ResearchAgentOutput> = {
   identifier: "research-agent",
   version: 1,
@@ -204,6 +327,7 @@ export const RESEARCH_AGENT_V1: AgentDefinition<ResearchAgentInput, ResearchAgen
   inputSchema: ResearchAgentInput,
   outputSchema: ResearchAgentOutput,
   buildPrompt,
+  postProcessOutput,
   // Research synthesizes across multiple sources and a larger structured
   // output than the 5s test agents ever needed — generous relative to
   // those, but MUST stay under the durable ai.execute.v1 job manifest's

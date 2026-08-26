@@ -69,6 +69,26 @@ export const TEST_PERMANENT_FAIL_AGENT_V1: AgentDefinition<TestEchoAgentInput, o
   executionPolicy: { maxAttempts: 3 },
 };
 
+/**
+ * Module 4 Phase 4.2 — proves AgentDefinition.postProcessOutput fires
+ * generically (both apps/api's AgentExecutorService and apps/worker's
+ * AiExecuteProcessor), independent of Research's own FR-RES-004 dedup
+ * logic. Deterministic, trivial transformation only.
+ */
+export const TEST_POST_PROCESS_AGENT_V1: AgentDefinition<TestEchoAgentInput, TestEchoAgentOutput> = {
+  identifier: "test-post-process-agent",
+  version: 1,
+  purpose: "Deterministic test-only agent proving the generic postProcessOutput hook is invoked and its result persisted.",
+  type: "test",
+  providerPreference: { provider: "fake", model: "fake-model-1" },
+  inputSchema: TestEchoAgentInput,
+  outputSchema: TestEchoAgentOutput,
+  buildPrompt: (input) => ({ prompt: input.message }),
+  postProcessOutput: (output) => ({ echo: `${output.echo} [processed]` }),
+  timeoutMs: 5_000,
+  executionPolicy: { maxAttempts: 1 },
+};
+
 export const TEST_TIMEOUT_AGENT_V1: AgentDefinition<TestEchoAgentInput, object> = {
   identifier: "test-timeout-agent",
   version: 1,

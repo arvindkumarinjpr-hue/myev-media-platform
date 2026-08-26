@@ -4,6 +4,7 @@ import {
   AIProviderRegistryBuilder,
   FakeProvider,
   TEST_ECHO_AGENT_V1,
+  TEST_POST_PROCESS_AGENT_V1,
   type AgentExecutionRequest,
   type AgentRegistry,
   type AIProviderRegistry,
@@ -123,6 +124,19 @@ describe("AgentExecutorService (e2e)", () => {
     return { executor, agentRegistry, providerRegistry };
   }
 
+  function executorWithPostProcessAgent(structuredPayload: Record<string, unknown>): { executor: AgentExecutorService } {
+    const agentBuilder = new AgentRegistryBuilder();
+    agentBuilder.register(TEST_POST_PROCESS_AGENT_V1);
+    const agentRegistry = agentBuilder.freeze();
+
+    const providerBuilder = new AIProviderRegistryBuilder();
+    providerBuilder.register(new FakeProvider("structured_success", structuredPayload));
+    const providerRegistry = providerBuilder.freeze();
+
+    const executor = new AgentExecutorService(agentRegistry, providerRegistry, knowledgePacks, ctx.prisma, audit);
+    return { executor };
+  }
+
   function baseRequest(overrides: Partial<AgentExecutionRequest> = {}): AgentExecutionRequest {
     return {
       agentIdentifier: "test-echo-agent",
@@ -156,6 +170,21 @@ describe("AgentExecutorService (e2e)", () => {
     const result = await executor.execute(baseRequest({ workspaceId: ws.id, knowledgePackVersionId: packPublicId }), "test-harness");
 
     expect(result.tokenUsage).toEqual({ tokensIn: 10, tokensOut: 20, tokensTotal: 30 });
+    await cleanupKnowledgePacks(ws);
+  });
+
+  it("Module 4 Phase 4.2: invokes AgentDefinition.postProcessOutput when defined, and persists the transformed (not raw) output", async () => {
+    const ws = await createWorkspace();
+    const packPublicId = await createActivePack(ws);
+    const { executor } = executorWithPostProcessAgent({ echo: "raw provider output" });
+
+    const result = await executor.execute(baseRequest({ agentIdentifier: "test-post-process-agent", workspaceId: ws.id, knowledgePackVersionId: packPublicId }), "test-harness");
+
+    expect(result.status).toBe("COMPLETED");
+    expect(result.output).toEqual({ echo: "raw provider output [processed]" });
+
+    const job = await ctx.prisma.aiJob.findFirstOrThrow({ where: { workspaceId: ws.id, agentName: "test-post-process-agent" } });
+    expect(job.outputPayload).toEqual({ echo: "raw provider output [processed]" });
     await cleanupKnowledgePacks(ws);
   });
 

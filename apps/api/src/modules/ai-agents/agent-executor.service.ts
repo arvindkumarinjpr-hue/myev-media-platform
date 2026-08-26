@@ -1,4 +1,4 @@
-import { Inject, Injectable } from "@nestjs/common";
+import { Inject, Injectable, Logger } from "@nestjs/common";
 import {
   AIProviderError,
   AIProviderErrorCode,
@@ -6,6 +6,7 @@ import {
   AgentExecutionResolutionError,
   AgentRegistryValidationError,
   resolveAgentExecution,
+  type AgentDefinition,
   type AgentExecutionRequest,
   type AgentExecutionResult,
   type AgentRegistry,
@@ -47,6 +48,8 @@ import { AI_PROVIDER_REGISTRY } from "./ai-provider-registry.module";
  */
 @Injectable()
 export class AgentExecutorService {
+  private readonly logger = new Logger(AgentExecutorService.name);
+
   constructor(
     @Inject(AGENT_REGISTRY) private readonly agentRegistry: AgentRegistry,
     @Inject(AI_PROVIDER_REGISTRY) private readonly providerRegistry: AIProviderRegistry,
@@ -208,12 +211,14 @@ export class AgentExecutorService {
       const response = await provider.execute(aiRequest, controller.signal);
       clearTimeout(timeout);
 
+      const finalOutput = this.applyPostProcessing(definition as AgentDefinition, job.publicId, response.output);
+
       await this.recordStep(job.id, "provider_execution", "COMPLETED");
       await this.prisma.aiJob.update({
         where: { id: job.id },
         data: {
           status: "COMPLETED",
-          outputPayload: (typeof response.output === "string" ? { text: response.output } : response.output) as Prisma.InputJsonValue,
+          outputPayload: (typeof finalOutput === "string" ? { text: finalOutput } : finalOutput) as Prisma.InputJsonValue,
           providerUsed: response.provider,
           modelUsed: response.model,
           tokenUsage: response.usage as unknown as Prisma.InputJsonValue,
@@ -224,7 +229,7 @@ export class AgentExecutorService {
 
       return {
         status: "COMPLETED",
-        output: response.output,
+        output: finalOutput,
         providerUsed: response.provider,
         modelUsed: response.model,
         tokenUsage: response.usage,
@@ -289,6 +294,26 @@ export class AgentExecutorService {
       agentVersionUsed: agentVersion,
       correlationId: request.correlationId,
     };
+  }
+
+  /**
+   * Module 4 Phase 4.2 — invokes AgentDefinition.postProcessOutput when
+   * defined, on a successful response's output only. A hook that throws
+   * never fails the job (FR-RES-004's own "deduplication failure does
+   * not block the job" generalized to any future post-processing hook):
+   * the AI generation itself already succeeded, so the unprocessed
+   * output is persisted instead.
+   */
+  private applyPostProcessing(definition: AgentDefinition, aiJobPublicId: string, output: string | Record<string, unknown>): string | Record<string, unknown> {
+    if (!definition.postProcessOutput || typeof output !== "object") {
+      return output;
+    }
+    try {
+      return definition.postProcessOutput(output) as Record<string, unknown>;
+    } catch (err) {
+      this.logger.warn(`postProcessOutput failed for aiJob ${aiJobPublicId} (${definition.identifier}), persisting unprocessed output: ${err instanceof Error ? err.message : "unknown error"}`);
+      return output;
+    }
   }
 
   private async recordStep(aiJobId: string, stepName: string, stepStatus: AiJobStatus): Promise<void> {
