@@ -192,6 +192,63 @@ describe("AI Jobs API — durable submission (e2e)", () => {
     await cleanup(ws);
   });
 
+  it("Module 3 Phase 3.6: full generic AI runtime journey — real HTTP submission through real Worker execution to a terminal, provenance-complete GET response", async () => {
+    const ws = await createWorkspace();
+    const packPublicId = await createActivePack(ws);
+    const correlationId = randomUUID();
+
+    const created = await request(ctx.app.getHttpServer())
+      .post(`/api/v1/workspaces/${ws.publicId}/ai/jobs`)
+      .set("Authorization", `Bearer ${ownerAccessToken}`)
+      .set("X-Workspace-Id", ws.publicId)
+      .set("X-Request-Id", correlationId)
+      .send({ agentIdentifier: "test-echo-agent", knowledgePackVersionId: packPublicId, input: { message: "prove the full journey" } })
+      .expect(202);
+    expect(created.body.data.status).toBe("QUEUED");
+
+    // Poll the real HTTP GET endpoint — not Prisma directly — until the
+    // already-running real Worker (started as its own process, exactly
+    // as CI/production do) drives this job to a terminal state. Proves
+    // the entire chain end to end: API submission -> durable AiJob ->
+    // BackgroundJob enqueued -> Worker picks it up -> exact Agent
+    // version/Knowledge Pack version resolved -> execution policy
+    // resolved -> provider/model selected via resolveAgentExecution ->
+    // provider executes -> structured output validated -> usage/
+    // generation-settings provenance persisted -> terminal state ->
+    // safe API read returns the complete result.
+    const deadline = Date.now() + 10_000;
+    let final: { status: string; [key: string]: unknown } | undefined;
+    while (Date.now() < deadline) {
+      const res = await request(ctx.app.getHttpServer())
+        .get(`/api/v1/workspaces/${ws.publicId}/ai/jobs/${created.body.data.publicId}`)
+        .set("Authorization", `Bearer ${ownerAccessToken}`)
+        .set("X-Workspace-Id", ws.publicId)
+        .expect(200);
+      if (res.body.data.status !== "QUEUED" && res.body.data.status !== "RUNNING") {
+        final = res.body.data;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+
+    expect(final).toBeDefined();
+    expect(final!.status).toBe("COMPLETED");
+    expect(final!.agentIdentifier).toBe("test-echo-agent");
+    expect(final!.agentVersion).toBe(1);
+    expect(final!.knowledgePackVersionId).toBe(packPublicId);
+    expect(final!.providerUsed).toBe("fake");
+    expect(final!.modelUsed).toBe("fake-model-1");
+    expect(final!.tokenUsage).toMatchObject({ tokensIn: expect.any(Number), tokensOut: expect.any(Number) });
+    expect(final!.generationSettings).toEqual({});
+    expect(final!.outputPayload).toBeTruthy();
+    expect(final!.correlationId).toBe(correlationId);
+    expect(final!.startedAt).toBeTruthy();
+    expect(final!.completedAt).toBeTruthy();
+    expect(final!.errorCode).toBeNull();
+
+    await cleanup(ws);
+  });
+
   it("rejects an unknown agent identifier — 404, no ai_jobs row created", async () => {
     const ws = await createWorkspace();
     const packPublicId = await createActivePack(ws);
