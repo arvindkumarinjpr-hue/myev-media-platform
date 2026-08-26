@@ -19,6 +19,14 @@ export enum AgentExecutionErrorCode {
   INPUT_VALIDATION_FAILED = "INPUT_VALIDATION_FAILED",
   PROVIDER_ERROR = "PROVIDER_ERROR",
   TIMED_OUT = "TIMED_OUT",
+  // Module 3 Phase 3.5 — distinct from PROVIDER_ERROR (an attempted call
+  // that failed): this agent's own providerPreference names a provider
+  // id the current process's AIProviderRegistry never registered (e.g.
+  // its credentials aren't configured in this environment). A resolver
+  // boundary fix — previously an unconfigured provider threw an
+  // unhandled exception past the point an ai_jobs row already existed,
+  // leaving it stuck RUNNING forever (see AgentExecutionResolutionError).
+  PROVIDER_NOT_CONFIGURED = "PROVIDER_NOT_CONFIGURED",
 }
 
 /**

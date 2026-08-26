@@ -177,6 +177,9 @@ describe("AI Jobs API — durable submission (e2e)", () => {
         "modelUsed",
         "tokenUsage",
         "costEstimate",
+        // Module 3 Phase 3.5 — the exact generation settings
+        // resolveAgentExecution() resolved for this execution.
+        "generationSettings",
         "outputPayload",
         "errorCode",
         "errorMessageSafe",

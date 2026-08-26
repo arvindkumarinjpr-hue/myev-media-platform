@@ -4,13 +4,16 @@ import {
   AIProviderError,
   AIProviderErrorCode,
   AI_EXECUTE_V1_MANIFEST,
+  AgentExecutionResolutionError,
   PermanentProcessorError,
+  resolveAgentExecution,
   type AgentContext,
   type AgentRegistry,
   type AIProviderRegistry,
   type AIRequest,
   type AiExecuteV1Payload,
   type AiExecuteV1Result,
+  type GenerationDefaults,
   type ProcessorContext,
   type ProcessorHandler,
 } from "@myev/shared";
@@ -86,6 +89,27 @@ export class AiExecuteProcessor {
       throw new PermanentProcessorError("AI_AGENT_NOT_FOUND", "No agent is registered under the given identifier/version.");
     }
 
+    // Module 3 Phase 3.5 — resolve provider/model/generation-settings
+    // BEFORE the atomic RUNNING claim below, deliberately: this only
+    // needs `definition` (no DB access), same as the agent-lookup check
+    // above it, and an unconfigured provider is a permanent, definition-
+    // level condition — never worth claiming into RUNNING first. Closes
+    // a real bug: previously `providerRegistry.resolve()` ran unguarded
+    // AFTER the atomic claim, so an unconfigured provider threw
+    // uncaught, leaving the row stuck RUNNING forever (the next
+    // redelivery's own claim step sees `status !== "QUEUED"` and
+    // silently no-ops, reporting false BullMQ success).
+    let resolved;
+    try {
+      resolved = resolveAgentExecution(definition, this.providerRegistry);
+    } catch (err) {
+      if (err instanceof AgentExecutionResolutionError) {
+        await this.terminal(job.id, "FAILED", err.failure.code, err.failure.messageSafe);
+        throw new PermanentProcessorError(err.failure.code, err.failure.messageSafe);
+      }
+      throw err;
+    }
+
     // Atomic, fenced pickup: only proceed if this row is still QUEUED.
     // Guards against two overlapping executions of the identical AiJob
     // (a concurrent redelivery racing a still-in-flight attempt) — the
@@ -136,7 +160,7 @@ export class AiExecuteProcessor {
       competitors: pack.competitors.map((c) => ({ domain: c.domain, notes: c.notes })),
     };
 
-    const provider = this.providerRegistry.resolve(definition.providerPreference.provider);
+    const provider = resolved.provider;
     // Input was already class-validator-validated once, at submission
     // time (AiJobSubmissionService), before this row was ever created —
     // transform only here, not re-validate a value this process itself
@@ -153,7 +177,14 @@ export class AiExecuteProcessor {
       systemInstructions,
       knowledgePackReference: aiContext.knowledgePackVersionId,
       ...(definition.outputSchema ? { outputFormat: "json" as const, structuredOutputSchema: definition.outputSchema } : {}),
-      timeoutMs: definition.timeoutMs,
+      // Explicit values here win over the resolved provider's own
+      // configured ModelConfig.defaults (Phase 3.1's own
+      // resolveGenerationSettings, applied inside each adapter) — an
+      // unset field stays unset, so a provider's own default still
+      // applies when this agent declares no preference.
+      temperature: resolved.generationSettings.temperature,
+      maxTokens: resolved.generationSettings.maxTokens,
+      timeoutMs: resolved.generationSettings.timeoutMs ?? definition.timeoutMs,
       correlationId: context.correlationId,
     };
 
@@ -172,6 +203,7 @@ export class AiExecuteProcessor {
           providerUsed: response.provider,
           modelUsed: response.model,
           tokenUsage: response.usage as unknown as Prisma.InputJsonValue,
+          generationSettings: resolved.generationSettings as Prisma.InputJsonValue,
           completedAt: new Date(),
         },
       });
@@ -217,15 +249,16 @@ export class AiExecuteProcessor {
 
       const terminalStatus: AiJobStatus = providerError.code === AIProviderErrorCode.TIMEOUT ? "TIMED_OUT" : "FAILED";
       await this.recordStep(job.id, "provider_execution", terminalStatus);
-      await this.terminal(job.id, terminalStatus, providerError.code, providerError.messageSafe);
+      await this.terminal(job.id, terminalStatus, providerError.code, providerError.messageSafe, resolved.generationSettings);
       throw new PermanentProcessorError(providerError.code, providerError.messageSafe);
     }
   };
 
-  private async terminal(aiJobId: string, status: AiJobStatus, errorCode: string, errorMessageSafe: string): Promise<void> {
+  /** `generationSettings` is omitted for a definition/resolution-level failure (unknown agent, unconfigured provider, missing Knowledge Pack) — no provider call was ever attempted, so there is nothing resolved to record. */
+  private async terminal(aiJobId: string, status: AiJobStatus, errorCode: string, errorMessageSafe: string, generationSettings?: GenerationDefaults): Promise<void> {
     await this.prisma.aiJob.update({
       where: { id: aiJobId },
-      data: { status, errorCode, errorMessageSafe, completedAt: new Date() },
+      data: { status, errorCode, errorMessageSafe, completedAt: new Date(), ...(generationSettings ? { generationSettings: generationSettings as Prisma.InputJsonValue } : {}) },
     });
   }
 

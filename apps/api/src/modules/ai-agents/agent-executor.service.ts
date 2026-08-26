@@ -3,7 +3,9 @@ import {
   AIProviderError,
   AIProviderErrorCode,
   AgentExecutionErrorCode,
+  AgentExecutionResolutionError,
   AgentRegistryValidationError,
+  resolveAgentExecution,
   type AgentExecutionRequest,
   type AgentExecutionResult,
   type AgentRegistry,
@@ -146,8 +148,34 @@ export class AgentExecutorService {
     // Knowledge Pack Prisma entity is touched (Part 6).
     const context = buildAgentContext(pack);
 
-    // 6. Resolve provider through the Phase 3.1 registry.
-    const provider = this.providerRegistry.resolve(definition.providerPreference.provider);
+    // 6. Resolve provider + model + generation settings through the
+    // Phase 3.5 resolver (packages/shared) — the ai_jobs row already
+    // exists at this point, so an unconfigured provider must terminate
+    // it cleanly rather than throw uncaught (see resolveAgentExecution's
+    // own doc comment for the bug this closes).
+    let resolved;
+    try {
+      resolved = resolveAgentExecution(definition, this.providerRegistry);
+    } catch (err) {
+      if (err instanceof AgentExecutionResolutionError) {
+        await this.recordStep(job.id, "provider_execution", "FAILED");
+        await this.prisma.aiJob.update({
+          where: { id: job.id },
+          data: { status: "FAILED", errorCode: err.failure.code, errorMessageSafe: err.failure.messageSafe, completedAt: new Date() },
+        });
+        return {
+          status: "FAILED",
+          latencyMs: Date.now() - startedAt,
+          failure: err.failure,
+          knowledgePackVersionUsed: pack.publicId,
+          agentIdentifierUsed: definition.identifier,
+          agentVersionUsed: definition.version,
+          correlationId: request.correlationId,
+        };
+      }
+      throw err;
+    }
+    const provider = resolved.provider;
 
     // 7. Transition RUNNING, construct the normalized AIRequest, and
     // execute — bounded by definition.timeoutMs via AbortController, the
@@ -163,7 +191,14 @@ export class AgentExecutorService {
       systemInstructions,
       knowledgePackReference: context.knowledgePackVersionId,
       ...(definition.outputSchema ? { outputFormat: "json" as const, structuredOutputSchema: definition.outputSchema } : {}),
-      timeoutMs: definition.timeoutMs,
+      // Explicit values here win over the resolved provider's own
+      // configured ModelConfig.defaults (Phase 3.1's own
+      // resolveGenerationSettings, applied inside each adapter) — an
+      // unset field stays unset, so a provider's own default still
+      // applies when this agent declares no preference.
+      temperature: resolved.generationSettings.temperature,
+      maxTokens: resolved.generationSettings.maxTokens,
+      timeoutMs: resolved.generationSettings.timeoutMs ?? definition.timeoutMs,
       correlationId: request.correlationId,
     };
 
@@ -182,6 +217,7 @@ export class AgentExecutorService {
           providerUsed: response.provider,
           modelUsed: response.model,
           tokenUsage: response.usage as unknown as Prisma.InputJsonValue,
+          generationSettings: resolved.generationSettings as Prisma.InputJsonValue,
           completedAt: new Date(),
         },
       });
@@ -214,7 +250,7 @@ export class AgentExecutorService {
       await this.recordStep(job.id, "provider_execution", terminalStatus);
       await this.prisma.aiJob.update({
         where: { id: job.id },
-        data: { status: terminalStatus, errorCode: providerError.code, errorMessageSafe: providerError.messageSafe, completedAt: new Date() },
+        data: { status: terminalStatus, errorCode: providerError.code, errorMessageSafe: providerError.messageSafe, generationSettings: resolved.generationSettings as Prisma.InputJsonValue, completedAt: new Date() },
       });
 
       return {
