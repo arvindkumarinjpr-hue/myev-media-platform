@@ -64,6 +64,23 @@ export interface AgentDefinition<TInput extends object = object, TOutput extends
   // interface contravariant in TInput and break exactly that.
   buildPrompt(input: TInput, context: AgentContext): { prompt: string; systemInstructions?: string };
 
+  /**
+   * Module 4 Phase 4.2 — optional, purely deterministic transformation
+   * applied to a SUCCESSFUL provider response's already schema-validated
+   * output, before it is persisted to ai_jobs.output_payload. Absent
+   * means the raw validated output is persisted unchanged (every agent
+   * defined before this phase behaves byte-identical, since none define
+   * it). Exists so agent-specific post-generation logic (e.g. Research's
+   * FR-RES-004 deduplication pass) never needs a second AI runtime or a
+   * Module-3-core change per agent — the generic executor (apps/api's
+   * AgentExecutorService and apps/worker's AiExecuteProcessor) calls this
+   * once, synchronously, and wraps it in a try/catch: a hook that throws
+   * never fails the underlying job, since the AI generation itself
+   * already succeeded. Deliberately synchronous — no I/O, no provider
+   * call, nothing that competes with this agent's own timeoutMs budget.
+   */
+  postProcessOutput?(output: TOutput): TOutput;
+
   /** Milliseconds — passed through to the AIRequest's own timeoutMs (Phase 3.1's provider-execution boundary), not a second independent timeout mechanism. */
   readonly timeoutMs: number;
 

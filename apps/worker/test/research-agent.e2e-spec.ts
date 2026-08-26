@@ -123,12 +123,45 @@ describe("Worker (e2e) — research-agent against a production-style provider re
     expect(finished.status).toBe("COMPLETED");
     expect(finished.providerUsed).toBe("openai");
     expect(finished.agentVersion).toBe(1);
-    expect(finished.outputPayload).toEqual(VALID_OUTPUT);
+    // Module 4 Phase 4.2 — RESEARCH_AGENT_V1's own postProcessOutput
+    // (FR-RES-004) always runs on a successful response, adding a
+    // `deduplication` summary even when nothing was actually duplicate.
+    expect(finished.outputPayload).toEqual({ ...VALID_OUTPUT, deduplication: { duplicateFindingsRemoved: 0, duplicateSourcesRemoved: 0, requiresManualReview: false } });
 
     // The exact Knowledge Pack this ran against is independently
     // re-verifiable from the row itself, not just trusted from submission
     // time (Module 3's own execution-provenance guarantee, unchanged).
     expect(finished.knowledgePackId).toBe(knowledgePackId);
+  }, 30_000);
+
+  it("Module 4 Phase 4.2 (FR-RES-004): deduplicates near-duplicate findings and duplicate source URLs before the job is marked COMPLETED, through the real durable pipeline", async () => {
+    const withDuplicates = {
+      ...VALID_OUTPUT,
+      findings: [
+        { summary: "Multiple government pilots for battery swap stations are currently underway across major cities.", evidence: "Referenced in the government source.", sourceUrls: ["https://reachable.example/gov"] },
+        { summary: "Multiple government pilots for battery swap stations are currently underway across several cities.", evidence: "Referenced in the government source.", sourceUrls: ["https://reachable.example/gov"] },
+        { summary: "Private fleet operators are separately piloting swap stations at highway rest stops.", evidence: "Referenced in the government source.", sourceUrls: ["https://reachable.example/gov"] },
+      ],
+      sources: [
+        { url: "https://reachable.example/gov", sourceType: "GOVERNMENT", title: "EV Infrastructure Report" },
+        { url: "https://reachable.example/gov", sourceType: "GOVERNMENT", title: "EV Infrastructure Report" },
+      ],
+    };
+    ({ moduleRef, processor, prisma, mockCreate } = await bootstrapWithMockedOpenAi(JSON.stringify(withDuplicates)));
+
+    const { userId, workspaceId } = await createTestWorkspace(prisma);
+    const knowledgePackId = await createActiveKnowledgePack(prisma, workspaceId, userId);
+    const job = await createResearchAiJob(prisma, workspaceId, userId, knowledgePackId);
+    const backgroundJob = await createBackgroundJobRow(prisma);
+
+    await processor.handle({ aiJobPublicId: job.publicId }, { jobId: backgroundJob.id, correlationId: job.correlationId, attempt: 1, isCancelled: async () => false });
+
+    const finished = await prisma.aiJob.findUniqueOrThrow({ where: { id: job.id } });
+    expect(finished.status).toBe("COMPLETED");
+    const output = finished.outputPayload as unknown as typeof withDuplicates & { deduplication: { duplicateFindingsRemoved: number; duplicateSourcesRemoved: number; requiresManualReview: boolean } };
+    expect(output.findings).toHaveLength(2);
+    expect(output.sources).toHaveLength(1);
+    expect(output.deduplication).toEqual({ duplicateFindingsRemoved: 1, duplicateSourcesRemoved: 1, requiresManualReview: false });
   }, 30_000);
 
   it("rejects malformed structured output safely — terminal FAILED, MALFORMED_STRUCTURED_OUTPUT, never a raw/partial object persisted", async () => {

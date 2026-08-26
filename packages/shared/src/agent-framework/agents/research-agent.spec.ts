@@ -97,3 +97,86 @@ describe("RESEARCH_AGENT_V1", () => {
     expect(violations).toHaveLength(0);
   });
 });
+
+describe("RESEARCH_AGENT_V1.postProcessOutput (FR-RES-004 deduplication)", () => {
+  function output(overrides: Partial<ResearchAgentOutput> = {}): ResearchAgentOutput {
+    return plainToInstance(ResearchAgentOutput, {
+      executiveSummary: "EV battery swap stations are gaining traction.",
+      findings: [],
+      sources: [],
+      trendSignals: [],
+      keywordOpportunities: [],
+      contentAngles: [],
+      ...overrides,
+    });
+  }
+
+  it("removes near-duplicate findings and counts them, keeping genuinely distinct findings", () => {
+    const result = RESEARCH_AGENT_V1.postProcessOutput!(
+      output({
+        findings: [
+          { summary: "EV battery swap adoption is rising fast in dense urban areas across India.", sourceUrls: [] },
+          { summary: "EV battery swap adoption is rising quickly in dense urban areas across India.", sourceUrls: [] },
+          { summary: "Charging infrastructure investment has doubled in rural highway corridors.", sourceUrls: [] },
+        ],
+      }),
+    );
+    expect(result.findings).toHaveLength(2);
+    expect(result.findings.map((f) => f.summary)).toContain("Charging infrastructure investment has doubled in rural highway corridors.");
+    expect(result.deduplication).toEqual({ duplicateFindingsRemoved: 1, duplicateSourcesRemoved: 0, requiresManualReview: false });
+  });
+
+  it("preserves findings that are merely topically related but not near-duplicates", () => {
+    const result = RESEARCH_AGENT_V1.postProcessOutput!(
+      output({
+        findings: [
+          { summary: "Battery swap stations reduce charging downtime for fleet operators.", sourceUrls: [] },
+          { summary: "Government subsidies target two-wheeler battery swap networks specifically.", sourceUrls: [] },
+        ],
+      }),
+    );
+    expect(result.findings).toHaveLength(2);
+    expect(result.deduplication?.duplicateFindingsRemoved).toBe(0);
+  });
+
+  it("removes duplicate sources by exact URL", () => {
+    const result = RESEARCH_AGENT_V1.postProcessOutput!(
+      output({
+        sources: [
+          { url: "https://reachable.example/a", sourceType: "GOVERNMENT" },
+          { url: "https://reachable.example/a", sourceType: "GOVERNMENT" },
+          { url: "https://reachable.example/b", sourceType: "PUBLICATION" },
+        ],
+      }),
+    );
+    expect(result.sources).toHaveLength(2);
+    expect(result.deduplication?.duplicateSourcesRemoved).toBe(1);
+  });
+
+  it("flags for manual review instead of throwing when the dedup pass itself fails, and never blocks the job", () => {
+    // Bypasses TypeScript to simulate a real internal failure mode (e.g.
+    // a malformed findings array) — proves FR-RES-004's own error
+    // condition: "deduplication failure does not block the job."
+    const malformed = output();
+    (malformed as unknown as { findings: unknown }).findings = null;
+
+    expect(() => RESEARCH_AGENT_V1.postProcessOutput!(malformed)).not.toThrow();
+    const result = RESEARCH_AGENT_V1.postProcessOutput!(malformed);
+    expect(result.deduplication?.requiresManualReview).toBe(true);
+    expect(result.deduplication?.reviewReason).toBeTruthy();
+    expect(result.deduplication?.reviewReason).not.toContain("TypeError");
+    expect(result.executiveSummary).toBe("EV battery swap stations are gaining traction.");
+  });
+
+  it("produces output that still validates as a full ResearchAgentOutput after post-processing", async () => {
+    const result = RESEARCH_AGENT_V1.postProcessOutput!(
+      output({
+        findings: [{ summary: "Adoption is rising in dense urban areas.", sourceUrls: ["https://reachable.example/a"] }],
+        sources: [{ url: "https://reachable.example/a", sourceType: "GOVERNMENT" }],
+      }),
+    );
+    const instance = plainToInstance(ResearchAgentOutput, result);
+    const violations = await validate(instance);
+    expect(violations).toHaveLength(0);
+  });
+});

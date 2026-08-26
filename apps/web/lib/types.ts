@@ -132,6 +132,16 @@ export interface KeywordOpportunity {
   rationale: string;
 }
 
+// Module 4 Phase 4.2 (FR-RES-004) — always present once status ===
+// "COMPLETED": RESEARCH_AGENT_V1's own postProcessOutput hook fills this
+// in unconditionally, whether or not anything was actually deduplicated.
+export interface ResearchDeduplicationSummary {
+  duplicateFindingsRemoved: number;
+  duplicateSourcesRemoved: number;
+  requiresManualReview: boolean;
+  reviewReason?: string;
+}
+
 export interface ResearchResult {
   executiveSummary: string;
   findings: ResearchFinding[];
@@ -139,6 +149,7 @@ export interface ResearchResult {
   trendSignals: TrendSignal[];
   keywordOpportunities: KeywordOpportunity[];
   contentAngles: string[];
+  deduplication?: ResearchDeduplicationSummary;
 }
 
 export interface Research {

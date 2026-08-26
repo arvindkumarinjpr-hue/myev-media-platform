@@ -60,6 +60,43 @@ describe("ResearchDetail", () => {
     expect(screen.getByText("A city-by-city rollout comparison")).toBeInTheDocument();
   });
 
+  it("shows a duplicate-removed note when FR-RES-004 deduplication removed something", async () => {
+    const completed = research({
+      result: {
+        executiveSummary: "Battery swap pilots are expanding.",
+        findings: [{ summary: "Multiple pilots underway.", evidence: "Cited government source.", sourceUrls: ["https://reachable.example/gov"] }],
+        sources: [{ url: "https://reachable.example/gov", sourceType: "GOVERNMENT", title: "EV Infra Report" }],
+        trendSignals: [],
+        keywordOpportunities: [],
+        contentAngles: [],
+        deduplication: { duplicateFindingsRemoved: 2, duplicateSourcesRemoved: 1, requiresManualReview: false },
+      },
+    });
+    jest.spyOn(global, "fetch").mockResolvedValue(mockResponse({ data: completed }));
+    render(<ResearchDetail workspaceId="ws-1" researchId="res-1" />);
+
+    await waitFor(() => expect(screen.getByText(/2 duplicate finding\(s\) and 1 duplicate source\(s\)/)).toBeInTheDocument());
+  });
+
+  it("shows a manual-review warning, not a duplicate-removed note, when the dedup pass itself failed", async () => {
+    const completed = research({
+      result: {
+        executiveSummary: "Battery swap pilots are expanding.",
+        findings: [],
+        sources: [],
+        trendSignals: [],
+        keywordOpportunities: [],
+        contentAngles: [],
+        deduplication: { duplicateFindingsRemoved: 0, duplicateSourcesRemoved: 0, requiresManualReview: true, reviewReason: "Automated deduplication could not be completed." },
+      },
+    });
+    jest.spyOn(global, "fetch").mockResolvedValue(mockResponse({ data: completed }));
+    render(<ResearchDetail workspaceId="ws-1" researchId="res-1" />);
+
+    await waitFor(() => expect(screen.getByText(/could not be completed for this research/i)).toBeInTheDocument());
+    expect(screen.queryByText(/duplicate finding\(s\)/)).not.toBeInTheDocument();
+  });
+
   it("shows only the safe error message for a failed research — never a raw provider payload", async () => {
     jest.spyOn(global, "fetch").mockResolvedValue(
       mockResponse({ data: research({ status: "FAILED", result: null, errorCode: "PROVIDER_ERROR", errorMessageSafe: "The AI provider was temporarily unavailable." }) }),
