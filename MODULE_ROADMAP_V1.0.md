@@ -68,7 +68,7 @@ Module 1 delivered **zero AI-generation, zero content-automation, and zero exter
 |---|---|---|---|---|
 | 1 | Foundation & Infrastructure | Foundation | **COMPLETE / FROZEN** | N/A — already frozen |
 | 2 | Knowledge Pack Engine | Foundation | **COMPLETE / FROZEN** | Completed — ACR-014 approved & closed 2026-08-22 |
-| 3 | AI Provider Abstraction Layer + AI Agent Framework (core) | Platform | NOT STARTED | Required before start |
+| 3 | AI Provider Abstraction Layer + AI Agent Framework (core) | Platform | **COMPLETE / FROZEN** | Completed — Phases 3.1-3.5 shipped via PRs #31-38, all merged with green CI. No ACR required (§10). |
 | 4 | Research Engine + Trend Discovery + Keyword Engine | Core Engine | NOT STARTED | Required before start |
 | 5 | Content Planner | Core Engine | NOT STARTED | Required before start |
 | 6 | Blog Automation + Content Scoring Engine (shared foundation) | Content Engine | NOT STARTED | Required before start; **additional internal gate** — see §11 |
