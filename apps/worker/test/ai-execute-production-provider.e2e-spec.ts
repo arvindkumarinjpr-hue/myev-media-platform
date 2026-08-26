@@ -1,9 +1,11 @@
 import "reflect-metadata";
 import { randomUUID } from "crypto";
 import { Test, type TestingModule } from "@nestjs/testing";
+import type Anthropic from "@anthropic-ai/sdk";
+import type { GoogleGenAI } from "@google/genai";
 import type OpenAI from "openai";
 import { IsString } from "class-validator";
-import { AI_EXECUTE_V1_MANIFEST, AgentRegistryBuilder, AIProviderRegistryBuilder, OpenAIProvider, type AgentDefinition } from "@myev/shared";
+import { AI_EXECUTE_V1_MANIFEST, AgentRegistryBuilder, AIProviderRegistryBuilder, AnthropicProvider, GeminiProvider, OpenAIProvider, type AgentDefinition } from "@myev/shared";
 import { AppModule } from "../src/app.module";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { AiExecuteProcessor } from "../src/queue/processors/ai-execute.processor";
@@ -20,20 +22,32 @@ class ProdProviderTestInput {
  * Module 3 Phase 3.4 — proves that the durable AI execution pipeline
  * (AiExecuteProcessor's own claim → context-build → resolve → execute →
  * persist chain, entirely unchanged from Phase 3.3) works correctly
- * against a PRODUCTION-STYLE AIProviderRegistry: the real OpenAIProvider
- * adapter class wrapping a jest-mocked `openai` SDK client — never
- * FakeProvider, never a live network call. This is the regression proof
- * that Phase 3.4's registry-wiring change (real providers registered
- * alongside/instead of FakeProvider) doesn't require and didn't
- * introduce any change to the durable job lifecycle itself: the
- * processor has no idea whether the provider it resolved is real or
- * fake, by design.
+ * against a PRODUCTION-STYLE AIProviderRegistry: the real adapter
+ * classes wrapping jest-mocked vendor SDK clients — never FakeProvider,
+ * never a live network call. This is the regression proof that Phase
+ * 3.4's registry-wiring change (real providers registered alongside/
+ * instead of FakeProvider) doesn't require and didn't introduce any
+ * change to the durable job lifecycle itself: the processor has no idea
+ * whether the provider it resolved is real or fake, by design.
  *
- * A dedicated inline AgentDefinition (never exported from
+ * Module 3 Phase 3.6 — extended to register all three ADR-003 providers
+ * (OpenAI, Anthropic, Gemini) simultaneously in one production-style
+ * registry (a realistic shape — a real deployment configures more than
+ * one), each proven through this identical generic pipeline, closing
+ * the "OpenAI path, Anthropic path, Gemini path" proof this phase's own
+ * spec calls out by name. Since AiExecuteProcessor and
+ * resolveAgentExecution contain zero provider-specific branching, the
+ * OpenAI case above already proves the pipeline itself is
+ * provider-agnostic; these two additional cases prove each adapter's
+ * own real-response mapping is wired correctly end-to-end too, not just
+ * unit-tested in isolation (packages/shared's own
+ * anthropic/gemini-provider.spec.ts).
+ *
+ * A dedicated inline AgentDefinition per provider (never exported from
  * packages/shared, only registered inside this one test's own
  * AGENT_REGISTRY override) is used instead of TEST_ECHO_AGENT_V1 so its
- * providerPreference can point at "openai" without touching the shared
- * fixture every other Phase 3.2/3.3 test also depends on.
+ * providerPreference can point at a real provider id without touching
+ * the shared fixture every other Phase 3.2/3.3 test also depends on.
  */
 describe("Worker (e2e) — ai.execute.v1 against a production-style provider registry", () => {
   process.env.WORKER_QUEUES = process.env.WORKER_QUEUES ?? "SYSTEM,AI";
@@ -51,14 +65,30 @@ describe("Worker (e2e) — ai.execute.v1 against a production-style provider reg
     executionPolicy: { maxAttempts: 1 },
   };
 
+  const ANTHROPIC_PROD_STYLE_AGENT: AgentDefinition<ProdProviderTestInput, object> = {
+    ...PROD_STYLE_AGENT,
+    identifier: "test-anthropic-production-style-agent",
+    providerPreference: { provider: "anthropic", model: "claude-3-5-sonnet-20241022" },
+  };
+
+  const GEMINI_PROD_STYLE_AGENT: AgentDefinition<ProdProviderTestInput, object> = {
+    ...PROD_STYLE_AGENT,
+    identifier: "test-gemini-production-style-agent",
+    providerPreference: { provider: "gemini", model: "gemini-1.5-pro" },
+  };
+
   let moduleRef: TestingModule;
   let prisma: PrismaService;
   let processor: AiExecuteProcessor;
   let mockCreate: jest.Mock;
+  let mockAnthropicCreate: jest.Mock;
+  let mockGeminiGenerateContent: jest.Mock;
 
   beforeAll(async () => {
     const agentRegistryBuilder = new AgentRegistryBuilder();
     agentRegistryBuilder.register(PROD_STYLE_AGENT);
+    agentRegistryBuilder.register(ANTHROPIC_PROD_STYLE_AGENT);
+    agentRegistryBuilder.register(GEMINI_PROD_STYLE_AGENT);
     const agentRegistry = agentRegistryBuilder.freeze();
 
     mockCreate = jest.fn().mockResolvedValue({
@@ -69,8 +99,27 @@ describe("Worker (e2e) — ai.execute.v1 against a production-style provider reg
     });
     const mockOpenAiClient = { chat: { completions: { create: mockCreate } } } as unknown as OpenAI;
 
+    mockAnthropicCreate = jest.fn().mockResolvedValue({
+      id: "msg_prod_style_test",
+      model: "claude-3-5-sonnet-20241022",
+      content: [{ type: "text", text: "production-style anthropic response" }],
+      usage: { input_tokens: 5, output_tokens: 4 },
+      stop_reason: "end_turn",
+    });
+    const mockAnthropicClient = { messages: { create: mockAnthropicCreate } } as unknown as Anthropic;
+
+    mockGeminiGenerateContent = jest.fn().mockResolvedValue({
+      text: "production-style gemini response",
+      responseId: "gemini_prod_style_test",
+      usageMetadata: { promptTokenCount: 6, candidatesTokenCount: 5, totalTokenCount: 11 },
+      candidates: [{ finishReason: "STOP" }],
+    });
+    const mockGeminiClient = { models: { generateContent: mockGeminiGenerateContent } } as unknown as GoogleGenAI;
+
     const providerRegistryBuilder = new AIProviderRegistryBuilder();
     providerRegistryBuilder.register(new OpenAIProvider(mockOpenAiClient, { provider: "openai", model: "gpt-4o", defaults: {} }));
+    providerRegistryBuilder.register(new AnthropicProvider(mockAnthropicClient, { provider: "anthropic", model: "claude-3-5-sonnet-20241022", defaults: {} }));
+    providerRegistryBuilder.register(new GeminiProvider(mockGeminiClient, { provider: "gemini", model: "gemini-1.5-pro", defaults: {} }));
     const providerRegistry = providerRegistryBuilder.freeze();
 
     moduleRef = await Test.createTestingModule({ imports: [AppModule] })
@@ -112,12 +161,12 @@ describe("Worker (e2e) — ai.execute.v1 against a production-style provider reg
     return pack.id;
   }
 
-  async function createAiJob(workspaceId: string, userId: string, knowledgePackId: string): Promise<AiJob> {
+  async function createAiJob(workspaceId: string, userId: string, knowledgePackId: string, agent: AgentDefinition<ProdProviderTestInput, object> = PROD_STYLE_AGENT): Promise<AiJob> {
     return prisma.aiJob.create({
       data: {
         workspaceId,
-        agentName: PROD_STYLE_AGENT.identifier,
-        agentVersion: PROD_STYLE_AGENT.version,
+        agentName: agent.identifier,
+        agentVersion: agent.version,
         triggeringModule: "worker-e2e-test",
         knowledgePackId,
         inputPayload: { message: "hello from the production-provider e2e test" },
@@ -159,6 +208,40 @@ describe("Worker (e2e) — ai.execute.v1 against a production-style provider reg
     expect(finished.status).toBe("COMPLETED");
     expect(finished.providerUsed).toBe("openai");
     expect(finished.outputPayload).toEqual({ text: "production-style provider response" });
+  }, 30_000);
+
+  it("resolves the real AnthropicProvider adapter through a production-style registry and completes the AiJob — no FakeProvider anywhere in the chain", async () => {
+    const { userId, workspaceId } = await createTestWorkspace();
+    const knowledgePackId = await createActiveKnowledgePack(workspaceId, userId);
+    const job = await createAiJob(workspaceId, userId, knowledgePackId, ANTHROPIC_PROD_STYLE_AGENT);
+    const backgroundJob = await createBackgroundJobRow();
+
+    const result = await processor.handle({ aiJobPublicId: job.publicId }, { jobId: backgroundJob.id, correlationId: job.correlationId, attempt: 1, isCancelled: async () => false });
+    expect(result.aiJobPublicId).toBe(job.publicId);
+
+    expect(mockAnthropicCreate).toHaveBeenCalledTimes(1);
+
+    const finished = await prisma.aiJob.findUniqueOrThrow({ where: { id: job.id } });
+    expect(finished.status).toBe("COMPLETED");
+    expect(finished.providerUsed).toBe("anthropic");
+    expect(finished.outputPayload).toEqual({ text: "production-style anthropic response" });
+  }, 30_000);
+
+  it("resolves the real GeminiProvider adapter through a production-style registry and completes the AiJob — no FakeProvider anywhere in the chain", async () => {
+    const { userId, workspaceId } = await createTestWorkspace();
+    const knowledgePackId = await createActiveKnowledgePack(workspaceId, userId);
+    const job = await createAiJob(workspaceId, userId, knowledgePackId, GEMINI_PROD_STYLE_AGENT);
+    const backgroundJob = await createBackgroundJobRow();
+
+    const result = await processor.handle({ aiJobPublicId: job.publicId }, { jobId: backgroundJob.id, correlationId: job.correlationId, attempt: 1, isCancelled: async () => false });
+    expect(result.aiJobPublicId).toBe(job.publicId);
+
+    expect(mockGeminiGenerateContent).toHaveBeenCalledTimes(1);
+
+    const finished = await prisma.aiJob.findUniqueOrThrow({ where: { id: job.id } });
+    expect(finished.status).toBe("COMPLETED");
+    expect(finished.providerUsed).toBe("gemini");
+    expect(finished.outputPayload).toEqual({ text: "production-style gemini response" });
   }, 30_000);
 
   it("Module 3 Phase 3.5: an agent whose required provider is not registered in a production-style registry terminates cleanly FAILED — never stuck RUNNING, and a redelivery does not report a false success", async () => {
