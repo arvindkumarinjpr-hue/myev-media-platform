@@ -205,3 +205,37 @@ export interface Research {
   startedAt: string | null;
   completedAt: string | null;
 }
+
+// Module 5 Phase 5.1 (FR-PLAN-002) — mirrors TopicClustersController's
+// own serialize() shape exactly. A persisted keyword row (real relational
+// data, DB Design §5.8) — distinct from Research's own in-flight
+// KeywordClusterMember (which never leaves ai_jobs.output_payload).
+export interface PersistedKeyword {
+  term: string;
+  searchIntent: "INFORMATIONAL" | "TRANSACTIONAL" | "NAVIGATIONAL" | "UNKNOWN";
+  opportunityScore: number;
+  rationale: string;
+}
+
+export interface TopicCluster {
+  publicId: string;
+  name: string;
+  clusterTopic: string;
+  primaryKeywords: PersistedKeyword[];
+  secondaryKeywords: PersistedKeyword[];
+  sourceResearchId: string;
+  knowledgePackVersionId: string;
+  contentSeries: { publicId: string; name: string } | null;
+  createdAt: string;
+}
+
+// Module 5 Phase 5.1 — mirrors ContentSeriesController's own serialize()
+// shape (Module 1E), reused as-is for the topic-cluster creation flow's
+// own "select or create a series" step.
+export interface ContentSeries {
+  publicId: string;
+  projectId: string | null;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}

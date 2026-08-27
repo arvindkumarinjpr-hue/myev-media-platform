@@ -25,6 +25,9 @@ export function AppNav({ workspaceId, workspaceName }: { workspaceId: string; wo
           <Link href={`/workspaces/${workspaceId}/research`}>Research</Link>
         </li>
         <li>
+          <Link href={`/workspaces/${workspaceId}/topic-clusters`}>Topic Clusters</Link>
+        </li>
+        <li>
           <Link href={`/workspaces/${workspaceId}/projects`}>Projects</Link>
         </li>
       </ul>
