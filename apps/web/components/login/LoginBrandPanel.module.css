@@ -1,0 +1,258 @@
+.panel {
+  position: relative;
+  display: flex;
+  background: var(--sidebar-gradient);
+  padding: var(--space-8) var(--space-6);
+  /* The glow blobs below are deliberately larger than the panel and
+   * bleed off its edges for a soft, borderless glow — contain them here
+   * explicitly rather than relying on clip-path (which is removed on
+   * mobile, where there's no curve). */
+  overflow: hidden;
+}
+
+.glowTop,
+.glowBottom {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(70px);
+  pointer-events: none;
+}
+
+.glowTop {
+  top: -8rem;
+  right: -6rem;
+  width: 22rem;
+  height: 22rem;
+  background: radial-gradient(circle, rgba(77, 110, 245, 0.32), transparent 70%);
+}
+
+.glowBottom {
+  bottom: -10rem;
+  left: -8rem;
+  width: 24rem;
+  height: 24rem;
+  background: radial-gradient(circle, rgba(139, 92, 246, 0.24), transparent 70%);
+}
+
+.inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  width: 100%;
+  max-width: 30rem;
+  margin: 0 auto;
+}
+
+/* Logo — a small, tightly cropped light chip (never an oversized block)
+ * so the master artwork's dark "EV" wordmark reads on the dark panel. */
+.logoChip {
+  display: inline-flex;
+  align-self: flex-start;
+  padding: 0.4rem 0.65rem;
+  background: rgba(244, 246, 252, 0.95);
+  border-radius: var(--radius-md);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22);
+}
+
+.copy {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.headline {
+  font-size: clamp(1.75rem, 3.4vw, 2.75rem);
+  font-weight: var(--weight-bold);
+  line-height: 1.15;
+  letter-spacing: -0.015em;
+  color: var(--color-sidebar-text-strong);
+}
+
+.headlineAccent {
+  background: var(--gradient-accent);
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
+.tagline {
+  font-size: var(--text-base);
+  line-height: var(--leading-snug);
+  color: var(--color-sidebar-text-muted);
+}
+
+.orbit {
+  align-self: center;
+  width: 100%;
+  max-width: 15rem;
+  margin: calc(var(--space-3) * -1) 0;
+}
+
+.features {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.feature {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.featureIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(139, 156, 209, 0.25);
+  box-shadow: 0 0 0 1px rgba(77, 110, 245, 0.05), 0 4px 14px rgba(77, 110, 245, 0.14);
+  color: var(--color-sidebar-accent);
+}
+
+.featureIcon svg {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+.featureText {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding-top: 0.15rem;
+}
+
+.featureTitle {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-sidebar-text-strong);
+}
+
+.featureDescription {
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+  color: var(--color-sidebar-text-muted);
+}
+
+.callout {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(139, 156, 209, 0.22);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 0 0 1px rgba(77, 110, 245, 0.04) inset;
+}
+
+.calloutIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--radius-md);
+  background: var(--gradient-accent);
+  color: #fff;
+}
+
+.calloutIcon svg {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+
+.calloutText {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.calloutTitle {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+  color: var(--color-sidebar-text-strong);
+}
+
+.calloutBody {
+  font-size: var(--text-xs);
+  line-height: var(--leading-snug);
+  color: var(--color-sidebar-text-muted);
+}
+
+.calloutAccent {
+  background: var(--gradient-accent);
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  font-weight: var(--weight-semibold);
+}
+
+/* --------------------------------------------------------------------
+ * Below 48rem (768px): the split composition collapses into a compact
+ * dark hero strip — single logo, a shorter brand message, a smaller
+ * orbit visual. The feature rows and callout are dropped so the sign-in
+ * form (below, on the light background) stays the primary task and
+ * isn't pushed far down the page.
+ * ------------------------------------------------------------------ */
+@media (max-width: 47.99rem) {
+  .panel {
+    padding: var(--space-6) var(--space-5);
+    clip-path: none;
+  }
+
+  .inner {
+    gap: var(--space-4);
+    text-align: center;
+    align-items: center;
+  }
+
+  .logoChip {
+    align-self: center;
+  }
+
+  .headline {
+    font-size: clamp(1.5rem, 7vw, 1.85rem);
+  }
+
+  .tagline,
+  .features,
+  .callout {
+    display: none;
+  }
+
+  .orbit {
+    max-width: 11rem;
+    margin: 0;
+  }
+}
+
+/* From 48rem up: the flowing curved edge + full-height split column. */
+@media (min-width: 48rem) {
+  .panel {
+    flex: 0 0 56%;
+    max-width: 56%;
+    min-height: 100vh;
+    align-items: center;
+    clip-path: url(#login-brand-curve);
+    padding: var(--space-8) clamp(2rem, 5vw, 4rem);
+  }
+}
+
+@media (min-width: 48rem) and (max-width: 64rem) {
+  .inner {
+    gap: var(--space-4);
+  }
+
+  .orbit {
+    max-width: 12.5rem;
+  }
+}

@@ -43,3 +43,42 @@
   border-color: var(--color-danger);
   box-shadow: 0 0 0 3px var(--color-danger-bg);
 }
+
+/* Icon / adornment slots — opt-in, only rendered when Input receives
+ * iconLeft/endAdornment. */
+.wrap {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+.hasIconLeft {
+  padding-left: 2.5rem;
+}
+
+.hasEndAdornment {
+  padding-right: 2.5rem;
+}
+
+.iconLeft {
+  position: absolute;
+  left: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  color: var(--color-text-subtle);
+  pointer-events: none;
+}
+
+.iconLeft svg {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+
+.endAdornment {
+  position: absolute;
+  right: 0.5rem;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+}

@@ -204,3 +204,66 @@ export function TrendDownIcon(props: IconProps) {
   );
 }
 
+export function MailIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <path d="m4 7 8 6 8-6" />
+    </Base>
+  );
+}
+
+export function LockIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <rect x="4.5" y="10.5" width="15" height="9.5" rx="2" />
+      <path d="M8 10.5V7.5a4 4 0 0 1 8 0v3" />
+    </Base>
+  );
+}
+
+export function EyeIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" />
+      <circle cx="12" cy="12" r="2.75" />
+    </Base>
+  );
+}
+
+export function EyeOffIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M3.5 3.5 20.5 20.5" />
+      <path d="M9.9 5.7A10.6 10.6 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a15.3 15.3 0 0 1-3.1 3.9M6.2 7.6C4 9.2 2.5 12 2.5 12s3.5 6.5 9.5 6.5a9.8 9.8 0 0 0 3.4-.6" />
+      <path d="M9.9 10a2.75 2.75 0 0 0 3.9 3.9" />
+    </Base>
+  );
+}
+
+export function ArrowRightIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M5 12h14M13 5l7 7-7 7" />
+    </Base>
+  );
+}
+
+export function SparkleIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M12 3v3.5M12 17.5V21M3 12h3.5M17.5 12H21M6 6l2 2M16 16l2 2M6 18l2-2M16 8l2-2" />
+      <circle cx="12" cy="12" r="3" />
+    </Base>
+  );
+}
+
+export function DocumentIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M6.5 3h8L19 7.5V19a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 7 19V4.5A1.5 1.5 0 0 1 6.5 3Z" />
+      <path d="M14 3v4.5H19M9.5 12h5M9.5 15.5h5" />
+    </Base>
+  );
+}
+
