@@ -6,8 +6,12 @@ import { projectsApi } from "../../lib/api/projects";
 import { knowledgePacksApi } from "../../lib/api/knowledge-packs";
 import { friendlyMessage } from "../../lib/errors";
 import type { KnowledgePackSummary, ProjectSummary } from "../../lib/types";
+import { Badge } from "../ui/Badge";
+import { DataTable, type Column } from "../ui/DataTable";
 import { LoadingState, ErrorBanner, EmptyState } from "../ui/Feedback";
+import { PageHeader } from "../ui/PageHeader";
 import { StatusBadge } from "../ui/StatusBadge";
+import { ProjectIcon } from "../ui/icons";
 import styles from "./ProjectList.module.css";
 
 export function ProjectList({ workspaceId }: { workspaceId: string }) {
@@ -33,49 +37,45 @@ export function ProjectList({ workspaceId }: { workspaceId: string }) {
 
   useEffect(load, [workspaceId]);
 
+  const columns: Column<ProjectSummary>[] = [
+    {
+      key: "name",
+      header: "Name",
+      render: (p) => <Link href={`/workspaces/${workspaceId}/projects/${p.publicId}`}>{p.name}</Link>,
+    },
+    {
+      key: "kp",
+      header: "Assigned Knowledge Pack",
+      render: (p) => {
+        if (!p.knowledgePackPublicId) return <Badge tone="neutral">Unassigned</Badge>;
+        const pack = packsById.get(p.knowledgePackPublicId);
+        if (!pack) return <span>{p.knowledgePackPublicId}</span>;
+        return (
+          <span className={styles.packCell}>
+            {pack.name} (v{pack.versionNumber}) <StatusBadge status={pack.status} />
+          </span>
+        );
+      },
+    },
+    {
+      key: "open",
+      header: "",
+      align: "end",
+      render: (p) => <Link href={`/workspaces/${workspaceId}/projects/${p.publicId}`}>Manage</Link>,
+    },
+  ];
+
   return (
     <div>
-      <h1>Projects</h1>
+      <PageHeader title="Projects" description="Every content Project in this workspace and the Knowledge Pack it publishes with." />
+
       {error && <ErrorBanner message={error} onRetry={load} />}
       {!error && projects === null && <LoadingState label="Loading Projects…" />}
-      {!error && projects !== null && projects.length === 0 && <EmptyState title="No Projects yet" />}
+      {!error && projects !== null && projects.length === 0 && (
+        <EmptyState icon={<ProjectIcon />} title="No Projects yet" description="Projects will appear here once your workspace has one." />
+      )}
       {!error && projects !== null && projects.length > 0 && (
-        <table className={styles.table}>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Assigned Knowledge Pack</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {projects.map((project) => {
-              const pack = project.knowledgePackPublicId ? packsById.get(project.knowledgePackPublicId) : undefined;
-              return (
-                <tr key={project.publicId}>
-                  <td>{project.name}</td>
-                  <td>
-                    {!project.knowledgePackPublicId ? (
-                      <span className={styles.unassigned}>Unassigned</span>
-                    ) : pack ? (
-                      <span className={styles.packCell}>
-                        {pack.name} (v{pack.versionNumber}) <StatusBadge status={pack.status} />
-                      </span>
-                    ) : (
-                      // Loaded before the Knowledge Pack list resolved, or a
-                      // cross-tenant data anomaly — show the raw id rather
-                      // than silently hiding that a reference exists.
-                      project.knowledgePackPublicId
-                    )}
-                  </td>
-                  <td>
-                    <Link href={`/workspaces/${workspaceId}/projects/${project.publicId}`}>Manage</Link>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <DataTable columns={columns} rows={projects} rowKey={(p) => p.publicId} caption="Projects" />
       )}
     </div>
   );

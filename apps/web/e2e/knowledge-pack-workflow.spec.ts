@@ -57,36 +57,42 @@ test("sign in, create a Knowledge Pack, complete configuration, and activate it"
   await page.getByRole("button", { name: "Create Draft" }).click();
   await expect(page.getByRole("heading", { name: "Playwright EV Pack" })).toBeVisible();
 
-  // Validate while incomplete — the itemized failure list must actually render.
+  // Validate while incomplete — the itemized failure list must actually
+  // render, with the raw backend requirement text still visible.
   await page.getByRole("button", { name: "Validate" }).click();
   await expect(page.getByText(/At least one trusted knowledge source is required/)).toBeVisible();
 
-  // Complete the required sections through the real form controls. Create
-  // deliberately only sends `name` (see CreateKnowledgePackForm) — industry
-  // profile and publishing strategy start as `{}` and must be filled in
-  // here too, or the FR-KP-001/FR-KP-004 gates never pass.
-  await page.getByLabel("Industry profile").fill('{"industry":"Electric Vehicles"}');
-  await page.getByLabel("Publishing strategy").fill('{"cadence":"weekly"}');
-  await page.getByRole("button", { name: "Add source" }).click();
-  await page.getByPlaceholder("https://…").fill("https://example.gov");
+  // Complete the required sections through the redesigned structured UI.
+  // Create only sends `name`; industry profile and publishing strategy
+  // start empty and must be filled in on the Overview tab, or the
+  // FR-KP-001/FR-KP-004 gates never pass.
+  await page.getByLabel("Industry").fill("Electric Vehicles");
+  await page.getByLabel("Publishing cadence").selectOption("weekly");
 
-  const templatesSection = page.locator("section", { has: page.getByRole("heading", { name: "Prompt templates" }) });
-  for (const contentType of ALL_CONTENT_TYPES) {
-    await page.getByRole("button", { name: "Add template" }).click();
+  await page.getByRole("tab", { name: /Sources/ }).click();
+  const sourcesPanel = page.getByRole("tabpanel", { name: /Sources/ });
+  await page.getByRole("button", { name: "Add source" }).click();
+  await sourcesPanel.getByLabel("URL").fill("https://example.gov");
+
+  await page.getByRole("tab", { name: /Prompts/ }).click();
+  const promptsPanel = page.getByRole("tabpanel", { name: /Prompts/ });
+  for (let i = 0; i < ALL_CONTENT_TYPES.length; i++) {
+    await promptsPanel.getByRole("button", { name: "Add template" }).click();
   }
-  // Every new row defaults to BLOG — each must be set to a distinct content
-  // type for the "one template per type" gate to actually pass.
-  const contentTypeSelects = templatesSection.locator("select");
+  // Every new row defaults to BLOG — each must be set to a distinct
+  // content type for the "one template per type" gate to pass. The stored
+  // enum values are unchanged, so selectOption by value still works.
+  const contentTypeSelects = promptsPanel.locator("select");
   for (let i = 0; i < ALL_CONTENT_TYPES.length; i++) {
     await contentTypeSelects.nth(i).selectOption(ALL_CONTENT_TYPES[i]);
   }
-  const promptBodies = templatesSection.getByPlaceholder("Write about {{topic}}…");
-  const count = await promptBodies.count();
-  for (let i = 0; i < count; i++) {
+  const promptBodies = promptsPanel.getByPlaceholder("Write about {{topic}}…");
+  for (let i = 0; i < ALL_CONTENT_TYPES.length; i++) {
     await promptBodies.nth(i).fill("Write something useful");
   }
+
   await page.getByRole("button", { name: "Save changes" }).click();
-  await expect(page.getByRole("button", { name: "Save changes" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Save changes" })).toHaveCount(0);
 
   await page.getByRole("button", { name: "Validate" }).click();
   await expect(page.getByText("Active", { exact: true })).toBeVisible();

@@ -1,28 +1,36 @@
-import Link from "next/link";
+import type { Metadata } from "next";
 import { serverGet } from "../../lib/server-api";
 import type { WorkspaceSummary } from "../../lib/types";
-import { EmptyState } from "../../components/ui/Feedback";
+import { Logo } from "../../components/shell/Logo";
+import { SignOutButton } from "../../components/SignOutButton";
+import { WorkspaceGrid } from "../../components/workspace/WorkspaceGrid";
 import styles from "./page.module.css";
+
+export const metadata: Metadata = {
+  title: "Workspaces",
+};
 
 export default async function WorkspacePickerPage() {
   const workspaces = await serverGet<WorkspaceSummary[]>("workspaces");
 
   return (
-    <main className={styles.container}>
-      <h1>Your workspaces</h1>
-      {workspaces.length === 0 ? (
-        <EmptyState title="No workspaces yet" description="You're not a member of any workspace." />
-      ) : (
-        <ul className={styles.list}>
-          {workspaces.map((workspace) => (
-            <li key={workspace.publicId}>
-              <Link href={`/workspaces/${workspace.publicId}/knowledge-packs`} className={styles.workspaceLink}>
-                {workspace.name}
-              </Link>
-            </li>
-          ))}
-        </ul>
-      )}
-    </main>
+    <div className={styles.page}>
+      <header className={styles.topbar}>
+        <Logo size="sm" />
+        <SignOutButton />
+      </header>
+
+      <main className={styles.main}>
+        <div className={styles.header}>
+          <h1 className={styles.title}>Your workspaces</h1>
+          <p className={styles.subtitle}>
+            {workspaces.length > 0
+              ? "Select a workspace to continue."
+              : "Once you're added to a workspace it will appear here."}
+          </p>
+        </div>
+        <WorkspaceGrid workspaces={workspaces} />
+      </main>
+    </div>
   );
 }

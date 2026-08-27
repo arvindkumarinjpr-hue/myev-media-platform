@@ -74,4 +74,25 @@ describe("ProjectDetail — Knowledge Pack assignment", () => {
     await waitFor(() => expect(screen.getByLabelText("Currently assigned")).toBeDisabled());
     expect(screen.queryByRole("button", { name: "Save assignment" })).not.toBeInTheDocument();
   });
+
+  it("keeps Save disabled until the selection actually differs from the current assignment", async () => {
+    mockLoad({ knowledgePackPublicId: "kp-1" });
+    renderDetail(["PROJECT_UPDATE"]);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save assignment" })).toBeDisabled());
+    await userEvent.selectOptions(screen.getByLabelText("Currently assigned"), "__unassigned__");
+    expect(screen.getByRole("button", { name: "Save assignment" })).toBeEnabled();
+  });
+
+  it("resolves the assigned pack directly when it has fallen out of the Active list (e.g. archived)", async () => {
+    jest
+      .spyOn(global, "fetch")
+      .mockResolvedValueOnce(mockResponse({ data: { publicId: "proj-1", name: "Demo Project", slug: "demo", status: "ACTIVE", knowledgePackPublicId: "kp-old" } }))
+      .mockResolvedValueOnce(mockResponse({ data: [{ publicId: "kp-1", name: "EV Pack", status: "ACTIVE", versionNumber: 2 }] }))
+      .mockResolvedValueOnce(mockResponse({ data: { publicId: "kp-old", name: "Retired Pack", status: "ARCHIVED", versionNumber: 1, lockVersion: 1, industryProfile: {}, publishingStrategy: {}, createdAt: "", updatedAt: "", sources: [], promptTemplates: [], seoRules: [], brandGuidelines: [], keywordSets: [], competitors: [] } }));
+    renderDetail(["PROJECT_UPDATE"]);
+
+    await waitFor(() => expect(screen.getByText(/Retired Pack \(v1\)/)).toBeInTheDocument());
+    expect(screen.getByText("Archived")).toBeInTheDocument();
+  });
 });

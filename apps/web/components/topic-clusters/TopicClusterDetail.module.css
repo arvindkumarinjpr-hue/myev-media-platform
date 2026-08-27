@@ -1,43 +1,54 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
 .header {
   display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.breadcrumb {
+  display: flex;
   align-items: center;
-  gap: 0.75rem;
-  margin-bottom: 1rem;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
 }
 
-.section {
-  background: white;
-  padding: 1.25rem 1.5rem;
-  border-radius: 0.5rem;
-  margin-bottom: 1.25rem;
+.breadcrumb a:hover {
+  color: var(--color-text-strong);
 }
 
-.section h2 {
-  font-size: 1rem;
-  margin: 0 0 0.6rem;
-  color: #111827;
+.sep {
+  width: 0.85rem;
+  height: 0.85rem;
+  color: var(--color-text-subtle);
+}
+
+.title {
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.015em;
+  word-break: break-word;
+}
+
+.sectionTitle {
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+  margin-bottom: var(--space-3);
 }
 
 .provenance {
-  color: #374151;
-  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  color: var(--color-text);
 }
 
-.keywordTable {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.keywordTable th {
-  text-align: left;
-  font-size: 0.8rem;
-  color: #6b7280;
-  padding: 0.5rem;
-  border-bottom: 1px solid #e5e7eb;
-}
-
-.keywordTable td {
-  padding: 0.5rem;
-  border-bottom: 1px solid #f3f4f6;
-  font-size: 0.9rem;
+.muted {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
 }

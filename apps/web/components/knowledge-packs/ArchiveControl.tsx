@@ -6,11 +6,20 @@ import { friendlyMessage } from "../../lib/errors";
 import { hasPermission } from "../../lib/permissions";
 import { useSession } from "../../contexts/session-context";
 import type { KnowledgePackDetail } from "../../lib/types";
+import { Alert } from "../ui/Alert";
+import { Button } from "../ui/Button";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
-import { ErrorBanner } from "../ui/Feedback";
-import styles from "./ArchiveControl.module.css";
+import styles from "./DangerZone.module.css";
 
-export function ArchiveControl({ workspaceId, knowledgePackId, onArchived }: { workspaceId: string; knowledgePackId: string; onArchived: (pack: KnowledgePackDetail) => void }) {
+export function ArchiveControl({
+  workspaceId,
+  knowledgePackId,
+  onArchived,
+}: {
+  workspaceId: string;
+  knowledgePackId: string;
+  onArchived: (pack: KnowledgePackDetail) => void;
+}) {
   const { permissions } = useSession();
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
@@ -33,17 +42,19 @@ export function ArchiveControl({ workspaceId, knowledgePackId, onArchived }: { w
   }
 
   return (
-    <div className={styles.panel}>
-      <h3 className={styles.heading}>Archive this version</h3>
-      <p className={styles.description}>Retires this Active version permanently. It stays visible in version history, but nothing can activate it again.</p>
-      {error && <ErrorBanner message={error} />}
-      <button type="button" onClick={() => setOpen(true)} className={styles.archiveButton}>
+    <div className={styles.action}>
+      <div className={styles.actionText}>
+        <p className={styles.actionTitle}>Archive this version</p>
+        <p className={styles.actionDesc}>Retires this Active version for good. It stays in version history but can never be reactivated.</p>
+        {error && <Alert tone="danger">{error}</Alert>}
+      </div>
+      <Button variant="danger" onClick={() => setOpen(true)}>
         Archive
-      </button>
+      </Button>
       <ConfirmDialog
         open={open}
         title="Archive this Knowledge Pack version?"
-        description="This can't be undone. If any Project still uses this exact version, archiving will be blocked until it's reassigned."
+        description="This can't be undone. If any Project still uses this exact version, archiving is blocked until it's reassigned."
         confirmLabel="Archive"
         destructive
         pending={pending}

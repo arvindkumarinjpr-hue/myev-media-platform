@@ -1,8 +1,7 @@
 import { serverGet } from "../../../lib/server-api";
 import type { WorkspaceDetail } from "../../../lib/types";
 import { SessionProvider } from "../../../contexts/session-context";
-import { AppNav } from "../../../components/AppNav";
-import styles from "./layout.module.css";
+import { AppShell } from "../../../components/shell/AppShell";
 
 export default async function WorkspaceLayout({ children, params }: { children: React.ReactNode; params: Promise<{ workspaceId: string }> }) {
   const { workspaceId } = await params;
@@ -13,10 +12,14 @@ export default async function WorkspaceLayout({ children, params }: { children: 
 
   return (
     <SessionProvider value={{ workspace, permissions: permissionsResult.permissions }}>
-      <div className={styles.shell}>
-        <AppNav workspaceId={workspaceId} workspaceName={workspace.name} />
-        <div className={styles.content}>{children}</div>
-      </div>
+      <AppShell
+        workspaceId={workspaceId}
+        workspaceName={workspace.name}
+        role={workspace.myRole}
+        permissions={permissionsResult.permissions}
+      >
+        {children}
+      </AppShell>
     </SessionProvider>
   );
 }

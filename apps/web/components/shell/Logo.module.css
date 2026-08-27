@@ -1,0 +1,15 @@
+.logo {
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
+.sm {
+  height: 2.1rem;
+  max-width: 100%;
+}
+
+.md {
+  width: 9.25rem;
+  max-width: 100%;
+}

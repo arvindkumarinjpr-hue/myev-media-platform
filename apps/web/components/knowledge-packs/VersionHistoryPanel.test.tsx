@@ -37,8 +37,8 @@ describe("VersionHistoryPanel", () => {
 
     await waitFor(() => expect(screen.getByText("v1")).toBeInTheDocument());
     expect(screen.getByText("v2")).toBeInTheDocument();
-    expect(screen.getByText("root")).toBeInTheDocument();
-    expect(screen.getByText("successor")).toBeInTheDocument();
+    expect(screen.getByText("First version")).toBeInTheDocument();
+    expect(screen.getByText("Replaces an earlier version")).toBeInTheDocument();
   });
 
   it("creates a new Draft version from Active and navigates to it, only when KP_UPDATE + status is ACTIVE", async () => {

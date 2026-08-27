@@ -5,10 +5,5 @@ import { CreateKnowledgePackForm } from "../../../../../components/knowledge-pac
 
 export default function NewKnowledgePackPage({ params }: { params: Promise<{ workspaceId: string }> }) {
   const { workspaceId } = use(params);
-  return (
-    <div>
-      <h1>New Knowledge Pack</h1>
-      <CreateKnowledgePackForm workspaceId={workspaceId} />
-    </div>
-  );
+  return <CreateKnowledgePackForm workspaceId={workspaceId} />;
 }

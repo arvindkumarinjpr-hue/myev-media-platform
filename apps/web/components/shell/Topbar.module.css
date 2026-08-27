@@ -1,0 +1,85 @@
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: var(--topbar-height);
+  padding: 0 var(--content-pad-x);
+  background: color-mix(in srgb, var(--color-surface) 88%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.menuButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  margin-left: -0.5rem;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+}
+
+.menuButton:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-strong);
+}
+
+.mobileLogo {
+  display: none;
+}
+
+.context {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  min-width: 0;
+}
+
+.workspace {
+  font-weight: var(--weight-semibold);
+  color: var(--color-text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.divider {
+  color: var(--color-text-subtle);
+}
+
+.crumb {
+  color: var(--color-text-muted);
+}
+
+.current {
+  color: var(--color-text);
+  font-weight: var(--weight-medium);
+}
+
+/* Desktop: sidebar owns navigation, so hide the hamburger. */
+@media (min-width: 60rem) {
+  .menuButton {
+    display: none;
+  }
+}
+
+/* Mobile / tablet: show the compact logo, drop the workspace-name crumb
+ * (the switcher lives in the drawer) to keep the row on one line. */
+@media (max-width: 59.99rem) {
+  .mobileLogo {
+    display: block;
+  }
+
+  .workspace {
+    display: none;
+  }
+
+  .context .divider {
+    display: none;
+  }
+}

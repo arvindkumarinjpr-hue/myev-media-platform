@@ -5,7 +5,10 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { login } from "../lib/api/auth";
 import { friendlyMessage } from "../lib/errors";
 import { safeNextPath } from "../lib/safe-redirect";
-import { ErrorBanner } from "./ui/Feedback";
+import { Alert } from "./ui/Alert";
+import { Button } from "./ui/Button";
+import { FormField } from "./ui/FormField";
+import { Input } from "./ui/Input";
 import styles from "../app/login/page.module.css";
 
 export function LoginForm() {
@@ -32,28 +35,48 @@ export function LoginForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className={styles.form} aria-label="Sign in">
-      <h1 className={styles.heading}>MYEV Media</h1>
-      {error && <ErrorBanner message={error} />}
-      <label htmlFor="email" className={styles.label}>
-        Email
-      </label>
-      <input id="email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className={styles.input} autoComplete="email" />
-      <label htmlFor="password" className={styles.label}>
-        Password
-      </label>
-      <input
-        id="password"
-        type="password"
-        required
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        className={styles.input}
-        autoComplete="current-password"
-      />
-      <button type="submit" disabled={pending} className={styles.submitButton}>
+    <form onSubmit={handleSubmit} className={styles.form} aria-label="Sign in" noValidate>
+      <div className={styles.formHead}>
+        <h1 className={styles.heading}>Sign in</h1>
+        <p className={styles.subtext}>Welcome back. Enter your details to access your workspaces.</p>
+      </div>
+
+      {error && (
+        <Alert tone="danger" role="alert">
+          {error}
+        </Alert>
+      )}
+
+      <FormField label="Email">
+        {(field) => (
+          <Input
+            {...field}
+            type="email"
+            required
+            autoComplete="email"
+            autoFocus
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
+        )}
+      </FormField>
+
+      <FormField label="Password">
+        {(field) => (
+          <Input
+            {...field}
+            type="password"
+            required
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+        )}
+      </FormField>
+
+      <Button type="submit" fullWidth loading={pending} className={styles.submit}>
         {pending ? "Signing in…" : "Sign in"}
-      </button>
+      </Button>
     </form>
   );
 }

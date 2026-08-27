@@ -7,7 +7,10 @@ import { ApiError, friendlyMessage } from "../../lib/errors";
 import { hasPermission } from "../../lib/permissions";
 import { useSession } from "../../contexts/session-context";
 import type { KnowledgePackDetail } from "../../lib/types";
-import { ErrorBanner } from "../ui/Feedback";
+import { Alert } from "../ui/Alert";
+import { Button } from "../ui/Button";
+import { CheckIcon } from "../ui/icons";
+import { toReadableFailure } from "./validationLabels";
 import styles from "./ValidationPanel.module.css";
 
 export function ValidationPanel({
@@ -45,34 +48,47 @@ export function ValidationPanel({
     }
   }
 
-  const hasRestrictFailure = failures?.some((f) => /RESTRICT/i.test(f)) ?? false;
+  const readable = failures?.map(toReadableFailure) ?? [];
+  const hasRestrict = readable.some((f) => f.isRestrict);
 
   return (
-    <div className={styles.panel}>
-      <h3 className={styles.heading}>Validate &amp; activate</h3>
-      <p className={styles.description}>Checks trusted sources, prompt template coverage, brand/industry profile, and publishing strategy, then activates this version if everything passes.</p>
-      <button type="button" onClick={handleValidate} disabled={pending} className={styles.button}>
-        {pending ? "Validating…" : "Validate"}
-      </button>
+    <section className={styles.panel} aria-label="Validate and activate">
+      <div className={styles.head}>
+        <div>
+          <p className={styles.title}>Ready to go live?</p>
+          <p className={styles.subtitle}>
+            Validation checks trusted sources, prompt coverage, industry profile and publishing strategy, then makes this the
+            active context.
+          </p>
+        </div>
+        <Button onClick={handleValidate} loading={pending} iconLeft={<CheckIcon />}>
+          Validate
+        </Button>
+      </div>
 
-      {genericError && <ErrorBanner message={genericError} />}
+      {genericError && <Alert tone="danger">{genericError}</Alert>}
 
       {failures && (
-        <div role="alert" className={styles.failures}>
-          <p className={styles.failuresHeading}>This version can&apos;t activate yet:</p>
-          <ul>
-            {failures.map((failure, index) => (
-              // eslint-disable-next-line react/no-array-index-key -- server-generated itemized strings, no stable id.
-              <li key={index}>{failure}</li>
+        <div className={styles.result} role="alert">
+          <p className={styles.resultHeading}>This version isn&apos;t ready to activate yet</p>
+          <ul className={styles.failureList}>
+            {readable.map((failure, i) => (
+              // eslint-disable-next-line react/no-array-index-key -- server-ordered strings, no id.
+              <li key={i}>
+                <span className={styles.failureTitle}>{failure.title}</span>
+                {failure.help && <span className={styles.failureHelp}>{failure.help}</span>}
+                <span className={styles.failureRaw}>{failure.raw}</span>
+              </li>
             ))}
           </ul>
-          {hasRestrictFailure && (
-            <p>
-              <Link href={`/workspaces/${workspaceId}/projects`}>Manage Project assignments</Link> to free up the blocked predecessor.
+          {hasRestrict && (
+            <p className={styles.restrictLink}>
+              <Link href={`/workspaces/${workspaceId}/projects`}>Manage Project assignments</Link> to free up the blocked
+              version.
             </p>
           )}
         </div>
       )}
-    </div>
+    </section>
   );
 }
