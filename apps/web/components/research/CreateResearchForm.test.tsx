@@ -32,7 +32,7 @@ describe("CreateResearchForm", () => {
     jest.spyOn(global, "fetch").mockResolvedValue(mockResponse({ data: [{ publicId: "kp-1", name: "Draft Pack", status: "DRAFT", versionNumber: 1 }] }));
     render(<CreateResearchForm workspaceId="ws-1" />);
 
-    await waitFor(() => expect(screen.getByText(/need an ACTIVE Knowledge Pack/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("No active Knowledge Pack")).toBeInTheDocument());
     expect(screen.queryByLabelText("Topic")).not.toBeInTheDocument();
   });
 

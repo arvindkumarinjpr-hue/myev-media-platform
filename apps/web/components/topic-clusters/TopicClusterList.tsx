@@ -7,8 +7,16 @@ import { friendlyMessage } from "../../lib/errors";
 import { hasPermission } from "../../lib/permissions";
 import { useSession } from "../../contexts/session-context";
 import type { TopicCluster } from "../../lib/types";
+import { Button } from "../ui/Button";
+import { DataTable, type Column } from "../ui/DataTable";
 import { LoadingState, ErrorBanner, EmptyState } from "../ui/Feedback";
-import styles from "./TopicClusterList.module.css";
+import { PageHeader } from "../ui/PageHeader";
+import { TopicClusterIcon, PlusIcon } from "../ui/icons";
+
+function formatDate(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
 
 export function TopicClusterList({ workspaceId }: { workspaceId: string }) {
   const { permissions } = useSession();
@@ -27,58 +35,66 @@ export function TopicClusterList({ workspaceId }: { workspaceId: string }) {
   useEffect(load, [workspaceId]);
 
   const canManage = hasPermission(permissions, "TOPIC_CLUSTER_MANAGE");
+  const newHref = `/workspaces/${workspaceId}/topic-clusters/new`;
+
+  const columns: Column<TopicCluster>[] = [
+    {
+      key: "name",
+      header: "Cluster",
+      render: (c) => <Link href={`/workspaces/${workspaceId}/topic-clusters/${c.publicId}`}>{c.name}</Link>,
+    },
+    {
+      key: "research",
+      header: "Source Research",
+      render: (c) => <Link href={`/workspaces/${workspaceId}/research/${c.sourceResearchId}`}>Research run</Link>,
+    },
+    {
+      key: "keywords",
+      header: "Keywords",
+      render: (c) => c.primaryKeywords.length + c.secondaryKeywords.length,
+    },
+    { key: "series", header: "Content Series", render: (c) => c.contentSeries?.name ?? "—" },
+    { key: "created", header: "Created", render: (c) => formatDate(c.createdAt) },
+    {
+      key: "open",
+      header: "",
+      align: "end",
+      render: (c) => <Link href={`/workspaces/${workspaceId}/topic-clusters/${c.publicId}`}>Open</Link>,
+    },
+  ];
 
   return (
     <div>
-      <div className={styles.header}>
-        <h1>Topic Clusters</h1>
-        {canManage && (
-          <Link href={`/workspaces/${workspaceId}/topic-clusters/new`} className={styles.createButton}>
-            New Topic Cluster
-          </Link>
-        )}
-      </div>
+      <PageHeader
+        title="Topic Clusters"
+        description="Turn Research keyword opportunities into reusable planning clusters."
+        actions={
+          canManage ? (
+            <Button href={newHref} iconLeft={<PlusIcon />}>
+              Create Topic Cluster
+            </Button>
+          ) : undefined
+        }
+      />
 
       {error && <ErrorBanner message={error} onRetry={load} />}
       {!error && items === null && <LoadingState label="Loading topic clusters…" />}
       {!error && items !== null && items.length === 0 && (
         <EmptyState
+          icon={<TopicClusterIcon />}
           title="No topic clusters yet"
-          description="Promote a keyword cluster from a completed Research run into a real, plannable Topic Cluster — the starting point for content planning."
+          description="Promote a keyword cluster from a completed Research run into a plannable Topic Cluster."
           action={
             canManage ? (
-              <Link href={`/workspaces/${workspaceId}/topic-clusters/new`} className={styles.createButton}>
+              <Button href={newHref} iconLeft={<PlusIcon />}>
                 Create the first one
-              </Link>
+              </Button>
             ) : undefined
           }
         />
       )}
       {!error && items !== null && items.length > 0 && (
-        <table className={styles.table}>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Keywords</th>
-              <th>Content Series</th>
-              <th>Created</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((item) => (
-              <tr key={item.publicId}>
-                <td>{item.name}</td>
-                <td>{item.primaryKeywords.length + item.secondaryKeywords.length}</td>
-                <td>{item.contentSeries?.name ?? "—"}</td>
-                <td>{new Date(item.createdAt).toLocaleString()}</td>
-                <td>
-                  <Link href={`/workspaces/${workspaceId}/topic-clusters/${item.publicId}`}>Open</Link>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <DataTable columns={columns} rows={items} rowKey={(c) => c.publicId} caption="Topic clusters" />
       )}
     </div>
   );

@@ -159,3 +159,48 @@ export function InfoIcon(props: IconProps) {
     </Base>
   );
 }
+
+export function ExternalLinkIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M14 4h6v6M20 4l-8.5 8.5" />
+      <path d="M18 13.5V19a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5.5" />
+    </Base>
+  );
+}
+
+export function ArrowLeftIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M19 12H5M12 19l-7-7 7-7" />
+    </Base>
+  );
+}
+
+export function TrendUpIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M3 17 10 10l4 4 7-7" />
+      <path d="M14 7h7v7" />
+    </Base>
+  );
+}
+
+export function TrendFlatIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M4 12h16" />
+      <path d="m17 8 4 4-4 4" />
+    </Base>
+  );
+}
+
+export function TrendDownIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M3 7 10 14l4-4 7 7" />
+      <path d="M14 17h7v-7" />
+    </Base>
+  );
+}
+

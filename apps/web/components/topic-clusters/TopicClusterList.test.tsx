@@ -53,7 +53,7 @@ describe("TopicClusterList", () => {
     renderWithSession([]);
 
     await waitFor(() => expect(screen.getByText("No topic clusters yet")).toBeInTheDocument());
-    expect(screen.queryByText("New Topic Cluster")).not.toBeInTheDocument();
+    expect(screen.queryByText("Create Topic Cluster")).not.toBeInTheDocument();
     expect(screen.queryByText("Create the first one")).not.toBeInTheDocument();
   });
 
