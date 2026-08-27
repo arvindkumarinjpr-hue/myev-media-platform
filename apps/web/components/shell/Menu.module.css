@@ -1,0 +1,84 @@
+.wrap {
+  position: relative;
+}
+
+.panel {
+  position: absolute;
+  z-index: var(--z-popover);
+  min-width: 13rem;
+  max-width: 18rem;
+  padding: var(--space-1);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  animation: menu-in var(--transition-fast);
+}
+
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+}
+
+.start {
+  left: 0;
+}
+
+.end {
+  right: 0;
+}
+
+.down {
+  top: calc(100% + 0.35rem);
+}
+
+.up {
+  bottom: calc(100% + 0.35rem);
+}
+
+/* Shared item styling for whatever the caller drops in. */
+.panel :global(.menu-item) {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 0.5rem var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  color: var(--color-text);
+  text-align: left;
+}
+
+.panel :global(.menu-item:hover) {
+  background: var(--color-surface-hover);
+  color: var(--color-text-strong);
+  text-decoration: none;
+}
+
+.panel :global(.menu-item[aria-current="true"]) {
+  color: var(--color-primary-subtle-fg);
+  font-weight: var(--weight-semibold);
+}
+
+.panel :global(.menu-item svg) {
+  width: 1.05rem;
+  height: 1.05rem;
+  flex-shrink: 0;
+  color: var(--color-text-subtle);
+}
+
+.panel :global(.menu-separator) {
+  height: 1px;
+  margin: var(--space-1) 0;
+  background: var(--color-border);
+}
+
+.panel :global(.menu-label) {
+  padding: 0.35rem var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--color-text-subtle);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}

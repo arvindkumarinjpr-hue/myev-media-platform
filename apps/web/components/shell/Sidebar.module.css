@@ -1,0 +1,42 @@
+.sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: var(--sidebar-width);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-3) var(--space-5);
+  background: var(--color-surface);
+  border-right: 1px solid var(--color-border);
+  overflow: hidden;
+}
+
+.brand {
+  padding: var(--space-2) var(--space-3) var(--space-1);
+}
+
+.brand a {
+  display: inline-block;
+}
+
+.brand a:hover {
+  text-decoration: none;
+}
+
+.brand a:focus-visible {
+  outline-offset: 4px;
+}
+
+.scroll {
+  flex: 1;
+  overflow-y: auto;
+  margin: 0 calc(var(--space-2) * -1);
+  padding: var(--space-1) var(--space-2);
+}
+
+/* Below the shell breakpoint the Drawer replaces this rail entirely. */
+@media (max-width: 59.99rem) {
+  .sidebar {
+    display: none;
+  }
+}

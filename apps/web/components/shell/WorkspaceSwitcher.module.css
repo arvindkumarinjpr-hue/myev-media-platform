@@ -1,0 +1,87 @@
+.menu {
+  width: 100%;
+}
+
+.trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  transition: background-color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.trigger:hover {
+  background: var(--color-surface-hover);
+  border-color: var(--color-border-strong);
+}
+
+.avatar,
+.itemAvatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  background: var(--color-primary);
+  color: var(--color-primary-fg);
+  font-weight: var(--weight-bold);
+}
+
+.avatar {
+  width: 1.85rem;
+  height: 1.85rem;
+  font-size: var(--text-sm);
+}
+
+.itemAvatar {
+  width: 1.5rem;
+  height: 1.5rem;
+  font-size: var(--text-xs);
+}
+
+.identity {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+  text-align: left;
+}
+
+.name {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.role {
+  font-size: var(--text-xs);
+  color: var(--color-text-subtle);
+}
+
+.chevron {
+  width: 1rem;
+  height: 1rem;
+  color: var(--color-text-subtle);
+  flex-shrink: 0;
+}
+
+.itemName {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status {
+  padding: 0.4rem var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}

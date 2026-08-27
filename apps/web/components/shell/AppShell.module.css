@@ -1,0 +1,39 @@
+.shell {
+  min-height: 100vh;
+  background: var(--color-bg);
+}
+
+.main {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  margin-left: var(--sidebar-width);
+}
+
+.content {
+  flex: 1;
+  padding: var(--content-pad-y) var(--content-pad-x) var(--space-16);
+  outline: none;
+}
+
+.container {
+  max-width: var(--container-max);
+  margin: 0 auto;
+}
+
+.drawerBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-height: 100%;
+}
+
+.drawerBody > :first-child {
+  flex: 1;
+}
+
+@media (max-width: 59.99rem) {
+  .main {
+    margin-left: 0;
+  }
+}

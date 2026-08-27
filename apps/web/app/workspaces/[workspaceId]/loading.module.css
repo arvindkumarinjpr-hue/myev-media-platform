@@ -1,0 +1,44 @@
+.wrap {
+  max-width: var(--container-max);
+  margin: 0 auto;
+  padding: var(--content-pad-y) var(--content-pad-x);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.shimmer,
+.header,
+.card,
+.block {
+  border-radius: var(--radius-lg);
+  background: linear-gradient(90deg, var(--color-surface-sunken), var(--color-surface-hover), var(--color-surface-sunken));
+  background-size: 200% 100%;
+  animation: loading-shimmer 1.4s ease-in-out infinite;
+}
+
+.header {
+  height: 2.75rem;
+  width: 14rem;
+  border-radius: var(--radius-md);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(13.5rem, 1fr));
+  gap: var(--space-4);
+}
+
+.card {
+  height: 8rem;
+}
+
+.block {
+  height: 16rem;
+}
+
+@keyframes loading-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}

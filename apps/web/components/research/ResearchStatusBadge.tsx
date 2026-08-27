@@ -1,14 +1,19 @@
-import styles from "./ResearchStatusBadge.module.css";
 import type { ResearchStatus } from "../../lib/types";
+import { Badge, type BadgeTone } from "../ui/Badge";
 
-const LABELS: Record<ResearchStatus, string> = {
-  QUEUED: "Queued",
-  RUNNING: "Running",
-  COMPLETED: "Completed",
-  FAILED: "Failed",
-  TIMED_OUT: "Timed out",
+const CONFIG: Record<ResearchStatus, { label: string; tone: BadgeTone; dot?: boolean }> = {
+  QUEUED: { label: "Queued", tone: "neutral", dot: true },
+  RUNNING: { label: "Running", tone: "warning", dot: true },
+  COMPLETED: { label: "Completed", tone: "success" },
+  FAILED: { label: "Failed", tone: "danger" },
+  TIMED_OUT: { label: "Timed out", tone: "danger" },
 };
 
 export function ResearchStatusBadge({ status }: { status: ResearchStatus }) {
-  return <span className={`${styles.badge} ${styles[status.toLowerCase()]}`}>{LABELS[status]}</span>;
+  const { label, tone, dot } = CONFIG[status];
+  return (
+    <Badge tone={tone} dot={dot}>
+      {label}
+    </Badge>
+  );
 }
