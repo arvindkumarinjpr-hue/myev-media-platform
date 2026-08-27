@@ -140,17 +140,35 @@ export class TrendSignal {
   // supports it, not just assert a direction.
   @IsString()
   evidence!: string;
+
+  // Module 4 Phase 4.4 — FR-RES-001's own AC, literally: "Trend Agent
+  // returns topic + opportunity score + freshness." Distinct from
+  // `confidence` (how sure the model is about the direction) — this is
+  // how actionable/valuable the trend is for content planning. Same
+  // 0-100 scale as every other explainable score in this schema.
+  @IsInt()
+  @Min(0)
+  @Max(100)
+  opportunityScore!: number;
+
+  // Topic novelty/age, not momentum (that's `direction`) — a
+  // well-established topic can still be rising, and a brand-new one can
+  // already be fading. Qualitative, not a fabricated precise timestamp:
+  // the model has no real-time trend-tracking data to invent one from.
+  @IsIn(["new", "ongoing", "long-standing"])
+  freshness!: "new" | "ongoing" | "long-standing";
 }
 
-export class KeywordOpportunity {
+// FR-KW-002 (every keyword in a cluster gets an intent label — "Unknown"
+// rather than dropped when unclassifiable) + FR-KW-003 (0-100,
+// explainable score — rationale mandatory, never a black box).
+export class KeywordClusterMember {
   @IsString()
   keyword!: string;
 
   @IsIn(["informational", "transactional", "navigational", "unknown"])
   intent!: "informational" | "transactional" | "navigational" | "unknown";
 
-  // FR-KW-003: 0-100, explainable — rationale is mandatory, not optional,
-  // so the score is never a black box.
   @IsInt()
   @Min(0)
   @Max(100)
@@ -158,6 +176,27 @@ export class KeywordOpportunity {
 
   @IsString()
   rationale!: string;
+}
+
+// Module 4 Phase 4.4 — FR-KW-001's own AC, literally: "Output includes
+// primary + secondary keyword sets per cluster." Replaces Phase
+// 4.1-4.3's flat KeywordOpportunity[] (which had per-keyword intent/
+// score/rationale — satisfying FR-KW-002/003 — but no clustering
+// structure at all, leaving FR-KW-001 itself, which FR-KW-002/003 both
+// depend on, unmet).
+export class KeywordCluster {
+  @IsString()
+  clusterTopic!: string;
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => KeywordClusterMember)
+  primaryKeywords!: KeywordClusterMember[];
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => KeywordClusterMember)
+  secondaryKeywords!: KeywordClusterMember[];
 }
 
 // FR-RES-004 — Research Dataset Deduplication. Populated only by this
@@ -223,8 +262,8 @@ export class ResearchAgentOutput {
 
   @IsArray()
   @ValidateNested({ each: true })
-  @Type(() => KeywordOpportunity)
-  keywordOpportunities!: KeywordOpportunity[];
+  @Type(() => KeywordCluster)
+  keywordClusters!: KeywordCluster[];
 
   @IsArray()
   @IsString({ each: true })
@@ -245,19 +284,29 @@ function buildPrompt(input: ResearchAgentInput, context: AgentContext): { prompt
   const reachable = input.verifiedSources.filter((s) => s.reachable);
   const sourceList = reachable.length > 0 ? reachable.map((s) => `- [${s.sourceId}] [${s.sourceType}] ${s.url}`).join("\n") : "(none reachable — state this plainly in the executive summary, cite nothing)";
 
+  // FR-KW-001's own Business Rule: "Uses the pack's configured keyword
+  // sets as a seed, not as the only source" — distinct from
+  // input.seedKeywords (ad hoc, per-request) below. AgentContext.keywords
+  // is generically typed (Record<string, unknown>[]); the real shape
+  // (from agent-context-builder.ts / the Worker's own context assembly)
+  // is always { name: string; keywords: string[] }.
+  const keywordSets = context.keywords as { name: string; keywords: string[] }[];
+  const packKeywordSets = keywordSets.length > 0 ? keywordSets.map((k) => `- ${k.name}: ${k.keywords.join(", ")}`).join("\n") : "";
+
   const systemInstructions = [
     "You are the Research Agent for an EV (electric vehicle) content platform.",
-    "You produce structured research intelligence: an executive summary, findings, trend signals, and keyword opportunities.",
+    "You produce structured research intelligence: an executive summary, findings, trend signals, and keyword clusters.",
     "CRITICAL — citation integrity: findings[].sourceIds must contain ONLY the bracketed IDs (e.g. \"S1\") listed below under VERIFIED SOURCES — never a URL, never an ID you were not given, never one you invent. A citation referencing anything else will be discarded and that finding will be treated as your own unsupported inference, not evidence. If none are reachable, say so in executiveSummary and leave every finding's sourceIds empty.",
     "Do not output a sources[] field yourself — it is built automatically from the sources you actually cite by ID.",
-    "CRITICAL — trend integrity: every trendSignals[] entry must name concrete evidence for its direction (from the sources or the given context) in its own evidence field. Never assert a trend has no basis beyond your own impression.",
-    "CRITICAL — keyword integrity: opportunityScore must be explainable — always fill in rationale. Do not invent search volume, CPC, or competition metrics; you have no access to real search data in this context.",
+    "CRITICAL — trend integrity: every trendSignals[] entry must name concrete evidence for its direction (from the sources or the given context) in its own evidence field. opportunityScore must reflect how actionable the trend is for content planning, not how confident you are in the direction. freshness describes the topic's own novelty (new/ongoing/long-standing), independent of direction. Never assert a trend has no basis beyond your own impression.",
+    "CRITICAL — keyword integrity: group keywords into keywordClusters, each with a clusterTopic and its own primaryKeywords/secondaryKeywords lists — never a flat, unclustered list. Every keyword needs intent and an explainable opportunityScore (rationale is mandatory). Do not invent search volume, CPC, or competition metrics; you have no access to real search data in this context.",
     "",
     "VERIFIED SOURCES (cite ONLY by the bracketed ID):",
     sourceList,
     "",
     `WORKSPACE INDUSTRY PROFILE: ${JSON.stringify(context.industryProfile)}`,
     context.competitors.length > 0 ? `KNOWN COMPETITORS: ${context.competitors.map((c) => c.domain).join(", ")}` : "",
+    packKeywordSets ? `KNOWLEDGE PACK'S CONFIGURED KEYWORD SETS (use as a seed, not your only source):\n${packKeywordSets}` : "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -267,9 +316,9 @@ function buildPrompt(input: ResearchAgentInput, context: AgentContext): { prompt
     input.objective ? `Objective: ${input.objective}` : "",
     input.geography ? `Geography: ${input.geography}` : "",
     input.language ? `Language: ${input.language}` : "",
-    input.seedKeywords && input.seedKeywords.length > 0 ? `Seed keywords to consider: ${input.seedKeywords.join(", ")}` : "",
+    input.seedKeywords && input.seedKeywords.length > 0 ? `Additional ad hoc seed keywords to consider: ${input.seedKeywords.join(", ")}` : "",
     "",
-    "Respond with a single JSON object matching the required ResearchAgentOutput schema exactly: executiveSummary, findings (each with summary, evidence, sourceIds), trendSignals, keywordOpportunities, contentAngles.",
+    "Respond with a single JSON object matching the required ResearchAgentOutput schema exactly: executiveSummary, findings (each with summary, evidence, sourceIds), trendSignals (each with topic, direction, confidence, evidence, opportunityScore, freshness), keywordClusters (each with clusterTopic, primaryKeywords, secondaryKeywords), contentAngles.",
   ]
     .filter(Boolean)
     .join("\n");
@@ -417,7 +466,7 @@ function postProcessOutput(output: ResearchAgentOutput, input: ResearchAgentInpu
 export const RESEARCH_AGENT_V1: AgentDefinition<ResearchAgentInput, ResearchAgentOutput> = {
   identifier: "research-agent",
   version: 1,
-  purpose: "Produces structured research intelligence (findings, trend signals, keyword opportunities) for a topic, grounded only in the workspace's own Knowledge-Pack-configured trusted sources — never fabricated citations.",
+  purpose: "Produces structured research intelligence (findings, trend signals, keyword clusters) for a topic, grounded only in the workspace's own Knowledge-Pack-configured trusted sources — never fabricated citations.",
   type: "research",
   requiredKnowledgePackCapability: "trusted_sources",
   providerPreference: { provider: "openai", model: "gpt-4o" },

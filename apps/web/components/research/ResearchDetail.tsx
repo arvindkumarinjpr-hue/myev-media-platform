@@ -3,12 +3,37 @@
 import { useEffect, useRef, useState } from "react";
 import { researchApi } from "../../lib/api/research";
 import { friendlyMessage } from "../../lib/errors";
-import type { Research } from "../../lib/types";
+import type { KeywordClusterMember, Research } from "../../lib/types";
 import { ErrorBanner, LoadingState } from "../ui/Feedback";
 import { ResearchStatusBadge } from "./ResearchStatusBadge";
 import styles from "./ResearchDetail.module.css";
 
 const POLL_INTERVAL_MS = 1_500;
+
+function KeywordTable({ keywords }: { keywords: KeywordClusterMember[] }) {
+  return (
+    <table className={styles.keywordTable}>
+      <thead>
+        <tr>
+          <th>Keyword</th>
+          <th>Intent</th>
+          <th>Opportunity</th>
+          <th>Rationale</th>
+        </tr>
+      </thead>
+      <tbody>
+        {keywords.map((kw, i) => (
+          <tr key={i}>
+            <td>{kw.keyword}</td>
+            <td>{kw.intent}</td>
+            <td>{kw.opportunityScore}</td>
+            <td>{kw.rationale}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
 
 export function ResearchDetail({ workspaceId, researchId }: { workspaceId: string; researchId: string }) {
   const [research, setResearch] = useState<Research | null>(null);
@@ -140,6 +165,8 @@ export function ResearchDetail({ workspaceId, researchId }: { workspaceId: strin
                     <span className={`${styles.direction} ${styles[signal.direction]}`}>{signal.direction}</span>
                     <strong>{signal.topic}</strong>
                     <span className={styles.confidence}>{signal.confidence}% confidence</span>
+                    <span className={styles.confidence}>{signal.opportunityScore} opportunity</span>
+                    <span className={styles.freshness}>{signal.freshness}</span>
                     <p className={styles.evidence}>{signal.evidence}</p>
                   </li>
                 ))}
@@ -147,29 +174,26 @@ export function ResearchDetail({ workspaceId, researchId }: { workspaceId: strin
             </section>
           )}
 
-          {research.result.keywordOpportunities.length > 0 && (
+          {research.result.keywordClusters.length > 0 && (
             <section className={styles.section}>
-              <h2>Keyword Opportunities</h2>
-              <table className={styles.keywordTable}>
-                <thead>
-                  <tr>
-                    <th>Keyword</th>
-                    <th>Intent</th>
-                    <th>Opportunity</th>
-                    <th>Rationale</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {research.result.keywordOpportunities.map((kw, i) => (
-                    <tr key={i}>
-                      <td>{kw.keyword}</td>
-                      <td>{kw.intent}</td>
-                      <td>{kw.opportunityScore}</td>
-                      <td>{kw.rationale}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <h2>Keyword Clusters</h2>
+              {research.result.keywordClusters.map((cluster, i) => (
+                <div key={i} className={styles.keywordCluster}>
+                  <h3>{cluster.clusterTopic}</h3>
+                  {cluster.primaryKeywords.length > 0 && (
+                    <>
+                      <p className={styles.keywordSetLabel}>Primary</p>
+                      <KeywordTable keywords={cluster.primaryKeywords} />
+                    </>
+                  )}
+                  {cluster.secondaryKeywords.length > 0 && (
+                    <>
+                      <p className={styles.keywordSetLabel}>Secondary</p>
+                      <KeywordTable keywords={cluster.secondaryKeywords} />
+                    </>
+                  )}
+                </div>
+              ))}
             </section>
           )}
 

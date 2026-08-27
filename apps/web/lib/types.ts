@@ -126,18 +126,35 @@ export interface ResearchSource {
   title?: string;
 }
 
+// Module 4 Phase 4.4 (FR-RES-001) — opportunityScore (how actionable for
+// content planning, distinct from `confidence`) and freshness (topic
+// novelty/age, distinct from `direction`'s momentum) are both required
+// by the frozen AC: "Trend Agent returns topic + opportunity score +
+// freshness."
 export interface TrendSignal {
   topic: string;
   direction: "rising" | "steady" | "declining";
   confidence: number;
   evidence: string;
+  opportunityScore: number;
+  freshness: "new" | "ongoing" | "long-standing";
 }
 
-export interface KeywordOpportunity {
+// Module 4 Phase 4.4 (FR-KW-002/003) — per-keyword within a cluster.
+export interface KeywordClusterMember {
   keyword: string;
   intent: "informational" | "transactional" | "navigational" | "unknown";
   opportunityScore: number;
   rationale: string;
+}
+
+// Module 4 Phase 4.4 (FR-KW-001) — "Output includes primary + secondary
+// keyword sets per cluster," replacing the flat KeywordOpportunity[]
+// from Phase 4.1-4.3.
+export interface KeywordCluster {
+  clusterTopic: string;
+  primaryKeywords: KeywordClusterMember[];
+  secondaryKeywords: KeywordClusterMember[];
 }
 
 // Module 4 Phase 4.2 (FR-RES-004) — always present once status ===
@@ -161,7 +178,7 @@ export interface ResearchResult {
   findings: ResearchFinding[];
   sources: ResearchSource[];
   trendSignals: TrendSignal[];
-  keywordOpportunities: KeywordOpportunity[];
+  keywordClusters: KeywordCluster[];
   contentAngles: string[];
   deduplication?: ResearchDeduplicationSummary;
   citationIntegrity?: ResearchCitationIntegritySummary;

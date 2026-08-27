@@ -64,6 +64,42 @@ describe("RESEARCH_AGENT_V1", () => {
     expect(systemInstructions).not.toContain("https://unreachable.example/a");
   });
 
+  it("Module 4 Phase 4.4 (FR-KW-001): surfaces the Knowledge Pack's own configured keyword sets as a seed, distinct from ad hoc per-request seedKeywords", () => {
+    const req = input({ seedKeywords: ["ad hoc keyword"] });
+    const { systemInstructions } = RESEARCH_AGENT_V1.buildPrompt(req, context({ keywords: [{ name: "Core EV Terms", keywords: ["ev charging", "battery range"] }] }));
+    expect(systemInstructions).toContain("Core EV Terms");
+    expect(systemInstructions).toContain("ev charging");
+    expect(systemInstructions).toContain("battery range");
+  });
+
+  it("rejects a trend signal missing FR-RES-001's own required opportunityScore/freshness fields", async () => {
+    const instance = plainToInstance(ResearchAgentOutput, {
+      executiveSummary: "ok",
+      findings: [],
+      trendSignals: [{ topic: "battery swap", direction: "rising", confidence: 70, evidence: "x" }],
+      keywordClusters: [],
+      contentAngles: [],
+    });
+    const violations = await validate(instance);
+    const trendViolations = violations.find((v) => v.property === "trendSignals")?.children?.[0]?.children ?? [];
+    expect(trendViolations.some((v) => v.property === "opportunityScore")).toBe(true);
+    expect(trendViolations.some((v) => v.property === "freshness")).toBe(true);
+  });
+
+  it("rejects a flat, unclustered keyword shape — FR-KW-001 requires clusters with primary/secondary sets", async () => {
+    const instance = plainToInstance(ResearchAgentOutput, {
+      executiveSummary: "ok",
+      findings: [],
+      trendSignals: [],
+      keywordClusters: [{ clusterTopic: "EV battery swap" }],
+      contentAngles: [],
+    });
+    const violations = await validate(instance);
+    const clusterViolations = violations.find((v) => v.property === "keywordClusters")?.children?.[0]?.children ?? [];
+    expect(clusterViolations.some((v) => v.property === "primaryKeywords")).toBe(true);
+    expect(clusterViolations.some((v) => v.property === "secondaryKeywords")).toBe(true);
+  });
+
   it("includes the topic and optional fields in the user prompt when provided", () => {
     const req = input({ objective: "find content gaps", geography: "India", seedKeywords: ["battery swap"] });
     const { prompt } = RESEARCH_AGENT_V1.buildPrompt(req, context());
@@ -90,8 +126,14 @@ describe("RESEARCH_AGENT_V1", () => {
     const instance = plainToInstance(ResearchAgentOutput, {
       executiveSummary: "EV battery swap stations are gaining traction.",
       findings: [{ summary: "Adoption is rising in dense urban areas.", sourceIds: ["S1"] }],
-      trendSignals: [{ topic: "battery swap", direction: "rising", confidence: 70, evidence: "Multiple government pilots referenced in source." }],
-      keywordOpportunities: [{ keyword: "ev battery swap", intent: "informational", opportunityScore: 62, rationale: "High relevance to topic, no direct competitor coverage found in sources." }],
+      trendSignals: [{ topic: "battery swap", direction: "rising", confidence: 70, evidence: "Multiple government pilots referenced in source.", opportunityScore: 75, freshness: "ongoing" }],
+      keywordClusters: [
+        {
+          clusterTopic: "EV battery swap",
+          primaryKeywords: [{ keyword: "ev battery swap", intent: "informational", opportunityScore: 62, rationale: "High relevance to topic, no direct competitor coverage found in sources." }],
+          secondaryKeywords: [],
+        },
+      ],
       contentAngles: ["A city-by-city look at battery swap rollouts"],
     });
     const violations = await validate(instance);
@@ -111,7 +153,7 @@ describe("RESEARCH_AGENT_V1.postProcessOutput", () => {
       executiveSummary: "EV battery swap stations are gaining traction.",
       findings: [],
       trendSignals: [],
-      keywordOpportunities: [],
+      keywordClusters: [],
       contentAngles: [],
       ...overrides,
     });
