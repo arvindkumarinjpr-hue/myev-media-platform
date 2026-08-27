@@ -252,7 +252,7 @@ function CompletedReport({ result }: { result: NonNullable<Research["result"]> }
                   <div className={styles.trendHead}>
                     <span className={styles.trendTopic}>{signal.topic}</span>
                     <Badge tone={dir.tone}>
-                      <DirIcon aria-hidden="true" style={{ width: "0.85rem", height: "0.85rem" }} /> {dir.label}
+                      <DirIcon aria-hidden="true" className={styles.dirIcon} /> {dir.label}
                     </Badge>
                     <Badge tone="neutral">{TREND_FRESHNESS[signal.freshness]}</Badge>
                   </div>

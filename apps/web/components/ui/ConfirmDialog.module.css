@@ -67,7 +67,7 @@
 .destructiveButton {
   background: var(--color-danger);
   border-color: var(--color-danger);
-  color: #fff;
+  color: var(--color-on-solid);
 }
 
 .destructiveButton:hover {

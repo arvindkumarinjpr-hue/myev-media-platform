@@ -242,4 +242,55 @@ describe("ResearchDetail", () => {
     await waitFor(() => expect(screen.getByText(/AI provider required for this Research run isn't configured/i)).toBeInTheDocument());
     expect(screen.queryByText(/provider registry/i)).not.toBeInTheDocument();
   });
+
+  it("renders a minimal Completed result safely — every optional array/object empty or absent, no crash", async () => {
+    const minimal = research({
+      result: {
+        executiveSummary: "",
+        findings: [],
+        sources: [],
+        trendSignals: [],
+        keywordClusters: [],
+        contentAngles: [],
+        // deduplication and citationIntegrity both omitted — both are
+        // typed optional on ResearchResult.
+      },
+    });
+    jest.spyOn(global, "fetch").mockResolvedValue(mockResponse({ data: minimal }));
+    renderDetail();
+
+    // The header always renders; every optional section is cleanly
+    // omitted rather than rendering as an empty/broken block.
+    await waitFor(() => expect(screen.getByRole("heading", { name: "EV battery swap stations" })).toBeInTheDocument());
+    expect(screen.queryByText("Executive summary")).not.toBeInTheDocument();
+    expect(screen.queryByText("Key findings")).not.toBeInTheDocument();
+    expect(screen.queryByText("Trend intelligence")).not.toBeInTheDocument();
+    expect(screen.queryByText("Keyword opportunities")).not.toBeInTheDocument();
+    expect(screen.queryByText("Content angles")).not.toBeInTheDocument();
+    // Sources is the one section that always renders, with its own empty copy.
+    expect(screen.getByText("No verified sources were reachable at research time.")).toBeInTheDocument();
+  });
+
+  it("handles unusually long finding text and long URLs without breaking the layout or truncating citation data", async () => {
+    const longUrl = `https://example.gov/${"segment-".repeat(20)}report`;
+    const longText = "This finding restates the same qualifying context ".repeat(15).trim();
+    const completed = research({
+      result: {
+        executiveSummary: longText,
+        findings: [{ summary: longText, evidence: longText, sourceIds: ["s1"], provenance: "source_backed" }],
+        sources: [{ sourceId: "s1", url: longUrl, sourceType: "GOVERNMENT" }],
+        trendSignals: [],
+        keywordClusters: [],
+        contentAngles: [longText],
+      },
+    });
+    jest.spyOn(global, "fetch").mockResolvedValue(mockResponse({ data: completed }));
+    renderDetail();
+
+    await waitFor(() => expect(screen.getAllByText(longText).length).toBeGreaterThan(0));
+    // The long URL has no title, so it must fall back to a readable
+    // hostname — never rendering the raw multi-segment URL as link text.
+    expect(screen.queryByText(longUrl)).not.toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: /example\.gov/ }).length).toBeGreaterThan(0);
+  });
 });

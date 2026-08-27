@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { KnowledgePackEditor } from "./KnowledgePackEditor";
 import { SessionProvider } from "../../contexts/session-context";
@@ -78,6 +78,36 @@ describe("KnowledgePackEditor", () => {
 
     await waitFor(() => expect(spy.mock.calls.some((c) => (c[1] as RequestInit)?.method === "PATCH")).toBe(true));
     expect(lastPatchBody(spy).publishingStrategy).toEqual({ cadence: "monthly", channels: ["blog"], notes: "leave alone" });
+  });
+
+  it("round-trips the full Industry Profile object through the Advanced JSON editor, including keys the structured form doesn't know about", async () => {
+    const pack = makeKnowledgePack({
+      status: "DRAFT",
+      lockVersion: 1,
+      industryProfile: { industry: "EV", region: "India", complianceNotes: "keep me", nested: { a: 1, b: [1, 2, 3] } },
+    });
+    const spy = jest.spyOn(global, "fetch").mockResolvedValue(mockResponse({ data: pack }));
+    renderEditor(pack);
+
+    // Open the Advanced disclosure and confirm it shows the WHOLE object,
+    // unknown keys included — not just the structured subset.
+    await userEvent.click(screen.getByText(/Advanced — edit the raw industry profile/));
+    const raw = screen.getByLabelText("Raw industry profile JSON") as HTMLTextAreaElement;
+    expect(JSON.parse(raw.value)).toEqual({ industry: "EV", region: "India", complianceNotes: "keep me", nested: { a: 1, b: [1, 2, 3] } });
+
+    // Edit a structured-known key (industry) directly through the raw
+    // editor — the structured "Industry" field above must reflect it.
+    const edited = { industry: "Electric Vehicles", region: "India", complianceNotes: "keep me", nested: { a: 1, b: [1, 2, 3] } };
+    // userEvent.type() parses "{"/"}" as key-descriptor syntax, which JSON
+    // is full of — fireEvent.change is the standard escape hatch for
+    // pasting/setting a raw value into a controlled textarea.
+    fireEvent.change(raw, { target: { value: JSON.stringify(edited) } });
+
+    await waitFor(() => expect((screen.getByLabelText("Industry", { exact: true }) as HTMLInputElement).value).toBe("Electric Vehicles"));
+
+    await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(spy.mock.calls.some((c) => (c[1] as RequestInit)?.method === "PATCH")).toBe(true));
+    expect(lastPatchBody(spy).industryProfile).toEqual(edited);
   });
 
   it("adds a Trusted Source and sends the whole collection on save", async () => {

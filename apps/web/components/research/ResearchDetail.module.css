@@ -253,6 +253,11 @@
   color: var(--color-text-strong);
 }
 
+.dirIcon {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
 .trendEvidence {
   font-size: var(--text-sm);
   color: var(--color-text-muted);

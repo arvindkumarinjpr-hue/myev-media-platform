@@ -201,6 +201,12 @@ p {
 
   --color-link: var(--color-primary);
 
+  /* Fixed white text for a solid saturated-color fill (e.g. the danger
+   * button) — intentionally NOT theme-relative like --color-text-inverse,
+   * since a solid red/blue fill's own lightness doesn't flip with the
+   * theme the way a page background does. */
+  --color-on-solid: #ffffff;
+
   /* Status */
   --color-success-bg: #e5f6ec;
   --color-success-fg: #10673a;
