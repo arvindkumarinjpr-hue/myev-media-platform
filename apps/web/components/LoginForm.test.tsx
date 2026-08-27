@@ -42,4 +42,26 @@ describe("LoginForm", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Invalid email or password.");
     expect(push).not.toHaveBeenCalled();
   });
+
+  it("toggles password visibility client-side without affecting the submitted value", async () => {
+    jest.spyOn(global, "fetch").mockResolvedValue(mockResponse({ data: { user: { publicId: "u1" } } }));
+    render(<LoginForm />);
+
+    const password = screen.getByLabelText("Password") as HTMLInputElement;
+    expect(password).toHaveAttribute("type", "password");
+
+    const toggle = screen.getByRole("button", { name: "Show password" });
+    await userEvent.type(password, "hunter2hunter2");
+    await userEvent.click(toggle);
+
+    expect(password).toHaveAttribute("type", "text");
+    expect(screen.getByRole("button", { name: "Hide password" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Hide password" }));
+    expect(password).toHaveAttribute("type", "password");
+
+    // Toggling visibility must never touch the actual value or submit the form.
+    expect(password.value).toBe("hunter2hunter2");
+    expect(push).not.toHaveBeenCalled();
+  });
 });

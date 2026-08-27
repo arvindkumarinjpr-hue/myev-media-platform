@@ -280,6 +280,7 @@ p {
   /* Blue → violet AI accent */
   --color-accent-blue: #4d6ef5;
   --color-accent-violet: #8b5cf6;
+  --color-accent-cyan: #22d3ee;
   --gradient-accent: linear-gradient(90deg, #4d6ef5 0%, #8b5cf6 100%);
   --gradient-accent-soft: linear-gradient(135deg, rgba(77, 110, 245, 0.14) 0%, rgba(139, 92, 246, 0.1) 100%);
   --gradient-hero: radial-gradient(120% 160% at 100% -10%, rgba(77, 110, 245, 0.16) 0%, rgba(139, 92, 246, 0.09) 38%, rgba(77, 110, 245, 0) 68%),

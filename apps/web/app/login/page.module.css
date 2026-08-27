@@ -1,135 +1,66 @@
 .page {
   min-height: 100vh;
-  display: grid;
-  grid-template-columns: 1fr;
+  display: flex;
+  flex-direction: column;
   background: var(--color-bg);
 }
 
-.brandPanel {
-  display: none;
-}
-
 .formPanel {
+  flex: 1;
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: var(--space-6) var(--space-4);
+  padding: var(--space-8) var(--space-4);
+  overflow: hidden;
+}
+
+/* Extremely subtle right-panel decoration — a soft gradient wash plus a
+ * faint dotted texture, purely background, never competing with the
+ * form. */
+.formPanel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(60% 50% at 85% 0%, rgba(77, 110, 245, 0.06), transparent 70%),
+    radial-gradient(50% 45% at 100% 100%, rgba(139, 92, 246, 0.05), transparent 70%);
+  pointer-events: none;
+}
+
+.formPanel::after {
+  content: "";
+  position: absolute;
+  top: 2.5rem;
+  right: 3rem;
+  width: 9rem;
+  height: 9rem;
+  background-image: radial-gradient(rgba(77, 110, 245, 0.35) 1px, transparent 1.5px);
+  background-size: 14px 14px;
+  opacity: 0.5;
+  pointer-events: none;
 }
 
 .formWrap {
+  position: relative;
   width: 100%;
-  max-width: 22rem;
+  max-width: 27rem;
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: var(--space-5);
 }
 
-.mobileBrand {
-  display: block;
-}
-
-/* Form */
-.form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-sm);
-  padding: var(--space-6);
-}
-
-.formHead {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.heading {
-  font-size: var(--text-xl);
-  font-weight: var(--weight-bold);
-}
-
-.subtext {
-  font-size: var(--text-sm);
-  color: var(--color-text-muted);
-}
-
-.submit {
-  margin-top: var(--space-2);
-}
-
-/* Two-panel layout on wider screens */
-@media (min-width: 56rem) {
+/* Desktop / tablet: full split composition. Kept down to 48rem (768px)
+ * so it still applies at the tablet check width — only below that does
+ * the page switch to the stacked mobile hero. */
+@media (min-width: 48rem) {
   .page {
-    grid-template-columns: 1.05fr 1fr;
+    flex-direction: row;
   }
 
-  .brandPanel {
-    /* Same local token remap Sidebar.module.css uses — brandTagline/
-     * brandPoints below already consume the generic --color-text-*
-     * tokens, so they render correctly on this dark panel with no
-     * colour rules of their own. */
-    --color-text-strong: var(--color-sidebar-text-strong);
-    --color-text-muted: var(--color-sidebar-text-muted);
-
-    position: relative;
-    display: flex;
-    align-items: center;
-    padding: var(--space-16) clamp(2.5rem, 6vw, 5rem);
-    background: var(--sidebar-gradient);
-    border-right: 1px solid var(--color-sidebar-border);
-    overflow: hidden;
-  }
-
-  .brandArt {
-    position: absolute;
-    top: 50%;
-    right: -4rem;
-    width: 26rem;
-    height: 26rem;
-    transform: translateY(-50%);
-    opacity: 0.9;
-  }
-
-  .brandChip {
-    display: inline-flex;
-    padding: var(--space-2) var(--space-3);
-    background: var(--color-sidebar-text-strong);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-md);
-  }
-
-  .brandInner {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-6);
-    max-width: 26rem;
-  }
-
-  .brandTagline {
-    font-size: var(--text-lg);
-    font-weight: var(--weight-semibold);
-    color: var(--color-text-strong);
-    line-height: var(--leading-snug);
-  }
-
-  .brandPoints {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
-    padding-left: var(--space-5);
-    color: var(--color-text-muted);
-    font-size: var(--text-sm);
-  }
-
-  .brandPoints li {
-    padding-left: var(--space-1);
-  }
-
-  .mobileBrand {
-    display: none;
+  .formPanel {
+    flex: 0 0 44%;
+    max-width: 44%;
+    padding: var(--space-8) clamp(1.5rem, 4vw, 3rem);
   }
 }

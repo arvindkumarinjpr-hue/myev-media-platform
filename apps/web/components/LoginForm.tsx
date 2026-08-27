@@ -9,13 +9,15 @@ import { Alert } from "./ui/Alert";
 import { Button } from "./ui/Button";
 import { FormField } from "./ui/FormField";
 import { Input } from "./ui/Input";
-import styles from "../app/login/page.module.css";
+import { ArrowRightIcon, EyeIcon, EyeOffIcon, LockIcon, MailIcon } from "./ui/icons";
+import styles from "./LoginForm.module.css";
 
 export function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -35,7 +37,7 @@ export function LoginForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className={styles.form} aria-label="Sign in" noValidate>
+    <form onSubmit={handleSubmit} className={styles.card} aria-label="Sign in" noValidate>
       <div className={styles.formHead}>
         <h1 className={styles.heading}>Sign in</h1>
         <p className={styles.subtext}>Welcome back. Enter your details to access your workspaces.</p>
@@ -55,6 +57,7 @@ export function LoginForm() {
             required
             autoComplete="email"
             autoFocus
+            iconLeft={<MailIcon />}
             value={email}
             onChange={(e) => setEmail(e.target.value)}
           />
@@ -65,16 +68,27 @@ export function LoginForm() {
         {(field) => (
           <Input
             {...field}
-            type="password"
+            type={showPassword ? "text" : "password"}
             required
             autoComplete="current-password"
+            iconLeft={<LockIcon />}
+            endAdornment={
+              <button
+                type="button"
+                className={styles.toggleVisibility}
+                onClick={() => setShowPassword((v) => !v)}
+                aria-label={showPassword ? "Hide password" : "Show password"}
+              >
+                {showPassword ? <EyeOffIcon /> : <EyeIcon />}
+              </button>
+            }
             value={password}
             onChange={(e) => setPassword(e.target.value)}
           />
         )}
       </FormField>
 
-      <Button type="submit" fullWidth loading={pending} className={styles.submit}>
+      <Button type="submit" fullWidth loading={pending} iconRight={<ArrowRightIcon />} className={styles.submit}>
         {pending ? "Signing in…" : "Sign in"}
       </Button>
     </form>

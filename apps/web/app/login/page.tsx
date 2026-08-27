@@ -1,8 +1,7 @@
 import { Suspense } from "react";
 import type { Metadata } from "next";
 import { LoginForm } from "../../components/LoginForm";
-import { Logo } from "../../components/shell/Logo";
-import { OrbitArt } from "../../components/ui/OrbitArt";
+import { LoginBrandPanel } from "../../components/login/LoginBrandPanel";
 import styles from "./page.module.css";
 
 export const metadata: Metadata = {
@@ -12,26 +11,12 @@ export const metadata: Metadata = {
 export default function LoginPage() {
   return (
     <main className={styles.page}>
-      <section className={styles.brandPanel} aria-hidden="true">
-        <OrbitArt className={styles.brandArt} />
-        <div className={styles.brandInner}>
-          <span className={styles.brandChip}>
-            <Logo />
-          </span>
-          <p className={styles.brandTagline}>The AI content operating system for EV media teams.</p>
-          <ul className={styles.brandPoints}>
-            <li>Run grounded research against your own trusted sources.</li>
-            <li>Turn findings into planned topic clusters and content series.</li>
-            <li>Keep brand, SEO, and knowledge rules in one versioned pack.</li>
-          </ul>
-        </div>
-      </section>
+      {/* The MYEV Media logo appears exactly once on this page, inside
+       * LoginBrandPanel — the form panel never renders its own copy. */}
+      <LoginBrandPanel />
 
       <section className={styles.formPanel}>
         <div className={styles.formWrap}>
-          <span className={styles.mobileBrand}>
-            <Logo size="sm" />
-          </span>
           <Suspense fallback={null}>
             <LoginForm />
           </Suspense>

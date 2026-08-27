@@ -1,0 +1,62 @@
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  width: 100%;
+  max-width: 28.5rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2xl);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 20px 45px -18px rgba(31, 41, 76, 0.18);
+  padding: var(--space-8);
+}
+
+.formHead {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.heading {
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.015em;
+  color: var(--color-text-strong);
+}
+
+.subtext {
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+  color: var(--color-text-muted);
+}
+
+.submit {
+  margin-top: var(--space-2);
+}
+
+.toggleVisibility {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-subtle);
+  pointer-events: auto;
+}
+
+.toggleVisibility svg {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+
+.toggleVisibility:hover {
+  color: var(--color-text-strong);
+  background: var(--color-surface-hover);
+}
+
+@media (max-width: 25rem) {
+  .card {
+    padding: var(--space-6);
+  }
+}
