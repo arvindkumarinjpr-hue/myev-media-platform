@@ -31,8 +31,9 @@
 
 .active,
 .active:hover {
-  color: var(--color-primary);
-  border-bottom-color: var(--color-primary);
+  color: var(--color-text-strong);
+  border-bottom: 2px solid transparent;
+  border-image: var(--gradient-accent) 1;
   font-weight: var(--weight-semibold);
 }
 

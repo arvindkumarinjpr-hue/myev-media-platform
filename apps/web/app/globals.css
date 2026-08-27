@@ -231,7 +231,7 @@ p {
   --focus-ring-offset: 2px;
 
   /* Layout */
-  --sidebar-width: 15.5rem;
+  --sidebar-width: 17rem;
   --topbar-height: 3.5rem;
   --container-max: 78rem;
   --container-narrow: 44rem;
@@ -241,6 +241,63 @@ p {
   /* Motion */
   --transition-fast: 120ms ease;
   --transition-base: 180ms ease;
+
+  /* ------------------------------------------------------------------
+   * Premium visual layer — the AI-workspace redesign.
+   *
+   * Two additions, both intentionally NOT gated behind [data-theme]:
+   * this is a fixed design decision (a permanently dark navigation
+   * rail + brand-gradient accents on an otherwise light workspace), not
+   * the separate light/dark THEME TOGGLE debt tracked above. It applies
+   * identically regardless of that still-unshipped toggle.
+   *
+   * 1. --color-sidebar-* — a self-contained dark palette. Sidebar.module.css
+   *    remaps the generic --color-surface/-text/-border/-primary-* tokens
+   *    to these, scoped to .sidebar, so SidebarNav/WorkspaceSwitcher/
+   *    AccountMenu/Menu need no colour changes of their own to render
+   *    correctly on the dark rail — they already consume the generic
+   *    tokens, which simply resolve differently inside that subtree.
+   * 2. --gradient-accent / --color-accent-* — the blue → violet
+   *    "AI-oriented" accent used for the Overview hero, active nav
+   *    treatment, and KPI icon containers.
+   * ------------------------------------------------------------------ */
+
+  --color-sidebar-bg: #0a0f1e;
+  --color-sidebar-bg-elevated: #0e1526;
+  --sidebar-gradient: linear-gradient(165deg, #0c1224 0%, #0a0f1e 55%, #0a0e1a 100%);
+  --color-sidebar-surface: #131b30;
+  --color-sidebar-surface-hover: #1a2338;
+  --color-sidebar-surface-sunken: #0d1425;
+  --color-sidebar-border: #212a42;
+  --color-sidebar-text-strong: #f4f6fc;
+  --color-sidebar-text: #c2c9dc;
+  --color-sidebar-text-muted: #8790a8;
+  --color-sidebar-text-subtle: #5b6379;
+  --color-sidebar-active-bg: linear-gradient(90deg, rgba(93, 129, 246, 0.24), rgba(148, 108, 240, 0.14));
+  --color-sidebar-active-fg: #d7e0ff;
+  --color-sidebar-accent: #7c9bff;
+
+  /* Blue → violet AI accent */
+  --color-accent-blue: #4d6ef5;
+  --color-accent-violet: #8b5cf6;
+  --gradient-accent: linear-gradient(90deg, #4d6ef5 0%, #8b5cf6 100%);
+  --gradient-accent-soft: linear-gradient(135deg, rgba(77, 110, 245, 0.14) 0%, rgba(139, 92, 246, 0.1) 100%);
+  --gradient-hero: radial-gradient(120% 160% at 100% -10%, rgba(77, 110, 245, 0.16) 0%, rgba(139, 92, 246, 0.09) 38%, rgba(77, 110, 245, 0) 68%),
+    linear-gradient(180deg, #f8f9ff 0%, #ffffff 60%);
+
+  /* Extra tinted icon-container colours (KPI/quick-action variety —
+   * "colored icon containers" without any of them being fabricated data). */
+  --color-accent-violet-bg: #f2edfe;
+  --color-accent-violet-fg: #7c3aed;
+  --color-accent-teal-bg: #e4f8f3;
+  --color-accent-teal-fg: #0e8f7c;
+  --color-accent-amber-bg: #fdf1de;
+  --color-accent-amber-fg: #b1610a;
+
+  /* Premium elevation */
+  --radius-2xl: 1.25rem;
+  --shadow-glow: 0 0 0 1px rgba(77, 110, 245, 0.06), 0 16px 40px -12px rgba(77, 110, 245, 0.28);
+  --shadow-card-hover: 0 10px 28px -8px rgba(15, 23, 42, 0.16), 0 2px 6px rgba(15, 23, 42, 0.06);
 
   /* Z-index */
   --z-sticky: 20;

@@ -164,6 +164,20 @@
   color: var(--color-text);
 }
 
+/* The report's lead card — a subtle accent border/wash marks it as the
+ * headline of the intelligence report, distinct from the sections below. */
+.summaryCard {
+  border-color: color-mix(in srgb, var(--color-accent-violet) 16%, var(--color-border));
+  background: var(--gradient-accent-soft), var(--color-surface);
+}
+
+.summaryCard .sectionTitle {
+  background: var(--gradient-accent);
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
 /* Findings */
 .findingList {
   list-style: none;

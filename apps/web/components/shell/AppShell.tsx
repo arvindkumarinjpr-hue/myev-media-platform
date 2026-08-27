@@ -35,7 +35,16 @@ export function AppShell({ workspaceId, workspaceName, role, permissions, childr
 
       <Sidebar workspaceId={workspaceId} workspaceName={workspaceName} role={role} permissions={permissions} />
 
-      <Drawer open={navOpen} onClose={() => setNavOpen(false)} title={<Logo size="sm" />}>
+      <Drawer
+        open={navOpen}
+        onClose={() => setNavOpen(false)}
+        title={
+          <span className={styles.drawerBrandChip}>
+            <Logo size="sm" />
+          </span>
+        }
+        className={styles.navDrawer}
+      >
         <div className={styles.drawerBody}>
           <SidebarNav
             workspaceId={workspaceId}

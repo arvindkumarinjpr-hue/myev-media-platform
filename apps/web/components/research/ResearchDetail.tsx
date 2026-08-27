@@ -198,7 +198,7 @@ function CompletedReport({ result }: { result: NonNullable<Research["result"]> }
       )}
 
       {result.executiveSummary?.trim() ? (
-        <Card>
+        <Card className={styles.summaryCard}>
           <h2 className={styles.sectionTitle}>Executive summary</h2>
           <p className={styles.summary}>{result.executiveSummary}</p>
         </Card>

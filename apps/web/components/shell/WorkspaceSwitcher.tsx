@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { cx } from "../../lib/cx";
 import { workspacesApi } from "../../lib/api/workspaces";
 import { friendlyMessage } from "../../lib/errors";
 import type { WorkspaceSummary } from "../../lib/types";
@@ -13,17 +14,21 @@ interface WorkspaceSwitcherProps {
   workspaceId: string;
   workspaceName: string;
   role?: string;
+  /** "rail" — the compact selector near the top of the dark desktop rail
+   * (opens downward). "footer" (default) — the wider trigger used at the
+   * bottom of the mobile drawer (opens upward, room permitting). */
+  variant?: "rail" | "footer";
 }
 
-export function WorkspaceSwitcher({ workspaceId, workspaceName, role }: WorkspaceSwitcherProps) {
+export function WorkspaceSwitcher({ workspaceId, workspaceName, role, variant = "footer" }: WorkspaceSwitcherProps) {
   return (
     <Menu
       label="Switch workspace"
       align="start"
-      side="up"
+      side={variant === "rail" ? "down" : "up"}
       className={styles.menu}
       trigger={({ ref, ...props }) => (
-        <button ref={ref} type="button" className={styles.trigger} {...props}>
+        <button ref={ref} type="button" className={cx(styles.trigger, variant === "rail" && styles.railTrigger)} {...props}>
           <span className={styles.avatar} aria-hidden="true">
             {workspaceName.charAt(0).toUpperCase()}
           </span>
