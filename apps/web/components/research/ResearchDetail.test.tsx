@@ -44,8 +44,14 @@ describe("ResearchDetail", () => {
         executiveSummary: "Battery swap pilots are expanding.",
         findings: [{ summary: "Multiple pilots underway.", evidence: "Cited government source.", sourceIds: ["S1"], provenance: "source_backed" }],
         sources: [{ sourceId: "S1", url: "https://reachable.example/gov", sourceType: "GOVERNMENT", title: "EV Infra Report" }],
-        trendSignals: [{ topic: "battery swap", direction: "rising", confidence: 70, evidence: "Pilot count increasing." }],
-        keywordOpportunities: [{ keyword: "ev battery swap", intent: "informational", opportunityScore: 62, rationale: "High relevance, low competitor coverage." }],
+        trendSignals: [{ topic: "battery swap", direction: "rising", confidence: 70, evidence: "Pilot count increasing.", opportunityScore: 80, freshness: "ongoing" }],
+        keywordClusters: [
+          {
+            clusterTopic: "EV battery swap",
+            primaryKeywords: [{ keyword: "ev battery swap", intent: "informational", opportunityScore: 62, rationale: "High relevance, low competitor coverage." }],
+            secondaryKeywords: [],
+          },
+        ],
         contentAngles: ["A city-by-city rollout comparison"],
       },
     });
@@ -70,7 +76,7 @@ describe("ResearchDetail", () => {
         ],
         sources: [{ sourceId: "S1", url: "https://reachable.example/gov", sourceType: "GOVERNMENT" }],
         trendSignals: [],
-        keywordOpportunities: [],
+        keywordClusters: [],
         contentAngles: [],
       },
     });
@@ -84,6 +90,35 @@ describe("ResearchDetail", () => {
     expect(screen.getAllByRole("link", { name: "https://reachable.example/gov" })).toHaveLength(2);
   });
 
+  it("Module 4 Phase 4.4: renders trend opportunity/freshness and keyword clusters grouped into primary/secondary sets", async () => {
+    const completed = research({
+      result: {
+        executiveSummary: "Battery swap pilots are expanding.",
+        findings: [],
+        sources: [],
+        trendSignals: [{ topic: "battery swap", direction: "rising", confidence: 70, evidence: "x", opportunityScore: 82, freshness: "new" }],
+        keywordClusters: [
+          {
+            clusterTopic: "EV battery swap",
+            primaryKeywords: [{ keyword: "ev battery swap station", intent: "informational", opportunityScore: 70, rationale: "High relevance." }],
+            secondaryKeywords: [{ keyword: "battery swap cost", intent: "transactional", opportunityScore: 40, rationale: "Lower but real relevance." }],
+          },
+        ],
+        contentAngles: [],
+      },
+    });
+    jest.spyOn(global, "fetch").mockResolvedValue(mockResponse({ data: completed }));
+    render(<ResearchDetail workspaceId="ws-1" researchId="res-1" />);
+
+    await waitFor(() => expect(screen.getByText("EV battery swap")).toBeInTheDocument());
+    expect(screen.getByText("82 opportunity")).toBeInTheDocument();
+    expect(screen.getByText("new")).toBeInTheDocument();
+    expect(screen.getByText("Primary")).toBeInTheDocument();
+    expect(screen.getByText("Secondary")).toBeInTheDocument();
+    expect(screen.getByText("ev battery swap station")).toBeInTheDocument();
+    expect(screen.getByText("battery swap cost")).toBeInTheDocument();
+  });
+
   it("shows a duplicate-removed note when FR-RES-004 deduplication removed something", async () => {
     const completed = research({
       result: {
@@ -91,7 +126,7 @@ describe("ResearchDetail", () => {
         findings: [{ summary: "Multiple pilots underway.", evidence: "Cited government source.", sourceIds: ["S1"], provenance: "source_backed" }],
         sources: [{ sourceId: "S1", url: "https://reachable.example/gov", sourceType: "GOVERNMENT", title: "EV Infra Report" }],
         trendSignals: [],
-        keywordOpportunities: [],
+        keywordClusters: [],
         contentAngles: [],
         deduplication: { duplicateFindingsRemoved: 2, duplicateSourcesRemoved: 1, requiresManualReview: false },
       },
@@ -109,7 +144,7 @@ describe("ResearchDetail", () => {
         findings: [],
         sources: [],
         trendSignals: [],
-        keywordOpportunities: [],
+        keywordClusters: [],
         contentAngles: [],
         deduplication: { duplicateFindingsRemoved: 0, duplicateSourcesRemoved: 0, requiresManualReview: true, reviewReason: "Automated deduplication could not be completed." },
       },

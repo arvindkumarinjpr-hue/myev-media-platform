@@ -28,8 +28,14 @@ describe("Worker (e2e) — research-agent against a production-style provider re
   const VALID_OUTPUT = {
     executiveSummary: "EV battery swap stations are seeing accelerating pilot deployments.",
     findings: [{ summary: "Multiple government pilots are underway.", evidence: "Referenced in the government source.", sourceIds: ["S1"] }],
-    trendSignals: [{ topic: "battery swap", direction: "rising", confidence: 65, evidence: "Government pilot count increasing per the cited source." }],
-    keywordOpportunities: [{ keyword: "ev battery swap station", intent: "informational", opportunityScore: 58, rationale: "High topical relevance, no direct competitor content found among the given sources." }],
+    trendSignals: [{ topic: "battery swap", direction: "rising", confidence: 65, evidence: "Government pilot count increasing per the cited source.", opportunityScore: 72, freshness: "ongoing" }],
+    keywordClusters: [
+      {
+        clusterTopic: "EV battery swap",
+        primaryKeywords: [{ keyword: "ev battery swap station", intent: "informational", opportunityScore: 58, rationale: "High topical relevance, no direct competitor content found among the given sources." }],
+        secondaryKeywords: [],
+      },
+    ],
     contentAngles: ["A regional breakdown of battery swap pilot programs"],
   };
 
