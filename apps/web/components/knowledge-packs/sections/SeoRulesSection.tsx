@@ -1,49 +1,65 @@
 "use client";
 
 import type { SeoRule } from "../../../lib/types";
-import { ListSectionShell } from "./ListSectionShell";
-import { jsonTextareaProps } from "./jsonTextareaProps";
-import styles from "./ListSectionShell.module.css";
+import { ChipsInput } from "../../ui/ChipsInput";
+import { FormField } from "../../ui/FormField";
+import { AdvancedJson } from "../AdvancedJson";
+import { RepeatableList } from "./RepeatableList";
 
-function toKeywordList(value: string): string[] {
-  return value
-    .split(",")
-    .map((k) => k.trim())
-    .filter(Boolean);
-}
-
-export function SeoRulesSection({ value, onChange, readOnly }: { value: SeoRule[]; onChange: (v: SeoRule[]) => void; readOnly: boolean }) {
+export function SeoRulesSection({
+  value,
+  onChange,
+  readOnly,
+}: {
+  value: SeoRule[];
+  onChange: (v: SeoRule[]) => void;
+  readOnly: boolean;
+}) {
   return (
-    <ListSectionShell
-      heading="SEO rules"
+    <RepeatableList
       items={value}
       onChange={onChange}
       readOnly={readOnly}
       emptyRow={() => ({ primaryKeywords: [], secondaryKeywords: [], internalLinkingPolicy: {}, schemaPreferences: {} })}
-      emptyLabel="No SEO rules configured yet."
+      emptyLabel="No SEO rules configured. Add the primary and secondary keywords content should target."
       addLabel="Add SEO rule"
-      renderRow={(item, update) => (
+      itemLabel={(i) => `SEO rule ${i + 1}`}
+      renderItem={(item, update) => (
         <>
-          <input
-            value={item.primaryKeywords.join(", ")}
-            onChange={(e) => update({ ...item, primaryKeywords: toKeywordList(e.target.value) })}
+          <FormField label="Primary keywords" hint="Press Enter or comma to add each keyword.">
+            {(field) => (
+              <ChipsInput
+                {...field}
+                value={item.primaryKeywords as string[]}
+                readOnly={readOnly}
+                placeholder="ev charging, electric vehicle range…"
+                onChange={(v) => update({ ...item, primaryKeywords: v })}
+              />
+            )}
+          </FormField>
+          <FormField label="Secondary keywords">
+            {(field) => (
+              <ChipsInput
+                {...field}
+                value={item.secondaryKeywords as string[]}
+                readOnly={readOnly}
+                placeholder="battery health, home charger…"
+                onChange={(v) => update({ ...item, secondaryKeywords: v })}
+              />
+            )}
+          </FormField>
+          <AdvancedJson
+            value={item.internalLinkingPolicy}
+            onChange={(v) => update({ ...item, internalLinkingPolicy: v })}
             readOnly={readOnly}
-            placeholder="Primary keywords, comma-separated"
-            className={styles.textInput}
+            noun="internal linking policy"
           />
-          <input
-            value={item.secondaryKeywords.join(", ")}
-            onChange={(e) => update({ ...item, secondaryKeywords: toKeywordList(e.target.value) })}
+          <AdvancedJson
+            value={item.schemaPreferences}
+            onChange={(v) => update({ ...item, schemaPreferences: v })}
             readOnly={readOnly}
-            placeholder="Secondary keywords, comma-separated"
-            className={styles.textInput}
+            noun="schema preferences"
           />
-          <textarea
-            {...jsonTextareaProps(item.internalLinkingPolicy, (v) => update({ ...item, internalLinkingPolicy: v }), readOnly, "Internal linking policy (JSON)")}
-            aria-label="Internal linking policy"
-            rows={1}
-          />
-          <textarea {...jsonTextareaProps(item.schemaPreferences, (v) => update({ ...item, schemaPreferences: v }), readOnly, "Schema preferences (JSON)")} aria-label="Schema preferences" rows={1} />
         </>
       )}
     />
