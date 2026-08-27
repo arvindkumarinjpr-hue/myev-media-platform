@@ -50,6 +50,34 @@
   padding-bottom: 0;
 }
 
+.findingHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.provenanceSourceBacked,
+.provenanceAiInference {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.provenanceSourceBacked {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.provenanceAiInference {
+  background: #e5e7eb;
+  color: #374151;
+}
+
 .evidence {
   color: #6b7280;
   font-size: 0.875rem;

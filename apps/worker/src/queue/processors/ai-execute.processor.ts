@@ -195,7 +195,7 @@ export class AiExecuteProcessor {
       const response = await provider.execute(aiRequest, controller.signal);
       clearTimeout(timeout);
 
-      const finalOutput = this.applyPostProcessing(definition, job.publicId, response.output);
+      const finalOutput = this.applyPostProcessing(definition, job.publicId, response.output, inputInstance);
 
       await this.recordStep(job.id, "provider_execution", "COMPLETED");
       await this.prisma.aiJob.update({
@@ -265,12 +265,12 @@ export class AiExecuteProcessor {
    * the AI generation itself already succeeded, so the unprocessed
    * output is persisted instead.
    */
-  private applyPostProcessing(definition: AgentDefinition, aiJobPublicId: string, output: string | Record<string, unknown>): string | Record<string, unknown> {
+  private applyPostProcessing(definition: AgentDefinition, aiJobPublicId: string, output: string | Record<string, unknown>, input: object): string | Record<string, unknown> {
     if (!definition.postProcessOutput || typeof output !== "object") {
       return output;
     }
     try {
-      return definition.postProcessOutput(output) as Record<string, unknown>;
+      return definition.postProcessOutput(output, input) as Record<string, unknown>;
     } catch (err) {
       this.logger.warn({ aiJobId: aiJobPublicId, agentIdentifier: definition.identifier, err: err instanceof Error ? err.message : String(err) }, "ai.execute.v1: postProcessOutput failed — persisting unprocessed output");
       return output;

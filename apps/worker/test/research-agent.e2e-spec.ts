@@ -27,8 +27,7 @@ describe("Worker (e2e) — research-agent against a production-style provider re
 
   const VALID_OUTPUT = {
     executiveSummary: "EV battery swap stations are seeing accelerating pilot deployments.",
-    findings: [{ summary: "Multiple government pilots are underway.", evidence: "Referenced in the government source.", sourceUrls: ["https://reachable.example/gov"] }],
-    sources: [{ url: "https://reachable.example/gov", sourceType: "GOVERNMENT", title: "EV Infrastructure Report" }],
+    findings: [{ summary: "Multiple government pilots are underway.", evidence: "Referenced in the government source.", sourceIds: ["S1"] }],
     trendSignals: [{ topic: "battery swap", direction: "rising", confidence: 65, evidence: "Government pilot count increasing per the cited source." }],
     keywordOpportunities: [{ keyword: "ev battery swap station", intent: "informational", opportunityScore: 58, rationale: "High topical relevance, no direct competitor content found among the given sources." }],
     contentAngles: ["A regional breakdown of battery swap pilot programs"],
@@ -90,7 +89,7 @@ describe("Worker (e2e) — research-agent against a production-style provider re
         knowledgePackId,
         inputPayload: {
           topic: "EV battery swap stations",
-          verifiedSources: [{ url: "https://reachable.example/gov", sourceType: "GOVERNMENT", reachable: true }],
+          verifiedSources: [{ sourceId: "S1", url: "https://reachable.example/gov", sourceType: "GOVERNMENT", reachable: true }],
         },
         status: "QUEUED",
         correlationId: randomUUID(),
@@ -123,10 +122,19 @@ describe("Worker (e2e) — research-agent against a production-style provider re
     expect(finished.status).toBe("COMPLETED");
     expect(finished.providerUsed).toBe("openai");
     expect(finished.agentVersion).toBe(1);
-    // Module 4 Phase 4.2 — RESEARCH_AGENT_V1's own postProcessOutput
-    // (FR-RES-004) always runs on a successful response, adding a
-    // `deduplication` summary even when nothing was actually duplicate.
-    expect(finished.outputPayload).toEqual({ ...VALID_OUTPUT, deduplication: { duplicateFindingsRemoved: 0, duplicateSourcesRemoved: 0, requiresManualReview: false } });
+    // Module 4 Phase 4.2/4.3 — RESEARCH_AGENT_V1's own postProcessOutput
+    // always runs on a successful response: FR-RES-004 adds a
+    // `deduplication` summary even when nothing was actually duplicate,
+    // and FR-RES-002's structural citation check reconstructs sources[]
+    // from the real verified-source record for every ID actually cited
+    // (never the model's own text) and adds `citationIntegrity`.
+    expect(finished.outputPayload).toEqual({
+      ...VALID_OUTPUT,
+      findings: [{ ...VALID_OUTPUT.findings[0], provenance: "source_backed" }],
+      sources: [{ sourceId: "S1", url: "https://reachable.example/gov", sourceType: "GOVERNMENT" }],
+      citationIntegrity: { invalidCitationsRemoved: 0 },
+      deduplication: { duplicateFindingsRemoved: 0, duplicateSourcesRemoved: 0, requiresManualReview: false },
+    });
 
     // The exact Knowledge Pack this ran against is independently
     // re-verifiable from the row itself, not just trusted from submission
@@ -138,13 +146,9 @@ describe("Worker (e2e) — research-agent against a production-style provider re
     const withDuplicates = {
       ...VALID_OUTPUT,
       findings: [
-        { summary: "Multiple government pilots for battery swap stations are currently underway across major cities.", evidence: "Referenced in the government source.", sourceUrls: ["https://reachable.example/gov"] },
-        { summary: "Multiple government pilots for battery swap stations are currently underway across several cities.", evidence: "Referenced in the government source.", sourceUrls: ["https://reachable.example/gov"] },
-        { summary: "Private fleet operators are separately piloting swap stations at highway rest stops.", evidence: "Referenced in the government source.", sourceUrls: ["https://reachable.example/gov"] },
-      ],
-      sources: [
-        { url: "https://reachable.example/gov", sourceType: "GOVERNMENT", title: "EV Infrastructure Report" },
-        { url: "https://reachable.example/gov", sourceType: "GOVERNMENT", title: "EV Infrastructure Report" },
+        { summary: "Multiple government pilots for battery swap stations are currently underway across major cities.", evidence: "Referenced in the government source.", sourceIds: ["S1"] },
+        { summary: "Multiple government pilots for battery swap stations are currently underway across several cities.", evidence: "Referenced in the government source.", sourceIds: ["S1"] },
+        { summary: "Private fleet operators are separately piloting swap stations at highway rest stops.", evidence: "Referenced in the government source.", sourceIds: ["S1"] },
       ],
     };
     ({ moduleRef, processor, prisma, mockCreate } = await bootstrapWithMockedOpenAi(JSON.stringify(withDuplicates)));
@@ -158,10 +162,18 @@ describe("Worker (e2e) — research-agent against a production-style provider re
 
     const finished = await prisma.aiJob.findUniqueOrThrow({ where: { id: job.id } });
     expect(finished.status).toBe("COMPLETED");
-    const output = finished.outputPayload as unknown as typeof withDuplicates & { deduplication: { duplicateFindingsRemoved: number; duplicateSourcesRemoved: number; requiresManualReview: boolean } };
+    const output = finished.outputPayload as unknown as typeof withDuplicates & {
+      sources: unknown[];
+      deduplication: { duplicateFindingsRemoved: number; duplicateSourcesRemoved: number; requiresManualReview: boolean };
+    };
     expect(output.findings).toHaveLength(2);
+    // Both surviving findings cite the same S1, so sources[] (built from
+    // the set of actually-cited IDs, per Phase 4.3) is naturally a
+    // single entry — duplicateSourcesRemoved is 0, not because nothing
+    // was reused, but because ID-based reconstruction never produces a
+    // duplicate in the first place.
     expect(output.sources).toHaveLength(1);
-    expect(output.deduplication).toEqual({ duplicateFindingsRemoved: 1, duplicateSourcesRemoved: 1, requiresManualReview: false });
+    expect(output.deduplication).toEqual({ duplicateFindingsRemoved: 1, duplicateSourcesRemoved: 0, requiresManualReview: false });
   }, 30_000);
 
   it("rejects malformed structured output safely — terminal FAILED, MALFORMED_STRUCTURED_OUTPUT, never a raw/partial object persisted", async () => {
@@ -180,8 +192,18 @@ describe("Worker (e2e) — research-agent against a production-style provider re
     expect(finished.outputPayload).toBeNull();
   }, 30_000);
 
-  it("never cites a URL outside the request's own verifiedSources — the mocked model output is validated, not trusted blindly", async () => {
-    const fabricated = { ...VALID_OUTPUT, sources: [{ url: "https://fabricated-not-in-request.example", sourceType: "GOVERNMENT" }] };
+  it("Module 4 Phase 4.3 (FR-RES-002): a fabricated citation is never promoted into a verified source, through the real durable pipeline", async () => {
+    // The mocked model cites a raw URL that was never handed to it as a
+    // verified source ID — exactly the failure mode Phase 4.1's own
+    // version of this test documented as NOT YET structurally enforced
+    // ("citation-fabrication resistance is a prompt-engineering
+    // guarantee, not a runtime check"). This now proves the gap is
+    // closed: RESEARCH_AGENT_V1's own postProcessOutput runs inside the
+    // real Worker pipeline and structurally rejects it.
+    const fabricated = {
+      ...VALID_OUTPUT,
+      findings: [{ summary: "A claim citing a URL never provided as a verified source.", evidence: "Fabricated.", sourceIds: ["https://fabricated-not-in-request.example"] }],
+    };
     ({ moduleRef, processor, prisma, mockCreate } = await bootstrapWithMockedOpenAi(JSON.stringify(fabricated)));
 
     const { userId, workspaceId } = await createTestWorkspace(prisma);
@@ -189,16 +211,19 @@ describe("Worker (e2e) — research-agent against a production-style provider re
     const job = await createResearchAiJob(prisma, workspaceId, userId, knowledgePackId);
     const backgroundJob = await createBackgroundJobRow(prisma);
 
-    // Module 3's own structured-output validation only enforces shape
-    // (schema), not citation provenance — that integrity guarantee is
-    // the buildPrompt system-instruction contract (research-agent.spec.ts,
-    // packages/shared), not a runtime check here. This test documents
-    // that boundary honestly: the pipeline persists whatever
-    // schema-valid output the model returned; citation-fabrication
-    // resistance is a prompt-engineering guarantee, not (yet) a
-    // structural one enforced by this processor.
     await processor.handle({ aiJobPublicId: job.publicId }, { jobId: backgroundJob.id, correlationId: job.correlationId, attempt: 1, isCancelled: async () => false });
     const finished = await prisma.aiJob.findUniqueOrThrow({ where: { id: job.id } });
     expect(finished.status).toBe("COMPLETED");
+
+    const output = finished.outputPayload as unknown as {
+      findings: { sourceIds: string[]; provenance: string }[];
+      sources: unknown[];
+      citationIntegrity: { invalidCitationsRemoved: number };
+    };
+    expect(output.findings[0].sourceIds).toEqual([]);
+    expect(output.findings[0].provenance).toBe("ai_inference");
+    expect(output.sources).toEqual([]);
+    expect(output.citationIntegrity).toEqual({ invalidCitationsRemoved: 1 });
+    expect(JSON.stringify(finished.outputPayload)).not.toContain("fabricated-not-in-request.example");
   }, 30_000);
 });

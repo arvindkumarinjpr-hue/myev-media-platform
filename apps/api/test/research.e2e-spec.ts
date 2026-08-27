@@ -148,13 +148,18 @@ describe("Research API (e2e)", () => {
 
     const job = await ctx.prisma.aiJob.findFirstOrThrow({ where: { publicId: res.body.data.publicId, workspaceId: ws.id } });
     expect(job.agentName).toBe("research-agent");
-    const input = job.inputPayload as { verifiedSources: { url: string; reachable: boolean }[] };
+    const input = job.inputPayload as { verifiedSources: { sourceId: string; url: string; reachable: boolean }[] };
     expect(input.verifiedSources).toEqual(
       expect.arrayContaining([
-        { url: "https://reachable.example/gov", sourceType: "GOVERNMENT", reachable: true },
-        { url: "https://unreachable.example/news", sourceType: "PUBLICATION", reachable: false },
+        { sourceId: expect.any(String), url: "https://reachable.example/gov", sourceType: "GOVERNMENT", reachable: true },
+        { sourceId: expect.any(String), url: "https://unreachable.example/news", sourceType: "PUBLICATION", reachable: false },
       ]),
     );
+    // Module 4 Phase 4.3 — sourceIds are stable and distinct per run,
+    // never derived from or guessable by the model (RESEARCH_AGENT_V1's
+    // own structural citation enforcement depends on this).
+    const sourceIds = input.verifiedSources.map((s) => s.sourceId);
+    expect(new Set(sourceIds).size).toBe(sourceIds.length);
     // The reachability check genuinely ran against the pack's own
     // trusted sources, at submission time — not skipped, not faked.
     expect(checkReachableCalls.length).toBeGreaterThan(0);

@@ -78,8 +78,13 @@ export interface AgentDefinition<TInput extends object = object, TOutput extends
    * never fails the underlying job, since the AI generation itself
    * already succeeded. Deliberately synchronous — no I/O, no provider
    * call, nothing that competes with this agent's own timeoutMs budget.
+   *
+   * Module 4 Phase 4.3 — also receives the agent's own validated input,
+   * so a hook can structurally check output against what was actually
+   * authorized at submission time (e.g. Research's own citation-ID
+   * validation against input.verifiedSources) without re-deriving it.
    */
-  postProcessOutput?(output: TOutput): TOutput;
+  postProcessOutput?(output: TOutput, input: TInput): TOutput;
 
   /** Milliseconds — passed through to the AIRequest's own timeoutMs (Phase 3.1's provider-execution boundary), not a second independent timeout mechanism. */
   readonly timeoutMs: number;
