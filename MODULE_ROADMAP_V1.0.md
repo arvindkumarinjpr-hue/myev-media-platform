@@ -70,7 +70,7 @@ Module 1 delivered **zero AI-generation, zero content-automation, and zero exter
 | 2 | Knowledge Pack Engine | Foundation | **COMPLETE / FROZEN** | Completed — ACR-014 approved & closed 2026-08-22 |
 | 3 | AI Provider Abstraction Layer + AI Agent Framework (core) | Platform | **COMPLETE / FROZEN** | Completed — Phases 3.1-3.5 shipped via PRs #31-38, all merged with green CI. No ACR required (§10). |
 | 4 | Research Engine + Trend Discovery + Keyword Engine | Core Engine | **COMPLETE / FROZEN (P0)** | Completed — Phases 4.1-4.4 shipped via PRs #40-43, all merged with green CI. FR-RES-003 Competitor Analysis deferred (P1, not P0-blocking). Relational `keywords`/`keyword_clusters` persistence (DB Design §5.8) deferred pending a real downstream consumer. No Module 5 work included. No ACR required (§10). |
-| 5 | Content Planner | Core Engine | NOT STARTED | Required before start |
+| 5 | Content Planner | Core Engine | **FUNCTIONALLY COMPLETE / FROZEN (P0)** | Completed — Phase 5.1 shipped via PR #45, merged with green CI. FR-PLAN-002 Topic Cluster Planning implemented (persisted `keywords`/`keyword_clusters`/`keyword_cluster_members`/`topic_clusters`, promoting Module 4 Research output into durable planning records). FR-PLAN-003 Content Series was already complete (Module 1E). FR-PLAN-001 Editorial Calendar deferred — `content_items` structurally requires a real, validated `body` at creation (DTO/schema/Ownership Matrix all assign real content_item creation to Module 6/7 Blog/Video Automation, not Content Planner); no scheduled-date field or PLANNED/IDEA status exists in frozen schema, and the DB Design's `schedules` entity (§5.7) is an undefined stub with no field list, unlike every other entity in that document. Same deferral pattern as Module 4's own Competitor Analysis/keyword-persistence deferrals (row above). No ACR required (§10, routine status edit). |
 | 6 | Blog Automation + Content Scoring Engine (shared foundation) | Content Engine | NOT STARTED | Required before start; **additional internal gate** — see §11 |
 | 7 | Video Automation | Content Engine | NOT STARTED | Required before start; blocked until Module 6's Content Scoring sub-phase is frozen (§11) |
 | 8 | SEO Engine + Internal Linking | Content Engine (cross-cutting) | NOT STARTED | Required before start |
@@ -226,9 +226,9 @@ Modules 2 and 3 are independent of each other (parallelizable). Modules 10 and 1
 | 1 | COMPLETE / FROZEN | — |
 | 2 | NOT STARTED | Module 1 ✓ |
 | 3 | NOT STARTED | Module 1 ✓ |
-| 4 | NOT STARTED | Modules 2, 3 |
-| 5 | NOT STARTED | Module 4 |
-| 6 | NOT STARTED | Module 5 |
+| 4 | COMPLETE / FROZEN | Modules 2, 3 ✓ |
+| 5 | FUNCTIONALLY COMPLETE / FROZEN | Module 4 ✓ |
+| 6 | NOT STARTED | Module 5 ✓ |
 | 7 | NOT STARTED | Modules 5, 6 |
 | 8 | NOT STARTED | Modules 6, 7 |
 | 9 | NOT STARTED | Module 8 |
