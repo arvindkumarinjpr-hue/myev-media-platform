@@ -69,7 +69,7 @@ Module 1 delivered **zero AI-generation, zero content-automation, and zero exter
 | 1 | Foundation & Infrastructure | Foundation | **COMPLETE / FROZEN** | N/A — already frozen |
 | 2 | Knowledge Pack Engine | Foundation | **COMPLETE / FROZEN** | Completed — ACR-014 approved & closed 2026-08-22 |
 | 3 | AI Provider Abstraction Layer + AI Agent Framework (core) | Platform | **COMPLETE / FROZEN** | Completed — Phases 3.1-3.5 shipped via PRs #31-38, all merged with green CI. No ACR required (§10). |
-| 4 | Research Engine + Trend Discovery + Keyword Engine | Core Engine | NOT STARTED | Required before start |
+| 4 | Research Engine + Trend Discovery + Keyword Engine | Core Engine | **COMPLETE / FROZEN (P0)** | Completed — Phases 4.1-4.4 shipped via PRs #40-43, all merged with green CI. FR-RES-003 Competitor Analysis deferred (P1, not P0-blocking). Relational `keywords`/`keyword_clusters` persistence (DB Design §5.8) deferred pending a real downstream consumer. No Module 5 work included. No ACR required (§10). |
 | 5 | Content Planner | Core Engine | NOT STARTED | Required before start |
 | 6 | Blog Automation + Content Scoring Engine (shared foundation) | Content Engine | NOT STARTED | Required before start; **additional internal gate** — see §11 |
 | 7 | Video Automation | Content Engine | NOT STARTED | Required before start; blocked until Module 6's Content Scoring sub-phase is frozen (§11) |
