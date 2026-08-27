@@ -1,22 +1,46 @@
 .sidebar {
+  /*
+   * Local token remap — everything inside this rail borrows the dark
+   * sidebar palette instead of the light-mode globals. SidebarNav,
+   * WorkspaceSwitcher, AccountMenu and the shared Menu popover all
+   * already consume these generic tokens; scoping the remap here means
+   * none of them need dark-specific styling of their own.
+   */
+  --color-surface: var(--color-sidebar-surface);
+  --color-surface-hover: var(--color-sidebar-surface-hover);
+  --color-surface-sunken: var(--color-sidebar-surface-sunken);
+  --color-border: var(--color-sidebar-border);
+  --color-text-strong: var(--color-sidebar-text-strong);
+  --color-text: var(--color-sidebar-text);
+  --color-text-muted: var(--color-sidebar-text-muted);
+  --color-text-subtle: var(--color-sidebar-text-subtle);
+  --color-primary: var(--color-sidebar-accent);
+  --color-primary-subtle-bg: var(--color-sidebar-active-bg);
+  --color-primary-subtle-fg: var(--color-sidebar-active-fg);
+
   position: fixed;
   inset: 0 auto 0 0;
   width: var(--sidebar-width);
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
-  padding: var(--space-4) var(--space-3) var(--space-5);
-  background: var(--color-surface);
-  border-right: 1px solid var(--color-border);
+  padding: var(--space-5) var(--space-3) var(--space-4);
+  background: var(--sidebar-gradient);
+  border-right: 1px solid var(--color-sidebar-border);
   overflow: hidden;
 }
 
 .brand {
-  padding: var(--space-2) var(--space-3) var(--space-1);
+  padding: 0 var(--space-2) var(--space-1);
 }
 
-.brand a {
-  display: inline-block;
+.brandChip {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-sidebar-text-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
 }
 
 .brand a:hover {
@@ -24,7 +48,12 @@
 }
 
 .brand a:focus-visible {
+  outline-color: var(--color-sidebar-accent);
   outline-offset: 4px;
+}
+
+.switcher {
+  padding: 0 var(--space-1);
 }
 
 .scroll {
@@ -32,6 +61,11 @@
   overflow-y: auto;
   margin: 0 calc(var(--space-2) * -1);
   padding: var(--space-1) var(--space-2);
+}
+
+.footer {
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-sidebar-border);
 }
 
 /* Below the shell breakpoint the Drawer replaces this rail entirely. */

@@ -32,6 +32,30 @@
   flex: 1;
 }
 
+/* The mobile drawer mirrors the dark desktop rail — same token remap
+ * Sidebar.module.css uses, so SidebarNav/SidebarFooter/AccountMenu need
+ * no styling of their own to match. */
+.navDrawer {
+  --color-surface: var(--color-sidebar-surface);
+  --color-surface-hover: var(--color-sidebar-surface-hover);
+  --color-surface-sunken: var(--color-sidebar-surface-sunken);
+  --color-border: var(--color-sidebar-border);
+  --color-text-strong: var(--color-sidebar-text-strong);
+  --color-text: var(--color-sidebar-text);
+  --color-text-muted: var(--color-sidebar-text-muted);
+  --color-text-subtle: var(--color-sidebar-text-subtle);
+  --color-primary: var(--color-sidebar-accent);
+  --color-primary-subtle-bg: var(--color-sidebar-active-bg);
+  --color-primary-subtle-fg: var(--color-sidebar-active-fg);
+}
+
+.drawerBrandChip {
+  display: inline-flex;
+  padding: var(--space-1) var(--space-2);
+  background: var(--color-sidebar-text-strong);
+  border-radius: var(--radius-md);
+}
+
 @media (max-width: 59.99rem) {
   .main {
     margin-left: 0;

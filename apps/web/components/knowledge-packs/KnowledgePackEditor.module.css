@@ -30,7 +30,7 @@
   justify-content: space-between;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
   background: var(--color-text-strong);
   color: var(--color-text-inverse);
   box-shadow: var(--shadow-lg);
