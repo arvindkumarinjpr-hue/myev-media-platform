@@ -126,6 +126,14 @@ export const PERMISSIONS = {
   // agents exist in a later phase).
   AI_JOB_CREATE: "AI_JOB_CREATE",
   AI_JOB_VIEW: "AI_JOB_VIEW",
+
+  // Module 5 Phase 5.1: absent from the frozen AI_CONTENT_ROLE_PERMISSION_MATRIX_V1.0.md's
+  // formal Permission Categories, same "Missing constant identified"
+  // precedent as CONTENT_SERIES_MANAGE above — a single, type-agnostic
+  // gate for topic-cluster CRUD (create/list/get), following that exact
+  // pattern rather than a RESEARCH-style RUN/VIEW split, since this is a
+  // planning/management action, not an execution one.
+  TOPIC_CLUSTER_MANAGE: "TOPIC_CLUSTER_MANAGE",
 } as const;
 
 export type PermissionConstant = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -159,6 +167,7 @@ export const PERMISSION_CATEGORIES: Record<string, PermissionConstant[]> = {
   ],
   Content: [PERMISSIONS.BLOG_VIEW, PERMISSIONS.VIDEO_VIEW, PERMISSIONS.CONTENT_SERIES_MANAGE],
   AI: [PERMISSIONS.AI_JOB_CREATE, PERMISSIONS.AI_JOB_VIEW],
+  "Content Planner": [PERMISSIONS.TOPIC_CLUSTER_MANAGE],
 };
 
 /**
@@ -240,6 +249,9 @@ export const ROLE_PERMISSIONS: Record<string, PermissionConstant[]> = {
     // in a later phase with real agents.
     PERMISSIONS.AI_JOB_CREATE,
     PERMISSIONS.AI_JOB_VIEW,
+    // Module 5 Phase 5.1 final RBAC map: full content-planning footprint,
+    // same tier as CONTENT_SERIES_MANAGE above.
+    PERMISSIONS.TOPIC_CLUSTER_MANAGE,
   ],
   "Content Manager": [
     PERMISSIONS.PROJECT_VIEW,
@@ -279,6 +291,9 @@ export const ROLE_PERMISSIONS: Record<string, PermissionConstant[]> = {
     // business agents exist.
     PERMISSIONS.AI_JOB_CREATE,
     PERMISSIONS.AI_JOB_VIEW,
+    // Module 5 Phase 5.1 final RBAC map: Content Manager plans content
+    // from Research the same way it already runs Research itself.
+    PERMISSIONS.TOPIC_CLUSTER_MANAGE,
   ],
   "Content Writer": [
     PERMISSIONS.RESEARCH_RUN,
@@ -310,6 +325,11 @@ export const ROLE_PERMISSIONS: Record<string, PermissionConstant[]> = {
     // video), no series management.
     PERMISSIONS.BLOG_VIEW,
     PERMISSIONS.VIDEO_VIEW,
+    // Module 5 Phase 5.1 final RBAC map: FR-PLAN-002's own user story is
+    // written from the SEO Specialist's perspective ("As an SEO
+    // Specialist, I want topics grouped into clusters...") — the one role
+    // outside Owner/Administrator/Content Manager that gets this.
+    PERMISSIONS.TOPIC_CLUSTER_MANAGE,
   ],
   "Video Editor": [
     PERMISSIONS.VIDEO_CREATE,

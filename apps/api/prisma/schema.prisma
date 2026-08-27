@@ -303,6 +303,11 @@ enum AuditAction {
   // telemetry, fully captured in ai_jobs.status + ai_job_steps, not a
   // second business event.
   AI_EXECUTION_REQUESTED
+  // Module 5 Phase 5.1: the moment of promoting a Research-derived
+  // keyword cluster into a real Topic Cluster — a deliberate human
+  // planning decision, mirroring AI_EXECUTION_REQUESTED's own "audit the
+  // triggering intent" reasoning above.
+  TOPIC_CLUSTER_CREATED
 }
 
 model User {
@@ -357,6 +362,8 @@ model User {
   createdKnowledgePacks  KnowledgePack[]       @relation("KnowledgePackCreatedBy")
   updatedKnowledgePacks  KnowledgePack[]       @relation("KnowledgePackUpdatedBy")
   createdAiJobs          AiJob[]               @relation("AiJobCreatedBy")
+  createdKeywordClusters KeywordCluster[]      @relation("KeywordClusterCreatedBy")
+  createdTopicClusters   TopicCluster[]        @relation("TopicClusterCreatedBy")
 
   @@map("users")
 }
@@ -568,6 +575,9 @@ model Workspace {
   scheduledJobs           ScheduledJob[]
   knowledgePacks          KnowledgePack[]
   aiJobs                  AiJob[]
+  keywords                Keyword[]
+  keywordClusters         KeywordCluster[]
+  topicClusters           TopicCluster[]
 
   @@index([slug])
   @@index([status])
@@ -1008,9 +1018,11 @@ model ContentSeries {
   updatedAt DateTime  @updatedAt @map("updated_at")
   deletedAt DateTime? @map("deleted_at")
 
-  contentItems ContentItem[]
+  contentItems  ContentItem[]
+  topicClusters TopicCluster[]
 
-  // Workspace-safe composite FK target for content_items.seriesId.
+  // Workspace-safe composite FK target for content_items.seriesId and
+  // topic_clusters.contentSeriesId.
   @@unique([id, workspaceId])
   @@index([workspaceId])
   @@index([projectId])
@@ -1506,6 +1518,10 @@ model KnowledgePack {
   // principle / ADR-004.
   aiJobs AiJob[]
 
+  // Module 5 Phase 5.1: the exact Knowledge Pack version a materialized
+  // KeywordCluster's own Research run executed against.
+  keywordClusters KeywordCluster[]
+
   // Workspace-safe composite FK target for projectId/currentVersionOfId
   // above and for projects.knowledge_pack_id.
   @@unique([id, workspaceId])
@@ -1737,6 +1753,11 @@ model AiJob {
 
   steps AiJobStep[]
 
+  // Module 5 Phase 5.1: a completed Research run's own keywordClusters[]
+  // JSONB output, materialized on demand into real rows once a user
+  // actually promotes one via topic_clusters.
+  keywordClusters KeywordCluster[]
+
   @@index([workspaceId])
   @@index([status])
   @@index([status, createdAt])
@@ -1761,4 +1782,147 @@ model AiJobStep {
 
   @@index([aiJobId])
   @@map("ai_job_steps")
+}
+
+// Module 5 Phase 5.1 — Content Planner: Topic Cluster Planning
+// (FR-PLAN-002). Implements DB Design §5.8's own frozen `keywords` /
+// `keyword_clusters` / `keyword_cluster_members`, deliberately left
+// unbuilt by Module 4 (no real downstream consumer existed yet — see
+// v4.0.0-module-4-frozen's own tag message). topic_clusters is that
+// real consumer: FR-PLAN-002's AC requires a cluster to link to real
+// content_series/keyword_clusters rows, not an opaque JSONB blob.
+//
+// Everything here is a deterministic MATERIALIZATION of a completed
+// Research run's own ai_jobs.output_payload.keywordClusters[] — never a
+// second AI call, never a fabricated metric beyond what
+// RESEARCH_AGENT_V1 (Module 4) already computed and persisted.
+enum SearchIntent {
+  INFORMATIONAL
+  TRANSACTIONAL
+  NAVIGATIONAL
+  UNKNOWN
+}
+
+enum KeywordClusterMembership {
+  PRIMARY
+  SECONDARY
+}
+
+model Keyword {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  term             String
+  searchIntent     SearchIntent @map("search_intent")
+  opportunityScore Int          @map("opportunity_score")
+  rationale        String
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  clusterMemberships KeywordClusterMember[]
+
+  // A given term is materialized once per workspace — re-materializing
+  // the same (or a different) Research run's output reuses the existing
+  // row rather than duplicating it.
+  @@unique([workspaceId, term])
+  @@index([workspaceId])
+  @@map("keywords")
+}
+
+// One row per Research run's own keywordClusters[] entry, materialized
+// on demand — only when a user actually promotes it via topic_clusters,
+// never speculatively on every Research completion.
+model KeywordCluster {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  topic String
+
+  // Exact provenance: the Research run and Knowledge Pack version this
+  // cluster's own keyword intelligence actually came from — never
+  // re-resolved to "latest," matching AiJob.knowledgePackId's own
+  // execution-provenance guarantee.
+  sourceAiJobId String @map("source_ai_job_id") @db.Uuid
+  sourceAiJob   AiJob  @relation(fields: [sourceAiJobId], references: [id])
+
+  knowledgePackId String        @map("knowledge_pack_id") @db.Uuid
+  knowledgePack   KnowledgePack @relation(fields: [knowledgePackId, workspaceId], references: [id, workspaceId])
+
+  createdById String @map("created_by") @db.Uuid
+  createdBy   User   @relation("KeywordClusterCreatedBy", fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  members      KeywordClusterMember[]
+  topicCluster TopicCluster?
+
+  // Idempotent materialization: re-promoting the same Research run's
+  // same cluster topic reuses the existing row instead of duplicating.
+  @@unique([workspaceId, sourceAiJobId, topic])
+  @@index([workspaceId])
+  @@index([sourceAiJobId])
+  @@map("keyword_clusters")
+}
+
+model KeywordClusterMember {
+  id String @id @default(uuid()) @db.Uuid
+
+  keywordClusterId String         @map("keyword_cluster_id") @db.Uuid
+  keywordCluster   KeywordCluster @relation(fields: [keywordClusterId], references: [id])
+
+  keywordId String  @map("keyword_id") @db.Uuid
+  keyword   Keyword @relation(fields: [keywordId], references: [id])
+
+  membership KeywordClusterMembership
+
+  @@unique([keywordClusterId, keywordId])
+  @@index([keywordClusterId])
+  @@index([keywordId])
+  @@map("keyword_cluster_members")
+}
+
+// FR-PLAN-002 — "workspace_id, name; links content_series and
+// keyword_clusters." A deliberate human planning decision (promoting
+// one Research-derived keyword cluster into an actual content-planning
+// topic) — never AI-generated itself; every field here is either
+// user-supplied or resolved server-side from the real KeywordCluster/
+// ContentSeries rows it references. Never lets a caller invent a
+// keywordClusterId/contentSeriesId that doesn't already exist in this
+// same workspace (service-layer validation, not expressible as a single
+// FK condition alone).
+model TopicCluster {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  name String
+
+  // One topic cluster per keyword cluster — re-promoting the same
+  // keyword cluster is rejected (409), never a silent duplicate.
+  keywordClusterId String         @unique @map("keyword_cluster_id") @db.Uuid
+  keywordCluster   KeywordCluster @relation(fields: [keywordClusterId], references: [id])
+
+  // Workspace-safe composite FK, same pattern as ContentItem.seriesId —
+  // optional: FR-PLAN-002's own AC only requires the link to exist once
+  // populated, never that it's mandatory up front.
+  contentSeriesId String?        @map("content_series_id") @db.Uuid
+  contentSeries   ContentSeries? @relation(fields: [contentSeriesId, workspaceId], references: [id, workspaceId])
+
+  createdById String @map("created_by") @db.Uuid
+  createdBy   User   @relation("TopicClusterCreatedBy", fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([workspaceId])
+  @@index([contentSeriesId])
+  @@map("topic_clusters")
 }

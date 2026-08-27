@@ -15,6 +15,7 @@ import { KnowledgePacksModule } from "./modules/knowledge-packs/knowledge-packs.
 import { AiAgentsModule } from "./modules/ai-agents/ai-agents.module";
 import { AiJobsModule } from "./modules/ai-jobs/ai-jobs.module";
 import { ResearchModule } from "./modules/research/research.module";
+import { TopicClustersModule } from "./modules/topic-clusters/topic-clusters.module";
 import { MediaAssetsModule } from "./modules/media-assets/media-assets.module";
 import { ContentModule } from "./modules/content/content.module";
 import { BackgroundJobsModule } from "./modules/background-jobs/background-jobs.module";
@@ -56,6 +57,7 @@ import type { AppConfig } from "./config/configuration";
     AiAgentsModule,
     AiJobsModule,
     ResearchModule,
+    TopicClustersModule,
     MediaAssetsModule,
     ContentModule,
     BackgroundJobsModule,
