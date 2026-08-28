@@ -1,5 +1,6 @@
 import type { ComponentType, SVGProps } from "react";
 import {
+  BlogIcon,
   KnowledgePackIcon,
   OverviewIcon,
   ProjectIcon,
@@ -38,6 +39,16 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { label: "Research", segment: "research", icon: ResearchIcon, permission: "RESEARCH_VIEW" },
       { label: "Topic Clusters", segment: "topic-clusters", icon: TopicClusterIcon },
+    ],
+  },
+  {
+    title: "Content",
+    items: [
+      // Module 6 Phase 6.4 — visible to any role holding BLOG_VIEW
+      // (Content Writer, SEO Specialist, Content Manager, Publisher,
+      // Administrator, Owner). The backend re-checks BLOG_VIEW on every
+      // Blog route regardless of what this hides.
+      { label: "Blog", segment: "blog", icon: BlogIcon, permission: "BLOG_VIEW" },
     ],
   },
   {

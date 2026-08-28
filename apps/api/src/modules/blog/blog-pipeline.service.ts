@@ -721,6 +721,11 @@ export class BlogPipelineService {
         status: derived.draft.status,
         aiJobPublicId: persisted.draft.aiJobPublicId,
         contentVersionPublicId: persisted.draft.contentVersionPublicId,
+        // The structured generated draft (intro / body sections /
+        // conclusion / CTA / FAQs) — read-only, same as brief/outline/seo
+        // artifacts. The rendered markdown body lives in the immutable
+        // content_versions row; this is the structure for a reader view.
+        artifact: persisted.draft.artifact,
         // true when the AI job is done but the immutable version has not
         // yet been materialized (that happens on the next mutating stage).
         pendingFinalization: derived.draft.status === "READY" && !persisted.draft.contentVersionPublicId,
@@ -790,8 +795,27 @@ export class BlogPipelineService {
     throw new UnprocessableEntityException({ code: map[first] ?? BLOG_ERRORS.BLOG_QA_NOT_COMPLETE, message: `Cannot submit for review — unmet Quality Gates: ${gates.join(", ")}.` });
   }
 
-  /** The itemized improvement feedback exposed when a score blocks review (FR-BLOG-006 error condition). */
+  /**
+   * READ-ONLY. The latest content score for this BLOG pipeline item —
+   * overall + the five universal category scores + the Blog content-type
+   * dimension score + itemized factors and recommendations + the pass
+   * decision (FR-BLOG-006 / FR-SEO-003). Enumeration-safe and
+   * workspace-scoped: it first resolves the item as a BLOG pipeline
+   * article (`404` otherwise), then reads `ContentScoringService.
+   * getLatest()`. Never runs or re-runs scoring.
+   */
   async getScoreFeedback(workspaceId: string, itemPublicId: string): Promise<Record<string, unknown> | null> {
+    const item = await this.prisma.contentItem.findFirst({
+      where: { publicId: itemPublicId, workspaceId, deletedAt: null },
+      select: { contentType: true, metadata: true },
+    });
+    if (!item || item.contentType !== "BLOG") {
+      throw new NotFoundException({ code: "CONTENT_ITEM_NOT_FOUND", message: "Content item not found." });
+    }
+    if (!readPipelineState(item.metadata)) {
+      throw new UnprocessableEntityException({ code: BLOG_ERRORS.BLOG_NOT_A_PIPELINE_ITEM, message: "This blog content item was not started as a pipeline article." });
+    }
+
     const latest = await this.scoring.getLatest(workspaceId, itemPublicId);
     if (!latest) return null;
     return {
@@ -799,8 +823,10 @@ export class BlogPipelineService {
       passThreshold: latest.threshold.threshold,
       passed: latest.threshold.passed,
       categoryScores: latest.result.categoryScores,
+      dimension: latest.result.dimension,
       recommendations: latest.result.recommendations,
       factors: latest.result.factors,
+      calculatedAt: latest.calculatedAt,
     };
   }
 }

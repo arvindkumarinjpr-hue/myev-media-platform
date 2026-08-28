@@ -239,3 +239,208 @@ export interface ContentSeries {
   createdAt: string;
   updatedAt: string;
 }
+
+// Module 6 Phase 6.4 — mirrors BlogController / BlogPipelineService
+// serialize shapes exactly (Phase 6.3 read model + Phase 6.4 Blog-facing
+// score read). The per-item pipeline state lives in
+// content_items.metadata.blogPipeline on the backend; the frontend only
+// ever consumes the serialized read model.
+
+export type ContentItemStatus = "DRAFT" | "IN_PROGRESS" | "REVIEW" | "APPROVED" | "ARCHIVED" | "DELETED" | "RENDERING" | "FAILED" | "SCHEDULED" | "PUBLISHED";
+
+export type BlogGenerationStageStatus = "PENDING" | "GENERATING" | "READY" | "APPROVED" | "FAILED";
+export type BlogDeterministicStageStatus = "PENDING" | "COMPLETED";
+
+export type BlogPipelineStage =
+  | "BRIEF"
+  | "OUTLINE"
+  | "DRAFT"
+  | "SEO"
+  | "INTERNAL_LINKING"
+  | "QA"
+  | "SCORING"
+  | "READY_FOR_REVIEW"
+  | "IN_REVIEW"
+  | "APPROVED"
+  | "PUBLISH_READY";
+
+export type BlogSearchIntent = "informational" | "commercial" | "transactional" | "navigational";
+
+export interface BlogBriefArtifact {
+  searchIntent: BlogSearchIntent;
+  targetAudience: string;
+  primaryKeyword: string;
+  secondaryKeywords: string[];
+  ctaObjective: string;
+  rationale: string;
+}
+
+export interface BlogOutlineSection {
+  level: number;
+  heading: string;
+  purpose: string;
+}
+export interface BlogOutlineArtifact {
+  h1: string;
+  sections: BlogOutlineSection[];
+  faqPlan: string[];
+}
+
+export interface BlogSeoArtifact {
+  metaTitle: string;
+  metaDescription: string;
+  urlSlug: string;
+  schemaMarkup: Record<string, unknown>;
+}
+
+export interface BlogGenerationStage<A> {
+  status: BlogGenerationStageStatus;
+  aiJobPublicId: string | null;
+  artifact: A | null;
+  approvedAt?: string | null;
+  failureReason: string | null;
+}
+
+export interface BlogDraftFaq {
+  question: string;
+  answer: string;
+}
+export interface BlogDraftBodySection {
+  level: number;
+  heading: string;
+  content: string;
+}
+export interface BlogDraftArtifact {
+  introduction: string;
+  bodySections: BlogDraftBodySection[];
+  conclusion: string;
+  cta: string;
+  faqs: BlogDraftFaq[];
+}
+
+export interface BlogDraftStage {
+  status: BlogGenerationStageStatus;
+  aiJobPublicId: string | null;
+  contentVersionPublicId: string | null;
+  artifact: BlogDraftArtifact | null;
+  pendingFinalization: boolean;
+  failureReason: string | null;
+}
+
+export interface BlogSeoStage {
+  status: BlogGenerationStageStatus;
+  aiJobPublicId: string | null;
+  blogArticlePublicId: string | null;
+  artifact: BlogSeoArtifact | null;
+  pendingFinalization: boolean;
+  failureReason: string | null;
+}
+
+export interface BlogInternalLinkingStage {
+  status: BlogDeterministicStageStatus;
+  suggestions: { targetContentItemPublicId: string; anchorText: string; reason: string }[];
+  reason: "engine_not_available" | "no_related_content_found" | "suggestions_generated";
+  completedAt: string | null;
+}
+
+export type BlogQaCheckId = "grammar" | "readability" | "structure_headings" | "keyword_stuffing" | "duplicate_content" | "brand_compliance";
+
+export interface BlogQaCheck {
+  id: BlogQaCheckId;
+  label: string;
+  passed: boolean;
+  explanation: string;
+  evidence: string[];
+}
+
+export interface BlogQaStage {
+  status: BlogDeterministicStageStatus;
+  checks: BlogQaCheck[];
+  completedAt: string | null;
+}
+
+export interface BlogScoringStage {
+  status: BlogDeterministicStageStatus;
+  contentScorePublicId: string | null;
+  overallScore: number | null;
+  passThreshold: number | null;
+  passed: boolean | null;
+  ranAt: string | null;
+}
+
+export type BlogReviewGate =
+  | "brief_approved"
+  | "outline_approved"
+  | "draft_generated"
+  | "seo_complete"
+  | "internal_linking_completed"
+  | "qa_complete"
+  | "content_score_run"
+  | "content_score_passed";
+
+export interface BlogPipeline {
+  contentItem: { publicId: string; title: string; contentType: string; status: ContentItemStatus };
+  knowledgePackVersionId: string;
+  currentStage: BlogPipelineStage;
+  publishReady: boolean;
+  brief: BlogGenerationStage<BlogBriefArtifact>;
+  outline: BlogGenerationStage<BlogOutlineArtifact>;
+  draft: BlogDraftStage;
+  seo: BlogSeoStage;
+  internalLinking: BlogInternalLinkingStage;
+  qa: BlogQaStage;
+  scoring: BlogScoringStage;
+  reviewGatesUnmet: BlogReviewGate[];
+  canSubmitForReview: boolean;
+}
+
+export interface BlogListItem {
+  publicId: string;
+  title: string;
+  status: ContentItemStatus;
+  knowledgePackVersionId: string;
+  brief: BlogGenerationStageStatus;
+  outline: BlogGenerationStageStatus;
+  draft: BlogGenerationStageStatus;
+  seo: BlogGenerationStageStatus;
+  qa: BlogDeterministicStageStatus;
+  scoring: { status: BlogDeterministicStageStatus; passed: boolean | null; overallScore: number | null };
+}
+
+export type BlogScoreCategory = "SEO" | "VIRAL" | "QUALITY" | "ENGAGEMENT" | "BUSINESS";
+
+export interface BlogScoreFactor {
+  id: string;
+  category: BlogScoreCategory | null;
+  label: string;
+  value: number;
+  weight: number;
+  reason: string;
+  evidence?: Record<string, string | number | boolean>;
+}
+export interface BlogScoreRecommendation {
+  id: string;
+  priority: "critical" | "high" | "medium" | "low";
+  category: BlogScoreCategory | null;
+  message: string;
+  relatedFactorId?: string;
+}
+
+export interface BlogScoreFeedback {
+  overallScore: number;
+  passThreshold: number;
+  passed: boolean;
+  categoryScores: Record<BlogScoreCategory, number>;
+  dimension: { name: string; version: number; label: string; score: number };
+  recommendations: BlogScoreRecommendation[];
+  factors: BlogScoreFactor[];
+  calculatedAt: string;
+}
+
+// Module 1E content version (used for the Draft version history surface).
+export interface ContentVersion {
+  publicId: string;
+  versionNumber: number;
+  body: Record<string, unknown>;
+  createdAt: string;
+}
