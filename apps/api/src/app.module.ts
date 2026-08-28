@@ -18,6 +18,7 @@ import { ResearchModule } from "./modules/research/research.module";
 import { TopicClustersModule } from "./modules/topic-clusters/topic-clusters.module";
 import { MediaAssetsModule } from "./modules/media-assets/media-assets.module";
 import { ContentModule } from "./modules/content/content.module";
+import { ContentScoringModule } from "./modules/content-scoring/content-scoring.module";
 import { BackgroundJobsModule } from "./modules/background-jobs/background-jobs.module";
 import { SchedulesModule } from "./modules/schedules/schedules.module";
 import { EventsModule } from "./modules/events/events.module";
@@ -60,6 +61,7 @@ import type { AppConfig } from "./config/configuration";
     TopicClustersModule,
     MediaAssetsModule,
     ContentModule,
+    ContentScoringModule,
     BackgroundJobsModule,
     SchedulesModule,
     EventsModule,
