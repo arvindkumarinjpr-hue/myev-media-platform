@@ -53,10 +53,30 @@ export const AI_EXECUTE_V1_MANIFEST: ProcessorManifest<AiExecuteV1Payload, AiExe
   // it, and the task's own constraints forbid a Blog-specific job type
   // or a new processor. This is the frozen §21.1 "Configurable: Yes"
   // ceiling made real; it changes NO existing agent's behaviour
-  // (Research stays at 25s, well under this). Trade-off: a crashed
-  // worker's RUNNING row is now reconciled as stale after up to 5 min
-  // instead of 30s — inherent to supporting genuinely long AI jobs.
-  timeout: 300_000,
+  // (Research stays at 25s, well under this).
+  //
+  // Module 6 Phase 6.2 architecture-review correction: `timeout` MUST be
+  // strictly greater than the longest agent `timeoutMs`, never equal.
+  // ai-execute.processor.ts's own handler does real work AFTER its inner
+  // AbortController fires — the catch block, `recordStep` (a DB write),
+  // and `this.prisma.aiJob.update(...)` (another DB write) all still
+  // need to complete before the handler's promise resolves. The OUTER
+  // `Promise.race` timer in bullmq-worker.manager.ts also starts
+  // strictly EARLIER in wall-clock time than the inner AbortController's
+  // timer (KP resolution + a `recordStep` DB write happen in between) —
+  // so an agent timeoutMs equal to this `timeout` would let the outer
+  // ceiling fire at or before the inner one, discarding the handler's
+  // own graceful FAILED/TIMED_OUT transition in favour of the cruder
+  // forced-PROCESSOR_TIMEOUT path, with the "loser" handler promise
+  // still running in the background per that file's own documented
+  // Promise.race caveat. 360s gives Blog Draft (300s) a full 60s of
+  // operational headroom for that post-abort cleanup path — see
+  // agent-timeout-invariant.spec.ts for the enforced invariant
+  // (`agent.timeoutMs < this.timeout <= this.maximumRuntime`).
+  // Trade-off unchanged from the prior revision: a crashed worker's
+  // RUNNING row is now reconciled as stale after up to 6 min instead of
+  // 30s — inherent to supporting genuinely long AI jobs.
+  timeout: 360_000,
   maximumRuntime: 600_000,
   owningModule: "ai-agent-framework",
   description: "Generic durable AI agent execution — drives exactly one existing ai_jobs row to a terminal state via the Agent Framework pipeline.",

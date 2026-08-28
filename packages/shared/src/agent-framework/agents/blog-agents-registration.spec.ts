@@ -8,7 +8,6 @@ import {
   SEO_METADATA_AGENT_V1,
   TEST_ECHO_AGENT_V1,
 } from "../../index";
-import { AI_EXECUTE_V1_MANIFEST } from "../../queue/jobs/ai-execute";
 
 /**
  * Module 6 Phase 6.2 — the 4 Blog agents must be registrable and
@@ -55,15 +54,15 @@ describe("Blog agents — registration & contract", () => {
     expect(() => builder.register(BLOG_BRIEF_AGENT_V1)).toThrow(/duplicate/i);
   });
 
-  it("every blog agent's timeout is honourable under the ai.execute.v1 manifest ceiling", () => {
-    for (const a of BLOG_AGENTS) {
-      expect(a.timeoutMs).toBeGreaterThan(0);
-      expect(a.timeoutMs).toBeLessThanOrEqual(AI_EXECUTE_V1_MANIFEST.timeout);
-    }
-    // the frozen figures specifically
-    expect(BLOG_DRAFT_AGENT_V1.timeoutMs).toBe(300_000);
-    expect(SEO_METADATA_AGENT_V1.timeoutMs).toBe(180_000);
+  it("every blog agent declares a positive timeout", () => {
+    for (const a of BLOG_AGENTS) expect(a.timeoutMs).toBeGreaterThan(0);
   });
+  // The timeoutMs-vs-ai.execute.v1-manifest relationship (strictly below
+  // the manifest's outer timeout — never equal, with real headroom for
+  // the handler's own post-abort cleanup) plus the exact frozen 300_000/
+  // 180_000 figures are enforced generically, for every registered
+  // production agent (this file's 4 plus Research), in
+  // agent-timeout-invariant.spec.ts — not duplicated here.
 
   it("all use the shared AIProviderRegistry preference shape (no direct SDK coupling)", () => {
     for (const a of BLOG_AGENTS) {

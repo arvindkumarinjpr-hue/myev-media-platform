@@ -1,7 +1,6 @@
 import "reflect-metadata";
 import { plainToInstance } from "class-transformer";
 import { validate } from "class-validator";
-import { AI_EXECUTE_V1_MANIFEST } from "../../queue/jobs/ai-execute";
 import { BLOG_BRIEF_AGENT_V1, BlogBriefAgentInput, BlogBriefAgentOutput } from "./blog-brief-agent";
 import { blogAgentContext } from "./testing/blog-agent-context";
 
@@ -24,10 +23,12 @@ describe("BLOG_BRIEF_AGENT_V1", () => {
     expect(BLOG_BRIEF_AGENT_V1.inputSchema).toBe(BlogBriefAgentInput);
   });
 
-  it("declares a timeout within the ai.execute.v1 manifest ceiling", () => {
+  it("declares a positive timeout", () => {
     expect(BLOG_BRIEF_AGENT_V1.timeoutMs).toBeGreaterThan(0);
-    expect(BLOG_BRIEF_AGENT_V1.timeoutMs).toBeLessThanOrEqual(AI_EXECUTE_V1_MANIFEST.timeout);
   });
+  // The timeoutMs-vs-manifest relationship (strictly below the ai.execute.v1
+  // manifest's outer timeout — never equal) is enforced generically for
+  // every registered production agent in agent-timeout-invariant.spec.ts.
 
   describe("input validation", () => {
     it("accepts a minimal input (topic only)", async () => {

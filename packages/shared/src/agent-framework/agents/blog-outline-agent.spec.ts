@@ -1,7 +1,6 @@
 import "reflect-metadata";
 import { plainToInstance } from "class-transformer";
 import { validate } from "class-validator";
-import { AI_EXECUTE_V1_MANIFEST } from "../../queue/jobs/ai-execute";
 import { BLOG_OUTLINE_AGENT_V1, BlogOutlineAgentInput, BlogOutlineAgentOutput } from "./blog-outline-agent";
 import { blogAgentContext } from "./testing/blog-agent-context";
 
@@ -25,10 +24,13 @@ const validOutput = {
 };
 
 describe("BLOG_OUTLINE_AGENT_V1", () => {
-  it("registers correctly and stays under the manifest timeout ceiling", () => {
+  // The timeoutMs-vs-manifest relationship (strictly below the ai.execute.v1
+  // manifest's outer timeout — never equal) is enforced generically for
+  // every registered production agent in agent-timeout-invariant.spec.ts.
+  it("registers correctly and declares a positive timeout", () => {
     expect(BLOG_OUTLINE_AGENT_V1.identifier).toBe("blog-outline-agent");
     expect(BLOG_OUTLINE_AGENT_V1.version).toBe(1);
-    expect(BLOG_OUTLINE_AGENT_V1.timeoutMs).toBeLessThanOrEqual(AI_EXECUTE_V1_MANIFEST.timeout);
+    expect(BLOG_OUTLINE_AGENT_V1.timeoutMs).toBeGreaterThan(0);
   });
 
   describe("input validation", () => {

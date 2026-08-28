@@ -1,7 +1,6 @@
 import "reflect-metadata";
 import { plainToInstance } from "class-transformer";
 import { validate } from "class-validator";
-import { AI_EXECUTE_V1_MANIFEST } from "../../queue/jobs/ai-execute";
 import { BLOG_DRAFT_AGENT_V1, BlogDraftAgentInput, BlogDraftAgentOutput } from "./blog-draft-agent";
 import { blogAgentContext } from "./testing/blog-agent-context";
 
@@ -31,13 +30,15 @@ const validOutput = {
 };
 
 describe("BLOG_DRAFT_AGENT_V1", () => {
+  // The timeoutMs-vs-manifest relationship (strictly below the ai.execute.v1
+  // manifest's outer timeout — never equal — with real headroom for the
+  // handler's own post-abort cleanup) is enforced generically for every
+  // registered production agent in agent-timeout-invariant.spec.ts,
+  // which also pins this exact 300_000 value.
   it("registers correctly and applies the FROZEN FRD §21.1 Blog-draft timeout of 5 minutes", () => {
     expect(BLOG_DRAFT_AGENT_V1.identifier).toBe("blog-draft-agent");
     expect(BLOG_DRAFT_AGENT_V1.version).toBe(1);
     expect(BLOG_DRAFT_AGENT_V1.timeoutMs).toBe(300_000);
-    // The frozen timeout must be honourable — i.e. not silently capped
-    // below by the manifest.
-    expect(BLOG_DRAFT_AGENT_V1.timeoutMs).toBeLessThanOrEqual(AI_EXECUTE_V1_MANIFEST.timeout);
   });
 
   describe("input validation", () => {

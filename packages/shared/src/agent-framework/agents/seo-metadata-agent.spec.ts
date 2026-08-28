@@ -1,7 +1,6 @@
 import "reflect-metadata";
 import { plainToInstance } from "class-transformer";
 import { validate } from "class-validator";
-import { AI_EXECUTE_V1_MANIFEST } from "../../queue/jobs/ai-execute";
 import { SEO_METADATA_AGENT_V1, SeoMetadataAgentInput, SeoMetadataAgentOutput } from "./seo-metadata-agent";
 import { blogAgentContext } from "./testing/blog-agent-context";
 
@@ -21,12 +20,15 @@ const validOutput = {
 };
 
 describe("SEO_METADATA_AGENT_V1", () => {
+  // The timeoutMs-vs-manifest relationship (strictly below the ai.execute.v1
+  // manifest's outer timeout — never equal) is enforced generically for
+  // every registered production agent in agent-timeout-invariant.spec.ts,
+  // which also pins this exact 180_000 value.
   it("registers correctly and applies the FROZEN FRD §21.1 SEO-pass timeout of 3 minutes", () => {
     expect(SEO_METADATA_AGENT_V1.identifier).toBe("seo-metadata-agent");
     expect(SEO_METADATA_AGENT_V1.version).toBe(1);
     expect(SEO_METADATA_AGENT_V1.type).toBe("seo");
     expect(SEO_METADATA_AGENT_V1.timeoutMs).toBe(180_000);
-    expect(SEO_METADATA_AGENT_V1.timeoutMs).toBeLessThanOrEqual(AI_EXECUTE_V1_MANIFEST.timeout);
   });
 
   describe("input validation", () => {

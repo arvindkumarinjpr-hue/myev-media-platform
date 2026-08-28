@@ -1,7 +1,6 @@
 import "reflect-metadata";
 import { plainToInstance } from "class-transformer";
 import { validate } from "class-validator";
-import { AI_EXECUTE_V1_MANIFEST } from "../../queue/jobs/ai-execute";
 import type { AgentContext } from "../agent-context";
 import { RESEARCH_AGENT_V1, ResearchAgentInput, ResearchAgentOutput } from "./research-agent";
 
@@ -36,15 +35,11 @@ describe("RESEARCH_AGENT_V1", () => {
     expect(RESEARCH_AGENT_V1.providerPreference.provider).toBe("openai");
   });
 
-  it("declares a timeoutMs at or under the durable ai.execute.v1 manifest's own hard ceiling", () => {
-    // An agent timeoutMs above the manifest's own enforced `timeout`
-    // would have every durable execution killed by BullMqWorkerManager's
-    // own Promise.race before this AbortController ever fires. Asserted
-    // against the manifest value itself (raised to 5 min in Module 6
-    // Phase 6.2 for the frozen Blog-draft figure) so this stays a real
-    // invariant, not a magic number.
-    expect(RESEARCH_AGENT_V1.timeoutMs).toBeLessThanOrEqual(AI_EXECUTE_V1_MANIFEST.timeout);
-  });
+  // The timeoutMs-vs-manifest relationship (agent.timeoutMs STRICTLY
+  // below AI_EXECUTE_V1_MANIFEST.timeout — never equal, see that file's
+  // own doc comment) is enforced generically, for every registered
+  // production agent including this one, in
+  // agent-timeout-invariant.spec.ts — not duplicated here.
 
   it("lists only the exact reachable sources (by ID) in the system prompt's VERIFIED SOURCES section", () => {
     const req = input({
