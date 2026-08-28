@@ -82,6 +82,14 @@ export async function teardownE2eApp({ app, redis, prisma }: E2eApp): Promise<vo
     await tx.auditLog.deleteMany({ where: { OR: [{ actorUserId: { in: testUserIds } }, { workspaceId: { in: testWorkspaceIds } }] } });
     await tx.workspaceInvitation.deleteMany({ where: { workspaceId: { in: testWorkspaceIds } } });
 
+    // Module 6 Phase 6.1: content_scores / seo_reports carry RESTRICT FKs
+    // to content_items (composite), workspaces, AND users(created_by) —
+    // append-only score history, so they must be deleted outright before
+    // any of those three referenced rows. Scoped by workspace OR the
+    // scoring user (a non-owner SEO Specialist scores in the RBAC test).
+    await tx.contentScore.deleteMany({ where: { OR: [{ workspaceId: { in: testWorkspaceIds } }, { createdById: { in: testUserIds } }] } });
+    await tx.seoReport.deleteMany({ where: { OR: [{ workspaceId: { in: testWorkspaceIds } }, { createdById: { in: testUserIds } }] } });
+
     // Module 1E: content_items <-> content_versions and content_items <->
     // media_assets are both mutual RESTRICT cycles (current_version_id /
     // featured_media_asset_id point one way, content_item_id points the

@@ -364,6 +364,8 @@ model User {
   createdAiJobs          AiJob[]               @relation("AiJobCreatedBy")
   createdKeywordClusters KeywordCluster[]      @relation("KeywordClusterCreatedBy")
   createdTopicClusters   TopicCluster[]        @relation("TopicClusterCreatedBy")
+  createdContentScores   ContentScore[]        @relation("ContentScoreCreatedBy")
+  createdSeoReports      SeoReport[]           @relation("SeoReportCreatedBy")
 
   @@map("users")
 }
@@ -578,6 +580,8 @@ model Workspace {
   keywords                Keyword[]
   keywordClusters         KeywordCluster[]
   topicClusters           TopicCluster[]
+  contentScores           ContentScore[]
+  seoReports              SeoReport[]
 
   @@index([slug])
   @@index([status])
@@ -939,9 +943,11 @@ model ContentItem {
   archivedAt DateTime? @map("archived_at")
   deletedAt  DateTime? @map("deleted_at")
 
-  versions     ContentVersion[]     @relation("ContentItemVersions")
-  reviewEvents ContentReviewEvent[]
-  mediaAssets  MediaAsset[]         @relation("MediaAssetContentItem")
+  versions      ContentVersion[]     @relation("ContentItemVersions")
+  reviewEvents  ContentReviewEvent[]
+  mediaAssets   MediaAsset[]         @relation("MediaAssetContentItem")
+  contentScores ContentScore[]
+  seoReports    SeoReport[]
 
   // Workspace-safe composite FK target for content_review_events'
   // contentItemId relation.
@@ -1710,21 +1716,21 @@ model AiJob {
   inputPayload  Json  @map("input_payload")
   outputPayload Json? @map("output_payload")
 
-  providerUsed String?  @map("provider_used")
-  modelUsed    String?  @map("model_used")
-  tokenUsage   Json?    @map("token_usage")
+  providerUsed       String?  @map("provider_used")
+  modelUsed          String?  @map("model_used")
+  tokenUsage         Json?    @map("token_usage")
   // Precision matches typical per-token vendor pricing (fractional cents
   // per 1K tokens) — no cost/pricing table exists yet (Part 13 of Phase
   // 3.2's own spec: persist usage metadata without inventing fake
   // pricing logic), so this stays nullable until a real pricing source
   // is designed.
-  costEstimate Decimal? @map("cost_estimate") @db.Decimal(10, 6)
+  costEstimate       Decimal? @map("cost_estimate") @db.Decimal(10, 6)
   // Module 3 Phase 3.5 — the exact temperature/maxTokens/timeoutMs
   // resolveAgentExecution() resolved for this execution (agent-declared
   // generationDefaults merged with any caller override), completing
   // execution provenance: null only for a job that never reached a
   // resolved provider (e.g. UNKNOWN_AGENT, KNOWLEDGE_PACK_NOT_ACTIVE).
-  generationSettings Json? @map("generation_settings")
+  generationSettings Json?    @map("generation_settings")
 
   status AiJobStatus @default(QUEUED)
 
@@ -1925,4 +1931,90 @@ model TopicCluster {
   @@index([workspaceId])
   @@index([contentSeriesId])
   @@map("topic_clusters")
+}
+
+// ---------------------------------------------------------------------------
+// Module 6 Phase 6.1 — Content Scoring Engine (shared foundation).
+//
+// AI_CONTENT_DATABASE_AND_ENTITY_DESIGN_V1.0.md §5.10 (content_scores) and
+// §5.8 (seo_reports). Both are APPEND-ONLY score history: every scoring run
+// inserts a new row; "current" score = newest by calculated_at. This
+// matches CONTENT_SCORING_ENGINE_V1.0.md's Reporting ("Historical trend")
+// and its Learning Loop ("evaluates every content asset before AND after
+// publication") — a single mutable row could represent neither. Same
+// append-only, no-soft-delete shape as content_review_events /
+// keyword_clusters (DB Design §4: append-only rows carry created_at only).
+// ---------------------------------------------------------------------------
+
+model ContentScore {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  // Workspace-safe composite FK — a score always belongs to a content
+  // item in the SAME workspace (same pattern as ContentReviewEvent).
+  contentItemId String      @map("content_item_id") @db.Uuid
+  contentItem   ContentItem @relation(fields: [contentItemId, workspaceId], references: [id, workspaceId])
+
+  // The frozen Overall Content Score (§5.10 `score`, 0–100) — the
+  // equal-weight mean of the five universal category scores. The
+  // content-type dimension score (e.g. "Blog Score") is NOT this value;
+  // it lives inside `factors`.
+  score Int @map("score")
+
+  // §5.10 `factors (JSONB, explainability)` — the full ScoreResultJSON
+  // from @myev/shared: category scores, the applied dimension + its own
+  // score, every factor's contribution/weight/reason/evidence, and the
+  // deterministically-derived improvement recommendations.
+  factors Json @map("factors")
+
+  // §5.10 `calculated_at` — when this scoring run executed. The ordering
+  // key for "latest score".
+  calculatedAt DateTime @default(now()) @map("calculated_at")
+
+  createdById String @map("created_by") @db.Uuid
+  createdBy   User   @relation("ContentScoreCreatedBy", fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([workspaceId])
+  @@index([contentItemId])
+  @@index([contentItemId, calculatedAt])
+  @@map("content_scores")
+}
+
+model SeoReport {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  contentItemId String      @map("content_item_id") @db.Uuid
+  contentItem   ContentItem @relation(fields: [contentItemId, workspaceId], references: [id, workspaceId])
+
+  // §5.8 `seo_score (0–100)` — the SEO universal-category score for this
+  // run, mirrored here so the SEO view is queryable without unpacking
+  // `content_scores.factors`.
+  seoScore Int @map("seo_score")
+
+  // §5.8 `breakdown (JSONB, matches FR-SEO-003)` — the SeoBreakdownJSON
+  // from @myev/shared: every SEO factor "individually retrievable, not
+  // just the composite" (FR-SEO-003 AC), plus the SEO-scoped
+  // recommendations.
+  breakdown Json @map("breakdown")
+
+  calculatedAt DateTime @default(now()) @map("calculated_at")
+
+  createdById String @map("created_by") @db.Uuid
+  createdBy   User   @relation("SeoReportCreatedBy", fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([workspaceId])
+  @@index([contentItemId])
+  @@index([contentItemId, calculatedAt])
+  @@map("seo_reports")
 }

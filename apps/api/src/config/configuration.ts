@@ -101,6 +101,20 @@ export interface AppConfig {
     // this is the value application code validates against first.
     reviewCommentMaxLength: number;
   };
+  contentScoring: {
+    // Module 6 Phase 6.1 — FR-BLOG-006 / Blog Automation Engine Quality
+    // Gate #6 require a content score to "pass a threshold" before human
+    // review is triggered, but NO frozen document defines the number.
+    //
+    // This is therefore an IMPLEMENTATION DEFAULT, not frozen product
+    // policy: it is config-driven (never hardcoded in a service or
+    // test), it lives here and nowhere else, and the shared scoring
+    // domain contract in @myev/shared has no concept of a threshold at
+    // all. A later Blog-pipeline phase (or an operator) sets the real
+    // value; 70 is a conservative starting point on the 0–100 Overall
+    // Content Score scale.
+    passThreshold: number;
+  };
   ai: {
     // Module 3 Phase 3.4 — real vendor credentials, read here only (never
     // in packages/shared, never hardcoded, never sent to the web bundle).
@@ -207,6 +221,10 @@ export default (): AppConfig => ({
     maxStringValueLength: parseInt(process.env.CONTENT_MAX_STRING_VALUE_LENGTH ?? "200000", 10),
     base64HeuristicMinLength: parseInt(process.env.CONTENT_BASE64_HEURISTIC_MIN_LENGTH ?? "512", 10),
     reviewCommentMaxLength: parseInt(process.env.CONTENT_REVIEW_COMMENT_MAX_LENGTH ?? "2000", 10),
+  },
+  contentScoring: {
+    // Implementation default — see the AppConfig comment. Not a frozen figure.
+    passThreshold: parseInt(process.env.CONTENT_SCORING_PASS_THRESHOLD ?? "70", 10),
   },
   ai: {
     openai: { apiKey: process.env.OPENAI_API_KEY ?? "", model: process.env.OPENAI_MODEL ?? "gpt-4o" },
