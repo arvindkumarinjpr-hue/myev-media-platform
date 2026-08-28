@@ -366,6 +366,8 @@ model User {
   createdTopicClusters   TopicCluster[]        @relation("TopicClusterCreatedBy")
   createdContentScores   ContentScore[]        @relation("ContentScoreCreatedBy")
   createdSeoReports      SeoReport[]           @relation("SeoReportCreatedBy")
+  createdBlogArticles    BlogArticle[]         @relation("BlogArticleCreatedBy")
+  updatedBlogArticles    BlogArticle[]         @relation("BlogArticleUpdatedBy")
 
   @@map("users")
 }
@@ -582,6 +584,7 @@ model Workspace {
   topicClusters           TopicCluster[]
   contentScores           ContentScore[]
   seoReports              SeoReport[]
+  blogArticles            BlogArticle[]
 
   @@index([slug])
   @@index([status])
@@ -948,6 +951,7 @@ model ContentItem {
   mediaAssets   MediaAsset[]         @relation("MediaAssetContentItem")
   contentScores ContentScore[]
   seoReports    SeoReport[]
+  blogArticle   BlogArticle?
 
   // Workspace-safe composite FK target for content_review_events'
   // contentItemId relation.
@@ -2017,4 +2021,57 @@ model SeoReport {
   @@index([contentItemId])
   @@index([contentItemId, calculatedAt])
   @@map("seo_reports")
+}
+
+// ---------------------------------------------------------------------------
+// Module 6 Phase 6.2 — Blog Automation.
+//
+// AI_CONTENT_DATABASE_AND_ENTITY_DESIGN_V1.0.md §5.4: "blog_articles (1:1
+// extension where content_type = BLOG) — meta_title, meta_description,
+// url_slug, schema_markup (JSONB)." A single mutable current row per BLOG
+// content item (a type-specific extension, like the frozen video_scripts /
+// newsletters / social_posts rows) — NOT append-only, so it carries
+// created_at + updated_at and content_item_id is UNIQUE.
+//
+// Phase 6.2 adds the table/relations only. Nothing writes to it yet — the
+// SEO Metadata Agent produces this metadata as an AiJob output; the write
+// into blog_articles is Phase 6.3 orchestration.
+// ---------------------------------------------------------------------------
+
+model BlogArticle {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  // 1:1 with a BLOG content item, in the SAME workspace — workspace-safe
+  // composite FK, same pattern as ContentReviewEvent / ContentScore. The
+  // content_type = BLOG constraint is a service-layer rule (Phase 6.3),
+  // not expressible as a single FK.
+  contentItemId String      @unique @map("content_item_id") @db.Uuid
+  contentItem   ContentItem @relation(fields: [contentItemId, workspaceId], references: [id, workspaceId])
+
+  metaTitle       String @map("meta_title")
+  metaDescription String @map("meta_description")
+  urlSlug         String @map("url_slug")
+  // schema.org JSON-LD suggestion (FR-SEO-002 / DB Design §5.4 `schema_markup`).
+  schemaMarkup Json @map("schema_markup")
+
+  createdById String @map("created_by") @db.Uuid
+  createdBy   User   @relation("BlogArticleCreatedBy", fields: [createdById], references: [id])
+  updatedById String? @map("updated_by") @db.Uuid
+  updatedBy   User?   @relation("BlogArticleUpdatedBy", fields: [updatedById], references: [id])
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  // `contentItemId` alone is already @unique (the real 1:1 guarantee);
+  // Prisma additionally requires the composite declared so it recognises
+  // the to-one shape of the workspace-safe (contentItemId, workspaceId)
+  // relation — same pattern as ContentItem.@@unique([currentVersionId, id]).
+  @@unique([contentItemId, workspaceId])
+  @@index([workspaceId])
+  @@map("blog_articles")
 }

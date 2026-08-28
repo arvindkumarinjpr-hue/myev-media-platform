@@ -89,6 +89,10 @@ export async function teardownE2eApp({ app, redis, prisma }: E2eApp): Promise<vo
     // scoring user (a non-owner SEO Specialist scores in the RBAC test).
     await tx.contentScore.deleteMany({ where: { OR: [{ workspaceId: { in: testWorkspaceIds } }, { createdById: { in: testUserIds } }] } });
     await tx.seoReport.deleteMany({ where: { OR: [{ workspaceId: { in: testWorkspaceIds } }, { createdById: { in: testUserIds } }] } });
+    // Module 6 Phase 6.2: blog_articles is a 1:1 content-item extension
+    // with RESTRICT FKs to content_items (composite) + workspaces +
+    // users(created_by) — same teardown ordering requirement.
+    await tx.blogArticle.deleteMany({ where: { OR: [{ workspaceId: { in: testWorkspaceIds } }, { createdById: { in: testUserIds } }] } });
 
     // Module 1E: content_items <-> content_versions and content_items <->
     // media_assets are both mutual RESTRICT cycles (current_version_id /

@@ -36,11 +36,48 @@ export const AI_EXECUTE_V1_MANIFEST: ProcessorManifest<AiExecuteV1Payload, AiExe
   // Mirrors the frozen Retry Strategy defaults (QUEUE_AND_BACKGROUND_JOB_ENGINE_V1.0.md
   // §7): max 3 attempts, capped exponential backoff — invents no new numbers.
   defaultRetryPolicy: { maxAttempts: 3, backoffBaseMs: 30_000 },
-  // Generous relative to system.ping.v1's 5s — a real provider call
-  // (even FakeProvider's own artificial scenarios) needs real HTTP-call
-  // headroom the trivial internal ping never did.
-  timeout: 30_000,
-  maximumRuntime: 60_000,
+  // Module 6 Phase 6.2 — raised from the Module 3 Phase 3.3 placeholder
+  // (30_000 / 60_000) to accommodate the frozen FRD §21.1 per-job
+  // timeouts for the AI jobs that now actually run through this ONE
+  // generic manifest:
+  //   - "Queue job timeout — Blog draft generation | 5 min | Configurable: Yes"
+  //   - "Queue job timeout — SEO/Internal Linking pass  | 3 min | Configurable: Yes"
+  //   - "Queue job timeout — Research | 10 min | Configurable: Yes"
+  // BullMqWorkerManager races every handler against exactly this
+  // `timeout` and kills it on expiry (Promise.race in
+  // bullmq-worker.manager.ts) — the AGENT's own timeoutMs is only the
+  // inner AIRequest/AbortController budget, so an agent can never
+  // legitimately run longer than this value regardless of what it
+  // declares. The prior 30s was set when RESEARCH_AGENT_V1 (25s) was the
+  // only real agent; the frozen 5-min Blog draft cannot be honored under
+  // it, and the task's own constraints forbid a Blog-specific job type
+  // or a new processor. This is the frozen §21.1 "Configurable: Yes"
+  // ceiling made real; it changes NO existing agent's behaviour
+  // (Research stays at 25s, well under this).
+  //
+  // Module 6 Phase 6.2 architecture-review correction: `timeout` MUST be
+  // strictly greater than the longest agent `timeoutMs`, never equal.
+  // ai-execute.processor.ts's own handler does real work AFTER its inner
+  // AbortController fires — the catch block, `recordStep` (a DB write),
+  // and `this.prisma.aiJob.update(...)` (another DB write) all still
+  // need to complete before the handler's promise resolves. The OUTER
+  // `Promise.race` timer in bullmq-worker.manager.ts also starts
+  // strictly EARLIER in wall-clock time than the inner AbortController's
+  // timer (KP resolution + a `recordStep` DB write happen in between) —
+  // so an agent timeoutMs equal to this `timeout` would let the outer
+  // ceiling fire at or before the inner one, discarding the handler's
+  // own graceful FAILED/TIMED_OUT transition in favour of the cruder
+  // forced-PROCESSOR_TIMEOUT path, with the "loser" handler promise
+  // still running in the background per that file's own documented
+  // Promise.race caveat. 360s gives Blog Draft (300s) a full 60s of
+  // operational headroom for that post-abort cleanup path — see
+  // agent-timeout-invariant.spec.ts for the enforced invariant
+  // (`agent.timeoutMs < this.timeout <= this.maximumRuntime`).
+  // Trade-off unchanged from the prior revision: a crashed worker's
+  // RUNNING row is now reconciled as stale after up to 6 min instead of
+  // 30s — inherent to supporting genuinely long AI jobs.
+  timeout: 360_000,
+  maximumRuntime: 600_000,
   owningModule: "ai-agent-framework",
   description: "Generic durable AI agent execution — drives exactly one existing ai_jobs row to a terminal state via the Agent Framework pipeline.",
 };

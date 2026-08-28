@@ -35,13 +35,11 @@ describe("RESEARCH_AGENT_V1", () => {
     expect(RESEARCH_AGENT_V1.providerPreference.provider).toBe("openai");
   });
 
-  it("declares a timeoutMs under the durable ai.execute.v1 manifest's own 30s hard ceiling", () => {
-    // A regression proof for the real bug this phase found: an agent
-    // timeoutMs above the manifest's own enforced `timeout` would have
-    // every durable execution killed by BullMqWorkerManager's own
-    // Promise.race before this AbortController ever fires.
-    expect(RESEARCH_AGENT_V1.timeoutMs).toBeLessThan(30_000);
-  });
+  // The timeoutMs-vs-manifest relationship (agent.timeoutMs STRICTLY
+  // below AI_EXECUTE_V1_MANIFEST.timeout — never equal, see that file's
+  // own doc comment) is enforced generically, for every registered
+  // production agent including this one, in
+  // agent-timeout-invariant.spec.ts — not duplicated here.
 
   it("lists only the exact reachable sources (by ID) in the system prompt's VERIFIED SOURCES section", () => {
     const req = input({
