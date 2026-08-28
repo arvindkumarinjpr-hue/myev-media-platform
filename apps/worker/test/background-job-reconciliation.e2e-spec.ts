@@ -2,7 +2,7 @@ import { randomUUID } from "crypto";
 import { Test, type TestingModule } from "@nestjs/testing";
 import { Queue } from "bullmq";
 import Redis from "ioredis";
-import { SYSTEM_PING_V1_MANIFEST } from "@myev/shared";
+import { SYSTEM_PING_V1_MANIFEST, UNREACHABLE_REDIS_URL } from "@myev/shared";
 import { AppModule } from "../src/app.module";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { WorkerHeartbeatService } from "../src/heartbeat/worker-heartbeat.service";
@@ -494,7 +494,7 @@ describe("Worker (e2e) — DEFECT-1F-006 BackgroundJobReconciliationManager", ()
     });
 
     it("unreachable Redis at shutdown time: FORCED, not hung", async () => {
-      process.env.REDIS_URL = "redis://redis:1";
+      process.env.REDIS_URL = UNREACHABLE_REDIS_URL;
       const { moduleRef, heartbeat } = await bootstrap();
       const start = Date.now();
       await cleanup(moduleRef, heartbeat);

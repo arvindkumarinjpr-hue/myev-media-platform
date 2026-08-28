@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from "@nestjs/config";
 import { LoggerModule } from "nestjs-pino";
 import { randomUUID } from "crypto";
 import configuration from "./config/configuration";
+import { logRedactOptions } from "./config/logging";
 import { PrismaModule } from "./prisma/prisma.module";
 import { HealthModule } from "./health/health.module";
 import { AuditModule } from "./modules/audit/audit.module";
@@ -43,7 +44,11 @@ import type { AppConfig } from "./config/configuration";
           genReqId: (req: { headers: Record<string, unknown> }) =>
             (req.headers["x-request-id"] as string) ?? randomUUID(),
           customProps: () => ({ service: "myev-api" }),
-          redact: ["req.headers.authorization", "req.headers.cookie"],
+          // Module 6 Phase 6.5-A — auth secrets (bearer token, Cookie
+          // refresh_token, Set-Cookie refresh_token) are kept out of the
+          // structured request/response logs here, in the one central
+          // logger config. See ./config/logging.ts for the contract.
+          redact: logRedactOptions(),
         },
       }),
     }),

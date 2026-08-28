@@ -2,7 +2,7 @@ import { randomUUID } from "crypto";
 import { BadRequestException, ConflictException } from "@nestjs/common";
 import { Queue } from "bullmq";
 import type { Redis } from "ioredis";
-import { SYSTEM_PING_V1_MANIFEST } from "@myev/shared";
+import { SYSTEM_PING_V1_MANIFEST, UNREACHABLE_REDIS_URL } from "@myev/shared";
 import {
   bootstrapE2eApp,
   createWorkspaceAsOwner,
@@ -442,7 +442,7 @@ describe("Background jobs (e2e)", () => {
       // forever" behavior against a host that will never come back,
       // which is a test-reliability concern, not a product one).
       const originalRedisUrl = process.env.REDIS_URL;
-      process.env.REDIS_URL = "redis://redis:1";
+      process.env.REDIS_URL = UNREACHABLE_REDIS_URL;
       let brokenCtx: E2eApp | undefined;
       try {
         brokenCtx = await bootstrapE2eApp();
@@ -692,7 +692,7 @@ describe("Background jobs (e2e)", () => {
 
     it("Redis unavailable: database-level deduplication still works, and the call never hangs", async () => {
       const originalRedisUrl = process.env.REDIS_URL;
-      process.env.REDIS_URL = "redis://redis:1";
+      process.env.REDIS_URL = UNREACHABLE_REDIS_URL;
       let brokenCtx: E2eApp | undefined;
       try {
         brokenCtx = await bootstrapE2eApp();
@@ -965,7 +965,7 @@ describe("Background jobs (e2e)", () => {
 
       it("8: Redis unavailable — platform-level Postgres dedup still works, and the call never hangs", async () => {
         const originalRedisUrl = process.env.REDIS_URL;
-        process.env.REDIS_URL = "redis://redis:1";
+        process.env.REDIS_URL = UNREACHABLE_REDIS_URL;
         let brokenCtx: E2eApp | undefined;
         try {
           brokenCtx = await bootstrapE2eApp();
