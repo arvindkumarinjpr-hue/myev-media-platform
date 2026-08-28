@@ -475,12 +475,11 @@ export const RESEARCH_AGENT_V1: AgentDefinition<ResearchAgentInput, ResearchAgen
   buildPrompt,
   postProcessOutput,
   // Research synthesizes across multiple sources and a larger structured
-  // output than the 5s test agents ever needed — generous relative to
-  // those, but MUST stay under the durable ai.execute.v1 job manifest's
-  // own hard-enforced 30s `timeout` (packages/shared/src/queue/jobs/
-  // ai-execute.ts — BullMqWorkerManager races every handler against
-  // exactly that value and kills it on expiry, independent of whatever
-  // this AbortController does). 25s leaves a safety margin under it.
+  // output than the 5s test agents ever needed. Kept at 25s (unchanged
+  // since Module 4) — comfortably under both the durable ai.execute.v1
+  // job manifest's `timeout` (raised to 5 min in Module 6 Phase 6.2 for
+  // the frozen Blog-draft figure; BullMqWorkerManager still races every
+  // handler against it) and FRD §21.1's own 10-min Research ceiling.
   timeoutMs: 25_000,
   executionPolicy: { maxAttempts: 3 },
 };

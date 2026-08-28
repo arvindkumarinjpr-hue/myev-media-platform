@@ -1,5 +1,17 @@
 import { Global, Module } from "@nestjs/common";
-import { AgentRegistryBuilder, RESEARCH_AGENT_V1, TEST_ECHO_AGENT_V1, TEST_FLAKY_AGENT_V1, TEST_PERMANENT_FAIL_AGENT_V1, TEST_TIMEOUT_AGENT_V1, type AgentRegistry } from "@myev/shared";
+import {
+  AgentRegistryBuilder,
+  BLOG_BRIEF_AGENT_V1,
+  BLOG_DRAFT_AGENT_V1,
+  BLOG_OUTLINE_AGENT_V1,
+  RESEARCH_AGENT_V1,
+  SEO_METADATA_AGENT_V1,
+  TEST_ECHO_AGENT_V1,
+  TEST_FLAKY_AGENT_V1,
+  TEST_PERMANENT_FAIL_AGENT_V1,
+  TEST_TIMEOUT_AGENT_V1,
+  type AgentRegistry,
+} from "@myev/shared";
 
 export const AGENT_REGISTRY = Symbol("AGENT_REGISTRY");
 
@@ -21,6 +33,14 @@ export const AGENT_REGISTRY = Symbol("AGENT_REGISTRY");
       useFactory: (): AgentRegistry => {
         const builder = new AgentRegistryBuilder();
         builder.register(RESEARCH_AGENT_V1);
+        // Module 6 Phase 6.2 — the Blog pipeline agents, registered
+        // identically to apps/api's AgentRegistryModule (same
+        // @myev/shared objects). The generic AiExecuteProcessor executes
+        // them — no new queue, no new processor.
+        builder.register(BLOG_BRIEF_AGENT_V1);
+        builder.register(BLOG_OUTLINE_AGENT_V1);
+        builder.register(BLOG_DRAFT_AGENT_V1);
+        builder.register(SEO_METADATA_AGENT_V1);
         builder.register(TEST_ECHO_AGENT_V1);
         // Module 3 Phase 3.3 test-only fixtures — see
         // ai-provider-registry.module.ts's own doc comment.
