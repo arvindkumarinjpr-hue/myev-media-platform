@@ -267,3 +267,30 @@ export function DocumentIcon(props: IconProps) {
   );
 }
 
+
+export function BlogIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h9.8a1.5 1.5 0 0 1 1.06.44l2.2 2.2A1.5 1.5 0 0 1 20 7.7V18.5A1.5 1.5 0 0 1 18.5 20h-13A1.5 1.5 0 0 1 4 18.5Z" />
+      <path d="M8 9.5h5M8 13h8M8 16.5h8" />
+    </Base>
+  );
+}
+
+export function CheckCircleIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="m8.5 12 2.5 2.5L16 9" />
+    </Base>
+  );
+}
+
+export function XCircleIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="m9 9 6 6M15 9l-6 6" />
+    </Base>
+  );
+}

@@ -599,6 +599,57 @@ describe("Blog pipeline — score threshold gate (e2e)", () => {
     expect(withVersions.contentScores.length).toBeGreaterThanOrEqual(1);
     await h.cleanup(ws);
   }, 90_000);
+
+  // ---- Phase 6.4: Blog-facing score read is BLOG_VIEW, not SEO_SCORE ----
+
+  it("GET /blog/:id/score is readable with BLOG_VIEW alone (no SEO_SCORE), returns the full breakdown, and never runs scoring", async () => {
+    const ws = await h.createWorkspace();
+    const packId = await h.createActivePack(ws);
+    const { itemId } = await h.walkToReadyForReview(ws, packId);
+
+    // Publisher: holds BLOG_VIEW, holds NO SEO_SCORE and NO BLOG_EDIT.
+    const publisher = await createActiveUserAndLogin(ctx, "blog-score-publisher");
+    await addActiveMemberWithRole(ctx, ws.id, publisher.userId, "Publisher");
+    const pubAuth = { Authorization: `Bearer ${publisher.accessToken}`, "X-Workspace-Id": ws.publicId };
+
+    const scoresBefore = await ctx.prisma.contentScore.count({ where: { workspaceId: ws.id } });
+
+    const read = await request(h.server()).get(`${h.base(ws)}/${itemId}/score`).set(pubAuth).expect(200);
+    expect(typeof read.body.data.overallScore).toBe("number");
+    expect(Object.keys(read.body.data.categoryScores).sort()).toEqual(["BUSINESS", "ENGAGEMENT", "QUALITY", "SEO", "VIRAL"]);
+    expect(typeof read.body.data.dimension.score).toBe("number");
+    expect(read.body.data.dimension.name).toBe("blog");
+    expect(typeof read.body.data.passed).toBe("boolean");
+    expect(Array.isArray(read.body.data.recommendations)).toBe(true);
+
+    // no new content_scores row was written by the read
+    expect(await ctx.prisma.contentScore.count({ where: { workspaceId: ws.id } })).toBe(scoresBefore);
+
+    // Publisher still cannot RUN a score (POST needs SEO_SCORE)
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/score`).set(pubAuth).expect(403);
+    // ...nor via the generic content-items endpoint
+    await request(h.server()).post(`/api/v1/workspaces/${ws.publicId}/content-items/${itemId}/score`).set(pubAuth).expect(403);
+    await request(h.server()).get(`/api/v1/workspaces/${ws.publicId}/content-items/${itemId}/score`).set(pubAuth).expect(403);
+    await h.cleanup(ws);
+  }, 90_000);
+
+  it("GET /blog/:id/score is workspace-isolated (404 across workspaces) and denied to a user without BLOG_VIEW", async () => {
+    const wsA = await h.createWorkspace();
+    const wsB = await h.createWorkspace();
+    const packId = await h.createActivePack(wsA);
+    const create = await request(h.server()).post(h.base(wsA)).set(h.auth(wsA)).send({ topic: "Score isolation", knowledgePackVersionId: packId }).expect(202);
+    const itemId = create.body.data.contentItem.publicId;
+
+    await request(h.server()).get(`${h.base(wsB)}/${itemId}/score`).set(h.auth(wsB)).expect(404);
+
+    const analyst = await createActiveUserAndLogin(ctx, "blog-score-analyst");
+    await addActiveMemberWithRole(ctx, wsA.id, analyst.userId, "Analyst"); // Analyst has no BLOG_VIEW
+    await request(h.server())
+      .get(`${h.base(wsA)}/${itemId}/score`)
+      .set({ Authorization: `Bearer ${analyst.accessToken}`, "X-Workspace-Id": wsA.publicId })
+      .expect(403);
+    await h.cleanup(wsA);
+  }, 40_000);
 });
 
 /** Shared: create → brief → approve → outline → approve → draft → SEO (stops before internal-linking). */

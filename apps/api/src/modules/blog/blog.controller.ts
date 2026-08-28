@@ -61,8 +61,23 @@ export class BlogController {
     return { data: await this.pipeline.projectReadModel(workspace.id, itemId) };
   }
 
+  /**
+   * Module 6 Phase 6.4 — Blog-facing READ of the latest content score.
+   *
+   * Gated by `BLOG_VIEW` (the narrowest frozen Blog permission), NOT
+   * `SEO_SCORE`: every role that can see a blog article — Content Writer,
+   * SEO Specialist, Content Manager, Publisher, Administrator, Owner —
+   * needs to see whether it passes the FR-BLOG-006 threshold and the
+   * itemized feedback for the "routed back to Draft with feedback" loop
+   * (FR-BLOG-006 / FR-SEO-003 "know objectively whether it's ready").
+   * Read-only: it resolves the ONE score belonging to this workspace's
+   * blog item via ContentScoringService.getLatest() and cannot run or
+   * re-run scoring. Running a score stays `POST :itemId/score`
+   * (`SEO_SCORE`); the generic `GET/POST /content-items/:id/score`
+   * (`SEO_SCORE`) is untouched.
+   */
   @Get(":itemId/score")
-  @RequirePermission(PERMISSIONS.SEO_SCORE)
+  @RequirePermission(PERMISSIONS.BLOG_VIEW)
   async scoreFeedback(@CurrentWorkspace() workspace: WorkspaceContext, @Param("itemId") itemId: string) {
     return { data: await this.pipeline.getScoreFeedback(workspace.id, itemId) };
   }
