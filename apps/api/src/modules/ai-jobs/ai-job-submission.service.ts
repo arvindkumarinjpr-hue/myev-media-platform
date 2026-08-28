@@ -113,7 +113,14 @@ export class AiJobSubmissionService {
       correlationId,
     });
 
-    return linked;
+    // The submission response reflects the moment of submission — QUEUED
+    // (API_AND_INTEGRATION_SPECIFICATION §20/§22: "202 Accepted + QUEUED,
+    // poll GET for status"). A fast Worker can pick the job off the AI
+    // queue and advance the row to RUNNING between `enqueue` above and the
+    // `update` read-back — that transient must not leak into the POST
+    // response as though the caller's own request had already started
+    // executing. `job.status` is the create-time value ("QUEUED").
+    return { ...linked, status: job.status };
   }
 
   async findOne(workspaceId: string, aiJobPublicId: string): Promise<AiJob & { knowledgePack: { publicId: string } }> {

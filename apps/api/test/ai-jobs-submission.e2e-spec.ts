@@ -138,7 +138,12 @@ describe("AI Jobs API — durable submission (e2e)", () => {
     expect(res.body.data.knowledgePackVersionId).toBe(packPublicId);
 
     const job = await ctx.prisma.aiJob.findFirstOrThrow({ where: { publicId: res.body.data.publicId, workspaceId: ws.id } });
-    expect(job.status).toBe("QUEUED");
+    // The POST response is deterministically QUEUED (asserted above); the
+    // persisted row, however, may already have been picked up by the
+    // background Worker off the AI queue by the time this read runs —
+    // this test is about durable submission (row + linked background_jobs
+    // row + payload), not dispatch latency.
+    expect(["QUEUED", "RUNNING", "COMPLETED"]).toContain(job.status);
     expect(job.backgroundJobId).toBeTruthy();
 
     const bgJob = await ctx.prisma.backgroundJob.findUniqueOrThrow({ where: { id: job.backgroundJobId! } });

@@ -414,8 +414,24 @@ export class ContentItemsService {
     itemPublicId: string,
     dto: SubmitForReviewDto,
     context: RequestContext,
+    // Module 6 Phase 6.3 review-gate seal: this shared lifecycle service
+    // stays the single authority for the REVIEW transition, but a BLOG
+    // content item may ONLY enter REVIEW through the Blog pipeline
+    // (BlogService, which enforces the frozen FR-BLOG-001..006 Quality
+    // Gates, incl. the FR-BLOG-006 score threshold, before calling here).
+    // The generic public route never sets this flag, so it cannot be used
+    // to bypass those gates. Not part of any DTO — it can never be set
+    // from an HTTP request.
+    options?: { viaBlogPipeline?: boolean },
   ): Promise<ContentItemWithPublicRefs> {
     const item = await this.resolveForAction(workspace.id, actor, itemPublicId, "edit");
+    if (item.contentType === "BLOG" && !options?.viaBlogPipeline) {
+      throw new ConflictException({
+        code: "CONTENT_ITEM_BLOG_REVIEW_VIA_PIPELINE",
+        message:
+          "A blog article must be submitted for review through the Blog pipeline (POST /api/v1/workspaces/:workspaceId/blog/:itemId/submit-for-review), which enforces the Module 6 quality gates.",
+      });
+    }
     const comment = this.validateAndNormalizeComment(dto.comment, { required: false });
 
     return this.prisma.$transaction(async (tx) => {
