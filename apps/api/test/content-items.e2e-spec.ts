@@ -39,6 +39,21 @@ async function createBlogItem(
   return res.body.data as { publicId: string; status: string };
 }
 
+// Module 6 Phase 6.3 sealed the generic submit-for-review route against
+// BLOG items (they must go through the Blog pipeline). The generic
+// editorial-lifecycle tests below exercise the shared machinery with a
+// VIDEO item instead — a non-BLOG type with the identical
+// DRAFT→IN_PROGRESS→REVIEW→APPROVED service behaviour.
+async function createVideoItem(ctx: E2eApp, accessToken: string, wsPublicId: string, overrides: Partial<{ title: string }> = {}) {
+  const res = await request(ctx.app.getHttpServer())
+    .post(`/api/v1/workspaces/${wsPublicId}/content-items`)
+    .set("Authorization", `Bearer ${accessToken}`)
+    .set("X-Workspace-Id", wsPublicId)
+    .send({ contentType: "VIDEO", title: overrides.title ?? "A test video", body: { script: "A short script about home EV charging." } })
+    .expect(201);
+  return res.body.data as { publicId: string; status: string };
+}
+
 async function uploadActiveAsset(ctx: E2eApp, accessToken: string, wsPublicId: string) {
   const intentRes = await request(ctx.app.getHttpServer())
     .post(`/api/v1/workspaces/${wsPublicId}/assets/upload-intent`)
@@ -227,7 +242,7 @@ describe("Content items (e2e)", () => {
     it("walks DRAFT -> IN_PROGRESS -> REVIEW -> APPROVED, writing a review event at each review step", async () => {
       const owner = await loginAsPlatformOwner(ctx);
       const ws = await createWorkspaceAsOwner(ctx, owner.accessToken);
-      const item = await createBlogItem(ctx, owner.accessToken, ws.publicId);
+      const item = await createVideoItem(ctx, owner.accessToken, ws.publicId);
       const auth = { Authorization: `Bearer ${owner.accessToken}`, "X-Workspace-Id": ws.publicId };
 
       await request(ctx.app.getHttpServer()).post(`/api/v1/workspaces/${ws.publicId}/content-items/${item.publicId}/start`).set(auth).expect(200);
@@ -254,7 +269,7 @@ describe("Content items (e2e)", () => {
     it("reject requires a non-empty comment and returns the item to IN_PROGRESS", async () => {
       const owner = await loginAsPlatformOwner(ctx);
       const ws = await createWorkspaceAsOwner(ctx, owner.accessToken);
-      const item = await createBlogItem(ctx, owner.accessToken, ws.publicId);
+      const item = await createVideoItem(ctx, owner.accessToken, ws.publicId);
       const auth = { Authorization: `Bearer ${owner.accessToken}`, "X-Workspace-Id": ws.publicId };
       await request(ctx.app.getHttpServer()).post(`/api/v1/workspaces/${ws.publicId}/content-items/${item.publicId}/start`).set(auth).expect(200);
       await request(ctx.app.getHttpServer()).post(`/api/v1/workspaces/${ws.publicId}/content-items/${item.publicId}/submit-for-review`).set(auth).send({}).expect(200);
@@ -273,18 +288,18 @@ describe("Content items (e2e)", () => {
       expect(reject.body.data.status).toBe("IN_PROGRESS");
     });
 
-    it("a role with BLOG_EDIT but not BLOG_APPROVE cannot approve — enumeration-safe 404, not 403", async () => {
+    it("a role with VIDEO_EDIT but not VIDEO_APPROVE cannot approve — enumeration-safe 404, not 403", async () => {
       const owner = await loginAsPlatformOwner(ctx);
       const ws = await createWorkspaceAsOwner(ctx, owner.accessToken);
-      const item = await createBlogItem(ctx, owner.accessToken, ws.publicId);
+      const item = await createVideoItem(ctx, owner.accessToken, ws.publicId);
       const auth = { Authorization: `Bearer ${owner.accessToken}`, "X-Workspace-Id": ws.publicId };
       await request(ctx.app.getHttpServer()).post(`/api/v1/workspaces/${ws.publicId}/content-items/${item.publicId}/start`).set(auth).expect(200);
       await request(ctx.app.getHttpServer()).post(`/api/v1/workspaces/${ws.publicId}/content-items/${item.publicId}/submit-for-review`).set(auth).send({}).expect(200);
 
-      const writer = await addMember(ctx, ws.publicId, "writer-approve", "Content Writer");
+      const editor = await addMember(ctx, ws.publicId, "video-editor-approve", "Video Editor");
       const res = await request(ctx.app.getHttpServer())
         .post(`/api/v1/workspaces/${ws.publicId}/content-items/${item.publicId}/approve`)
-        .set("Authorization", `Bearer ${writer.accessToken}`)
+        .set("Authorization", `Bearer ${editor.accessToken}`)
         .set("X-Workspace-Id", ws.publicId)
         .send({});
       expect(res.status).toBe(404);
@@ -320,19 +335,55 @@ describe("Content items (e2e)", () => {
       await request(ctx.app.getHttpServer()).delete(`/api/v1/workspaces/${ws.publicId}/content-items/${item.publicId}`).set(auth).expect(200);
       await request(ctx.app.getHttpServer()).get(`/api/v1/workspaces/${ws.publicId}/content-items/${item.publicId}`).set(auth).expect(404);
     });
+
+    // Module 6 Phase 6.3 review-gate seal.
+    it("a BLOG item cannot enter REVIEW through the generic content-items route — it is directed to the Blog pipeline", async () => {
+      const owner = await loginAsPlatformOwner(ctx);
+      const ws = await createWorkspaceAsOwner(ctx, owner.accessToken);
+      const item = await createBlogItem(ctx, owner.accessToken, ws.publicId);
+      const auth = { Authorization: `Bearer ${owner.accessToken}`, "X-Workspace-Id": ws.publicId };
+      await request(ctx.app.getHttpServer()).post(`/api/v1/workspaces/${ws.publicId}/content-items/${item.publicId}/start`).set(auth).expect(200);
+
+      const res = await request(ctx.app.getHttpServer())
+        .post(`/api/v1/workspaces/${ws.publicId}/content-items/${item.publicId}/submit-for-review`)
+        .set(auth)
+        .send({})
+        .expect(409);
+      expect(res.body.code).toBe("CONTENT_ITEM_BLOG_REVIEW_VIA_PIPELINE");
+
+      const row = await ctx.prisma.contentItem.findUniqueOrThrow({ where: { publicId: item.publicId } });
+      expect(row.status).toBe("IN_PROGRESS");
+    });
+
+    it("a BLOG item that is not in REVIEW cannot be forced to APPROVED through the generic approve route", async () => {
+      const owner = await loginAsPlatformOwner(ctx);
+      const ws = await createWorkspaceAsOwner(ctx, owner.accessToken);
+      const item = await createBlogItem(ctx, owner.accessToken, ws.publicId);
+      const auth = { Authorization: `Bearer ${owner.accessToken}`, "X-Workspace-Id": ws.publicId };
+      await request(ctx.app.getHttpServer()).post(`/api/v1/workspaces/${ws.publicId}/content-items/${item.publicId}/start`).set(auth).expect(200);
+
+      const res = await request(ctx.app.getHttpServer())
+        .post(`/api/v1/workspaces/${ws.publicId}/content-items/${item.publicId}/approve`)
+        .set(auth)
+        .send({})
+        .expect(409);
+      expect(res.body.code).toBe("CONTENT_ITEM_INVALID_TRANSITION");
+      const row = await ctx.prisma.contentItem.findUniqueOrThrow({ where: { publicId: item.publicId } });
+      expect(row.status).toBe("IN_PROGRESS");
+    });
   });
 
   describe("Immutable versioning", () => {
     it("a new version can be added while DRAFT/IN_PROGRESS but not once in REVIEW", async () => {
       const owner = await loginAsPlatformOwner(ctx);
       const ws = await createWorkspaceAsOwner(ctx, owner.accessToken);
-      const item = await createBlogItem(ctx, owner.accessToken, ws.publicId);
+      const item = await createVideoItem(ctx, owner.accessToken, ws.publicId);
       const auth = { Authorization: `Bearer ${owner.accessToken}`, "X-Workspace-Id": ws.publicId };
 
       const v2 = await request(ctx.app.getHttpServer())
         .post(`/api/v1/workspaces/${ws.publicId}/content-items/${item.publicId}/versions`)
         .set(auth)
-        .send({ body: { content: "Revised text" } })
+        .send({ body: { script: "Revised script" } })
         .expect(201);
       const row = await ctx.prisma.contentItem.findUniqueOrThrow({ where: { publicId: v2.body.data.publicId } });
       const version = await ctx.prisma.contentVersion.findUniqueOrThrow({ where: { id: row.currentVersionId! } });
@@ -344,7 +395,7 @@ describe("Content items (e2e)", () => {
       const blocked = await request(ctx.app.getHttpServer())
         .post(`/api/v1/workspaces/${ws.publicId}/content-items/${item.publicId}/versions`)
         .set(auth)
-        .send({ body: { content: "Should be blocked" } });
+        .send({ body: { script: "Should be blocked" } });
       expect(blocked.status).toBe(409);
     });
   });

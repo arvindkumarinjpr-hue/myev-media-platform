@@ -505,6 +505,51 @@ describe("Blog pipeline — full workflow (e2e)", () => {
     expect(await ctx.prisma.contentVersion.count({ where: { contentItem: { publicId: itemId } } })).toBe(versionsBefore);
     await h.cleanup(ws);
   }, 40_000);
+
+  // ---- Review-gate seal: no bypass via the generic content-items lifecycle route ----
+
+  it("a Blog pipeline item cannot enter REVIEW through the generic content-items route before the gates pass", async () => {
+    const ws = await h.createWorkspace();
+    const packId = await h.createActivePack(ws);
+    const create = await request(h.server()).post(h.base(ws)).set(h.auth(ws)).send({ topic: "Bypass attempt", knowledgePackVersionId: packId }).expect(202);
+    const itemId = create.body.data.contentItem.publicId;
+    await h.completeStageJob(ws, h.briefJobId(create.body.data), BRIEF_OUTPUT);
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/brief/approve`).set(h.auth(ws)).expect(200);
+
+    // The item is IN_PROGRESS with only the brief approved — try the generic route.
+    const res = await request(h.server())
+      .post(`/api/v1/workspaces/${ws.publicId}/content-items/${itemId}/submit-for-review`)
+      .set(h.auth(ws))
+      .send({})
+      .expect(409);
+    expect(res.body.code).toBe("CONTENT_ITEM_BLOG_REVIEW_VIA_PIPELINE");
+    expect((await ctx.prisma.contentItem.findFirstOrThrow({ where: { publicId: itemId } })).status).toBe("IN_PROGRESS");
+
+    // The Blog endpoint refuses it too — gates unmet.
+    expect((await request(h.server()).post(`${h.base(ws)}/${itemId}/submit-for-review`).set(h.auth(ws)).expect(422)).body.code).toBe("BLOG_OUTLINE_NOT_APPROVED");
+    await h.cleanup(ws);
+  }, 40_000);
+
+  it("a fully-gated Blog pipeline item still submits for review through the Blog endpoint, and approve/reject delegate to the shared lifecycle authority", async () => {
+    const ws = await h.createWorkspace();
+    const packId = await h.createActivePack(ws);
+    const { itemId } = await h.walkToReadyForReview(ws, packId);
+
+    // Generic route STILL sealed even now that gates pass — the Blog endpoint is the only entry.
+    expect(
+      (await request(h.server()).post(`/api/v1/workspaces/${ws.publicId}/content-items/${itemId}/submit-for-review`).set(h.auth(ws)).send({}).expect(409)).body.code,
+    ).toBe("CONTENT_ITEM_BLOG_REVIEW_VIA_PIPELINE");
+
+    const submitted = await request(h.server()).post(`${h.base(ws)}/${itemId}/submit-for-review`).set(h.auth(ws)).expect(200);
+    expect((submitted.body.data.contentItem as { status: string }).status).toBe("REVIEW");
+
+    // Generic approve now works (item legitimately in REVIEW) — same shared ContentItemsService as the Blog approve endpoint.
+    const approved = await request(h.server()).post(`/api/v1/workspaces/${ws.publicId}/content-items/${itemId}/approve`).set(h.auth(ws)).send({ comment: "ok" }).expect(200);
+    expect((approved.body.data as { status: string }).status).toBe("APPROVED");
+    const events = await ctx.prisma.contentReviewEvent.findMany({ where: { contentItem: { publicId: itemId } } });
+    expect(events.map((e) => e.action).sort()).toEqual(["APPROVED", "SUBMITTED"]);
+    await h.cleanup(ws);
+  }, 90_000);
 });
 
 // ===========================================================================
@@ -533,6 +578,14 @@ describe("Blog pipeline — score threshold gate (e2e)", () => {
 
     const blocked = await request(h.server()).post(`${h.base(ws)}/${itemId}/submit-for-review`).set(h.auth(ws)).expect(422);
     expect(blocked.body.code).toBe("SEO_SCORE_BELOW_THRESHOLD");
+
+    // The generic content-items route cannot be used to sidestep the score gate either.
+    const generic = await request(h.server())
+      .post(`/api/v1/workspaces/${ws.publicId}/content-items/${itemId}/submit-for-review`)
+      .set(h.auth(ws))
+      .send({})
+      .expect(409);
+    expect(generic.body.code).toBe("CONTENT_ITEM_BLOG_REVIEW_VIA_PIPELINE");
 
     const item = await ctx.prisma.contentItem.findFirstOrThrow({ where: { publicId: itemId } });
     expect(item.status).toBe("IN_PROGRESS");

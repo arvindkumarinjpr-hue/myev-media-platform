@@ -122,7 +122,7 @@ export class BlogService {
 
   async submitForReview(workspaceId: string, actor: BlogActor, itemPublicId: string, dto: BlogSubmitForReviewDto, ctx: RequestContext): Promise<Record<string, unknown>> {
     await this.pipeline.assertReadyForReview(workspaceId, itemPublicId, actor, ctx);
-    await this.contentItems.submitForReview({ id: workspaceId }, this.contentActor(actor), itemPublicId, dto, { ipAddress: ctx.ipAddress });
+    await this.contentItems.submitForReview({ id: workspaceId }, this.contentActor(actor), itemPublicId, dto, { ipAddress: ctx.ipAddress }, { viaBlogPipeline: true });
     return this.pipeline.projectReadModel(workspaceId, itemPublicId);
   }
 
