@@ -86,22 +86,6 @@ export class BlogPipelineService {
   // Shared resolution + locking
   // ---------------------------------------------------------------------
 
-  /** Resolve a BLOG pipeline item (workspace-scoped, enumeration-safe) and its current pipeline state. */
-  async resolvePipeline(workspaceId: string, itemPublicId: string): Promise<{ item: LockedItem; state: BlogPipelineState }> {
-    const item = await this.prisma.contentItem.findFirst({
-      where: { publicId: itemPublicId, workspaceId, deletedAt: null },
-      select: { id: true, publicId: true, workspaceId: true, contentType: true, title: true, status: true, metadata: true, createdById: true, currentVersionId: true },
-    });
-    if (!item || item.contentType !== "BLOG") {
-      throw new NotFoundException({ code: "CONTENT_ITEM_NOT_FOUND", message: "Content item not found." });
-    }
-    const state = readPipelineState(item.metadata);
-    if (!state) {
-      throw new UnprocessableEntityException({ code: BLOG_ERRORS.BLOG_NOT_A_PIPELINE_ITEM, message: "This blog content item was not started as a pipeline article." });
-    }
-    return { item: item as LockedItem, state };
-  }
-
   private async lockItem(tx: Prisma.TransactionClient, itemId: string): Promise<LockedItem> {
     const [row] = await tx.$queryRaw<LockedItem[]>`SELECT ${Prisma.raw(LOCK_COLUMNS)} FROM content_items WHERE id = ${itemId}::uuid FOR UPDATE`;
     if (!row) throw new NotFoundException({ code: "CONTENT_ITEM_NOT_FOUND", message: "Content item not found." });
@@ -151,8 +135,13 @@ export class BlogPipelineService {
    * APPROVED and still carries an aiJobPublicId is always re-synced to
    * the linked job's current truth (so a job that later succeeds on a
    * retry lifts the stage out of a transient FAILED).
+   *
+   * MUTATING — only ever called from an authorized mutating stage method,
+   * under a `content_items` row lock, inside that mutation's transaction.
+   * A `GET` (BLOG_VIEW) never reaches this; it uses `projectStages`, which
+   * derives the same live status with zero writes.
    */
-  private async reconcile(tx: Prisma.TransactionClient, item: LockedItem, state: BlogPipelineState): Promise<{ state: BlogPipelineState; changed: boolean }> {
+  private async finalizeStages(tx: Prisma.TransactionClient, item: LockedItem, state: BlogPipelineState): Promise<{ state: BlogPipelineState; changed: boolean }> {
     let changed = false;
     for (const key of ["brief", "outline", "draft", "seo"] as GenerationStageKey[]) {
       const stage = state[key];
@@ -168,7 +157,15 @@ export class BlogPipelineService {
         continue;
       }
       if (job.status !== "COMPLETED") continue;
-      if (stage.status === "READY") continue;
+      // Idempotency: a stage already READY with its artifact reference
+      // materialized is finished — never re-run persistence for it.
+      if (
+        stage.status === "READY" &&
+        (key !== "draft" || state.draft.contentVersionPublicId) &&
+        (key !== "seo" || state.seo.blogArticlePublicId)
+      ) {
+        continue;
+      }
 
       const parsed = await this.validateAgentOutput(key, job.outputPayload);
       if (!parsed.ok) {
@@ -180,7 +177,8 @@ export class BlogPipelineService {
       if (key === "brief") state.brief = { ...state.brief, status: "READY", artifact: parsed.value as BlogBriefAgentOutput, failureReason: null };
       else if (key === "outline") state.outline = { ...state.outline, status: "READY", artifact: parsed.value as BlogOutlineAgentOutput, failureReason: null };
       else if (key === "draft") {
-        const versionPublicId = await this.persistDraftVersion(tx, item, parsed.value as BlogDraftAgentOutput);
+        const versionPublicId =
+          state.draft.contentVersionPublicId ?? (await this.persistDraftVersion(tx, item, stage.aiJobPublicId, parsed.value as BlogDraftAgentOutput));
         state.draft = { ...state.draft, status: "READY", artifact: parsed.value as BlogDraftAgentOutput, contentVersionPublicId: versionPublicId, failureReason: null };
       } else {
         const blogArticlePublicId = await this.persistSeoArticle(tx, item, parsed.value as SeoMetadataAgentOutput);
@@ -189,6 +187,40 @@ export class BlogPipelineService {
       changed = true;
     }
     return { state, changed };
+  }
+
+  /**
+   * READ-ONLY. Given the persisted pipeline state and the current
+   * `ai_jobs` rows for its generation stages, returns a NEW state whose
+   * generation-stage `status` fields reflect live job truth (a COMPLETED
+   * job with schema-valid output shows as READY; a FAILED job or invalid
+   * output shows as FAILED) — WITHOUT writing anything: no metadata
+   * update, no content_versions, no blog_articles, no audit. The
+   * materialized `contentVersionPublicId` / `blogArticlePublicId` stay
+   * exactly as persisted (they populate only when an authorized mutating
+   * path calls `finalizeStages`). This is what `GET /blog/:id`
+   * (BLOG_VIEW) uses.
+   */
+  private async projectStages(state: BlogPipelineState, jobsByPublicId: Map<string, { status: string; outputPayload: unknown; errorCode: string | null }>): Promise<BlogPipelineState> {
+    const derived: BlogPipelineState = JSON.parse(JSON.stringify(state));
+    for (const key of ["brief", "outline", "draft", "seo"] as GenerationStageKey[]) {
+      const stage = derived[key];
+      if (!stage.aiJobPublicId || stage.status === "APPROVED" || stage.status === "READY") continue;
+      const job = jobsByPublicId.get(stage.aiJobPublicId);
+      if (!job) continue;
+      if (job.status === "FAILED" || job.status === "TIMED_OUT") {
+        this.patchStage(derived, key, { status: "FAILED", failureReason: stage.failureReason ?? job.errorCode ?? `AI job ${job.status}` });
+        continue;
+      }
+      if (job.status !== "COMPLETED") continue;
+      const parsed = await this.validateAgentOutput(key, job.outputPayload);
+      this.patchStage(
+        derived,
+        key,
+        parsed.ok ? { status: "READY" } : { status: "FAILED", failureReason: `AI output failed ${key} schema validation` },
+      );
+    }
+    return derived;
   }
 
   private markStageFailed(state: BlogPipelineState, key: GenerationStageKey, reason: string): void {
@@ -215,9 +247,25 @@ export class BlogPipelineService {
     return errors.length === 0 ? { ok: true, value: instance } : { ok: false };
   }
 
-  /** FR-BLOG-003: the generated draft becomes a real immutable content_versions row — never overwriting history. */
-  private async persistDraftVersion(tx: Prisma.TransactionClient, item: LockedItem, draft: BlogDraftAgentOutput): Promise<string> {
-    const rendered = this.renderDraftBody(item.title, draft);
+  /**
+   * FR-BLOG-003: the generated draft becomes a real immutable
+   * content_versions row — never overwriting history.
+   *
+   * Exactly-once, keyed on the generating AI job's publicId: the caller
+   * already skips this when `state.draft.contentVersionPublicId` is set,
+   * and this method additionally refuses to create a second row for the
+   * same `generatedByAiJobPublicId` even if the metadata reference were
+   * ever lost. Both guards run under the same `content_items` row lock as
+   * the state write, so concurrent finalizations serialize.
+   */
+  private async persistDraftVersion(tx: Prisma.TransactionClient, item: LockedItem, aiJobPublicId: string, draft: BlogDraftAgentOutput): Promise<string> {
+    const alreadyMaterialized = await tx.contentVersion.findFirst({
+      where: { contentItemId: item.id, body: { path: ["generatedByAiJobPublicId"], equals: aiJobPublicId } },
+      select: { publicId: true },
+    });
+    if (alreadyMaterialized) return alreadyMaterialized.publicId;
+
+    const rendered = this.renderDraftBody(item.title, aiJobPublicId, draft);
     this.bodyValidator.validate("BLOG", rendered);
     const latest = await tx.contentVersion.findFirst({ where: { contentItemId: item.id }, orderBy: { versionNumber: "desc" } });
     const versionNumber = (latest?.versionNumber ?? 0) + 1;
@@ -231,12 +279,12 @@ export class BlogPipelineService {
       workspaceId: item.workspaceId,
       entityType: "content_item",
       entityId: item.publicId,
-      afterState: { versionNumber, source: "blog-draft-agent" },
+      afterState: { versionNumber, source: "blog-draft-agent", generatedByAiJobPublicId: aiJobPublicId },
     });
     return version.publicId;
   }
 
-  private renderDraftBody(title: string, draft: BlogDraftAgentOutput): Record<string, unknown> {
+  private renderDraftBody(title: string, aiJobPublicId: string, draft: BlogDraftAgentOutput): Record<string, unknown> {
     const md = [
       `# ${title}`,
       "",
@@ -250,7 +298,7 @@ export class BlogPipelineService {
       `**${draft.cta}**`,
       ...(draft.faqs.length > 0 ? ["", "## FAQ", ...draft.faqs.flatMap((f) => ["", `### ${f.question}`, "", f.answer])] : []),
     ].join("\n");
-    return { content: md, blogDraft: draft as unknown as Record<string, unknown>, generatedBy: "blog-draft-agent" };
+    return { content: md, blogDraft: draft as unknown as Record<string, unknown>, generatedBy: "blog-draft-agent", generatedByAiJobPublicId: aiJobPublicId };
   }
 
   /** FR-SEO-001/002: persist/update the ONE blog_articles row for this item (workspace-safe 1:1). */
@@ -306,7 +354,7 @@ export class BlogPipelineService {
     const { agentInput, knowledgePackVersionId } = await this.prisma.$transaction(async (tx) => {
       const { item, state } = await this.loadLockedPipeline(tx, workspaceId, itemPublicId);
       this.assertEditable(item);
-      const reconciled = await this.reconcile(tx, item, state);
+      const reconciled = await this.finalizeStages(tx, item, state);
       const cur = reconciled.state;
       if (cur[key].status === "GENERATING") {
         throw new ConflictException({ code: BLOG_ERRORS.BLOG_STAGE_ALREADY_RUNNING, message: `The ${key} stage is already generating.` });
@@ -474,7 +522,7 @@ export class BlogPipelineService {
     await this.prisma.$transaction(async (tx) => {
       const { item, state } = await this.loadLockedPipeline(tx, workspaceId, itemPublicId);
       this.assertEditable(item);
-      const reconciled = (await this.reconcile(tx, item, state)).state;
+      const reconciled = (await this.finalizeStages(tx, item, state)).state;
       const stage = reconciled[key];
       if (stage.status === "FAILED") {
         throw new UnprocessableEntityException({ code: key === "brief" ? BLOG_ERRORS.BLOG_BRIEF_NOT_READY : BLOG_ERRORS.BLOG_OUTLINE_NOT_READY, message: `The ${key} generation failed — regenerate it before approving.` });
@@ -505,7 +553,7 @@ export class BlogPipelineService {
     await this.prisma.$transaction(async (tx) => {
       const { item, state } = await this.loadLockedPipeline(tx, workspaceId, itemPublicId);
       this.assertEditable(item);
-      const reconciled = (await this.reconcile(tx, item, state)).state;
+      const reconciled = (await this.finalizeStages(tx, item, state)).state;
       if (reconciled.seo.status !== "READY") {
         throw new UnprocessableEntityException({ code: BLOG_ERRORS.BLOG_SEO_NOT_READY, message: "The SEO pass must complete before internal linking." });
       }
@@ -534,7 +582,7 @@ export class BlogPipelineService {
     await this.prisma.$transaction(async (tx) => {
       const { item, state } = await this.loadLockedPipeline(tx, workspaceId, itemPublicId);
       this.assertEditable(item);
-      const reconciled = (await this.reconcile(tx, item, state)).state;
+      const reconciled = (await this.finalizeStages(tx, item, state)).state;
       if (reconciled.draft.status !== "READY" || !reconciled.draft.artifact) {
         throw new UnprocessableEntityException({ code: BLOG_ERRORS.BLOG_DRAFT_NOT_READY, message: "A generated draft is required before QA." });
       }
@@ -603,7 +651,7 @@ export class BlogPipelineService {
     await this.prisma.$transaction(async (tx) => {
       const { item, state } = await this.loadLockedPipeline(tx, workspaceId, itemPublicId);
       this.assertEditable(item);
-      const { state: reconciled } = await this.reconcile(tx, item, state);
+      const { state: reconciled } = await this.finalizeStages(tx, item, state);
       if (reconciled.qa.status !== "COMPLETED") {
         throw new UnprocessableEntityException({ code: BLOG_ERRORS.BLOG_QA_NOT_COMPLETE, message: "QA must complete before scoring." });
       }
@@ -632,44 +680,63 @@ export class BlogPipelineService {
   }
 
   // ---------------------------------------------------------------------
-  // Read model
+  // Read model — READ-ONLY. Never locks, never opens a write transaction,
+  // never persists. Safe under BLOG_VIEW.
   // ---------------------------------------------------------------------
 
-  async getReadModel(workspaceId: string, itemPublicId: string): Promise<Record<string, unknown>> {
-    const found = await this.prisma.contentItem.findFirst({ where: { publicId: itemPublicId, workspaceId, deletedAt: null }, select: { id: true, contentType: true } });
-    if (!found || found.contentType !== "BLOG") throw new NotFoundException({ code: "CONTENT_ITEM_NOT_FOUND", message: "Content item not found." });
-
-    const item = await this.prisma.$transaction(async (tx) => {
-      const locked = await this.lockItem(tx, found.id);
-      const state = readPipelineState(locked.metadata);
-      if (!state) return { locked, state: null as BlogPipelineState | null };
-      const reconciled = await this.reconcile(tx, locked, state);
-      if (reconciled.changed) {
-        await tx.contentItem.update({ where: { id: locked.id }, data: { metadata: writePipelineState(locked.metadata, reconciled.state) as Prisma.InputJsonValue } });
-      }
-      return { locked, state: reconciled.state };
+  async projectReadModel(workspaceId: string, itemPublicId: string): Promise<Record<string, unknown>> {
+    const item = await this.prisma.contentItem.findFirst({
+      where: { publicId: itemPublicId, workspaceId, deletedAt: null },
+      select: { id: true, publicId: true, workspaceId: true, contentType: true, title: true, status: true, metadata: true, createdById: true, currentVersionId: true },
     });
+    if (!item || item.contentType !== "BLOG") throw new NotFoundException({ code: "CONTENT_ITEM_NOT_FOUND", message: "Content item not found." });
+    const state = readPipelineState(item.metadata);
+    if (!state) throw new UnprocessableEntityException({ code: BLOG_ERRORS.BLOG_NOT_A_PIPELINE_ITEM, message: "This blog content item was not started as a pipeline article." });
 
-    if (!item.state) {
-      throw new UnprocessableEntityException({ code: BLOG_ERRORS.BLOG_NOT_A_PIPELINE_ITEM, message: "This blog content item was not started as a pipeline article." });
-    }
-    return this.serializeReadModel(item.locked, item.state);
+    const jobIds = (["brief", "outline", "draft", "seo"] as GenerationStageKey[]).map((k) => state[k].aiJobPublicId).filter((id): id is string => !!id);
+    const jobs = jobIds.length
+      ? await this.prisma.aiJob.findMany({ where: { workspaceId, publicId: { in: jobIds }, deletedAt: null }, select: { publicId: true, status: true, outputPayload: true, errorCode: true } })
+      : [];
+    const jobsByPublicId = new Map(jobs.map((j) => [j.publicId, j]));
+    const derived = await this.projectStages(state, jobsByPublicId);
+
+    return this.serializeReadModel(item as LockedItem, state, derived);
   }
 
-  private serializeReadModel(item: LockedItem, state: BlogPipelineState): Record<string, unknown> {
-    const gates = unmetReviewGates(state);
+  /**
+   * `persisted` holds the materialized artifact references (versions,
+   * articles) exactly as stored; `derived` carries the live per-stage
+   * status computed read-only from the current ai_jobs rows.
+   */
+  private serializeReadModel(item: LockedItem, persisted: BlogPipelineState, derived: BlogPipelineState): Record<string, unknown> {
+    const gates = unmetReviewGates(derived);
     return {
       contentItem: { publicId: item.publicId, title: item.title, contentType: item.contentType, status: item.status },
-      knowledgePackVersionId: state.knowledgePackVersionId,
-      currentStage: deriveStage(state, item.status),
+      knowledgePackVersionId: persisted.knowledgePackVersionId,
+      currentStage: deriveStage(derived, item.status),
       publishReady: isPublishReady(item.status),
-      brief: { status: state.brief.status, aiJobPublicId: state.brief.aiJobPublicId, artifact: state.brief.artifact, approvedAt: state.brief.approvedAt, failureReason: state.brief.failureReason },
-      outline: { status: state.outline.status, aiJobPublicId: state.outline.aiJobPublicId, artifact: state.outline.artifact, approvedAt: state.outline.approvedAt, failureReason: state.outline.failureReason },
-      draft: { status: state.draft.status, aiJobPublicId: state.draft.aiJobPublicId, contentVersionPublicId: state.draft.contentVersionPublicId, failureReason: state.draft.failureReason },
-      seo: { status: state.seo.status, aiJobPublicId: state.seo.aiJobPublicId, blogArticlePublicId: state.seo.blogArticlePublicId, artifact: state.seo.artifact, failureReason: state.seo.failureReason },
-      internalLinking: state.internalLinking,
-      qa: state.qa,
-      scoring: state.scoring,
+      brief: { status: derived.brief.status, aiJobPublicId: persisted.brief.aiJobPublicId, artifact: persisted.brief.artifact, approvedAt: persisted.brief.approvedAt, failureReason: derived.brief.failureReason },
+      outline: { status: derived.outline.status, aiJobPublicId: persisted.outline.aiJobPublicId, artifact: persisted.outline.artifact, approvedAt: persisted.outline.approvedAt, failureReason: derived.outline.failureReason },
+      draft: {
+        status: derived.draft.status,
+        aiJobPublicId: persisted.draft.aiJobPublicId,
+        contentVersionPublicId: persisted.draft.contentVersionPublicId,
+        // true when the AI job is done but the immutable version has not
+        // yet been materialized (that happens on the next mutating stage).
+        pendingFinalization: derived.draft.status === "READY" && !persisted.draft.contentVersionPublicId,
+        failureReason: derived.draft.failureReason,
+      },
+      seo: {
+        status: derived.seo.status,
+        aiJobPublicId: persisted.seo.aiJobPublicId,
+        blogArticlePublicId: persisted.seo.blogArticlePublicId,
+        artifact: persisted.seo.artifact,
+        pendingFinalization: derived.seo.status === "READY" && !persisted.seo.blogArticlePublicId,
+        failureReason: derived.seo.failureReason,
+      },
+      internalLinking: persisted.internalLinking,
+      qa: persisted.qa,
+      scoring: persisted.scoring,
       reviewGatesUnmet: gates,
       canSubmitForReview: gates.length === 0 && ["DRAFT", "IN_PROGRESS"].includes(item.status),
     };
@@ -679,10 +746,29 @@ export class BlogPipelineService {
   // Human-review handoff — delegates to Module 1E, never re-implements it
   // ---------------------------------------------------------------------
 
-  /** Enforce every upstream Quality Gate, then hand off. Below-threshold score can never bypass this. */
-  async assertReadyForReview(workspaceId: string, itemPublicId: string): Promise<void> {
-    const { state } = await this.resolvePipeline(workspaceId, itemPublicId);
-    // A fresh read reconciles nothing new here; the gate list is authoritative.
+  /**
+   * Enforce every upstream Quality Gate, then hand off. Below-threshold
+   * score can never bypass this. Runs under the same authorized mutating
+   * path as submit-for-review: takes the row lock, finalizes any
+   * still-pending completed stage, then checks the authoritative gate
+   * list against the persisted (materialized) state.
+   */
+  async assertReadyForReview(workspaceId: string, itemPublicId: string, actor: BlogActor, ctx: RequestContext): Promise<void> {
+    const state = await this.prisma.$transaction(async (tx) => {
+      const { item, state: cur } = await this.loadLockedPipeline(tx, workspaceId, itemPublicId);
+      this.assertEditable(item);
+      const { state: finalized, changed } = await this.finalizeStages(tx, item, cur);
+      if (changed) {
+        await this.persistState(tx, item, finalized, {
+          action: "CONTENT_ITEM_UPDATED",
+          afterState: { "blogPipeline.finalizedForReview": true },
+          actorInternalId: actor.userInternalId,
+          ipAddress: ctx.ipAddress,
+        });
+      }
+      return finalized;
+    });
+
     const gates = unmetReviewGates(state);
     if (gates.length === 0) return;
     if (gates.includes("content_score_passed")) {
@@ -697,7 +783,7 @@ export class BlogPipelineService {
       outline_approved: BLOG_ERRORS.BLOG_OUTLINE_NOT_APPROVED,
       draft_generated: BLOG_ERRORS.BLOG_DRAFT_NOT_READY,
       seo_complete: BLOG_ERRORS.BLOG_SEO_NOT_READY,
-      internal_links_added: BLOG_ERRORS.BLOG_INTERNAL_LINKING_NOT_COMPLETE,
+      internal_linking_completed: BLOG_ERRORS.BLOG_INTERNAL_LINKING_NOT_COMPLETE,
       qa_complete: BLOG_ERRORS.BLOG_QA_NOT_COMPLETE,
       content_score_run: BLOG_ERRORS.SEO_SCORE_NOT_RUN,
     };

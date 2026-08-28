@@ -58,7 +58,7 @@ export class BlogController {
   @Get(":itemId")
   @RequirePermission(PERMISSIONS.BLOG_VIEW)
   async read(@CurrentWorkspace() workspace: WorkspaceContext, @Param("itemId") itemId: string) {
-    return { data: await this.pipeline.getReadModel(workspace.id, itemId) };
+    return { data: await this.pipeline.projectReadModel(workspace.id, itemId) };
   }
 
   @Get(":itemId/score")
@@ -73,7 +73,7 @@ export class BlogController {
   @HttpCode(HttpStatus.ACCEPTED)
   async brief(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Req() req: Request) {
     await this.pipeline.generateBrief(w.id, this.actor(u, w), id, this.ctx(req));
-    return { data: await this.pipeline.getReadModel(w.id, id) };
+    return { data: await this.pipeline.projectReadModel(w.id, id) };
   }
 
   @Post(":itemId/brief/approve")
@@ -81,7 +81,7 @@ export class BlogController {
   @HttpCode(HttpStatus.OK)
   async approveBrief(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Req() req: Request) {
     await this.pipeline.approveBrief(w.id, this.actor(u, w), id, this.ctx(req));
-    return { data: await this.pipeline.getReadModel(w.id, id) };
+    return { data: await this.pipeline.projectReadModel(w.id, id) };
   }
 
   // ---- Outline ----
@@ -90,7 +90,7 @@ export class BlogController {
   @HttpCode(HttpStatus.ACCEPTED)
   async outline(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Req() req: Request) {
     await this.pipeline.generateOutline(w.id, this.actor(u, w), id, this.ctx(req));
-    return { data: await this.pipeline.getReadModel(w.id, id) };
+    return { data: await this.pipeline.projectReadModel(w.id, id) };
   }
 
   @Post(":itemId/outline/approve")
@@ -98,7 +98,7 @@ export class BlogController {
   @HttpCode(HttpStatus.OK)
   async approveOutline(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Req() req: Request) {
     await this.pipeline.approveOutline(w.id, this.actor(u, w), id, this.ctx(req));
-    return { data: await this.pipeline.getReadModel(w.id, id) };
+    return { data: await this.pipeline.projectReadModel(w.id, id) };
   }
 
   // ---- Draft ----
@@ -107,7 +107,7 @@ export class BlogController {
   @HttpCode(HttpStatus.ACCEPTED)
   async draft(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Req() req: Request) {
     await this.pipeline.generateDraft(w.id, this.actor(u, w), id, this.ctx(req));
-    return { data: await this.pipeline.getReadModel(w.id, id) };
+    return { data: await this.pipeline.projectReadModel(w.id, id) };
   }
 
   // ---- SEO ----
@@ -116,7 +116,7 @@ export class BlogController {
   @HttpCode(HttpStatus.ACCEPTED)
   async seo(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Req() req: Request) {
     await this.pipeline.generateSeo(w.id, this.actor(u, w), id, this.ctx(req));
-    return { data: await this.pipeline.getReadModel(w.id, id) };
+    return { data: await this.pipeline.projectReadModel(w.id, id) };
   }
 
   // ---- Internal linking (seam) ----
@@ -125,7 +125,7 @@ export class BlogController {
   @HttpCode(HttpStatus.OK)
   async internalLinking(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Req() req: Request) {
     await this.pipeline.runInternalLinking(w.id, this.actor(u, w), id, this.ctx(req));
-    return { data: await this.pipeline.getReadModel(w.id, id) };
+    return { data: await this.pipeline.projectReadModel(w.id, id) };
   }
 
   // ---- QA ----
@@ -134,7 +134,7 @@ export class BlogController {
   @HttpCode(HttpStatus.OK)
   async qa(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Req() req: Request) {
     await this.pipeline.runQa(w.id, this.actor(u, w), id, this.ctx(req));
-    return { data: await this.pipeline.getReadModel(w.id, id) };
+    return { data: await this.pipeline.projectReadModel(w.id, id) };
   }
 
   // ---- Score ----
@@ -143,7 +143,7 @@ export class BlogController {
   @HttpCode(HttpStatus.CREATED)
   async score(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Req() req: Request) {
     await this.pipeline.runScoring(w.id, this.actor(u, w), id, this.ctx(req));
-    return { data: await this.pipeline.getReadModel(w.id, id) };
+    return { data: await this.pipeline.projectReadModel(w.id, id) };
   }
 
   // ---- Human-review handoff (delegates to Module 1E) ----

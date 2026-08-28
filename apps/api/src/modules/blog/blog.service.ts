@@ -94,7 +94,7 @@ export class BlogService {
 
     await this.pipeline.generateBrief(workspaceId, actor, item.publicId, ctx);
 
-    return this.pipeline.getReadModel(workspaceId, item.publicId);
+    return this.pipeline.projectReadModel(workspaceId, item.publicId);
   }
 
   async list(workspaceId: string, actor: BlogActor): Promise<Record<string, unknown>[]> {
@@ -121,18 +121,18 @@ export class BlogService {
   }
 
   async submitForReview(workspaceId: string, actor: BlogActor, itemPublicId: string, dto: BlogSubmitForReviewDto, ctx: RequestContext): Promise<Record<string, unknown>> {
-    await this.pipeline.assertReadyForReview(workspaceId, itemPublicId);
+    await this.pipeline.assertReadyForReview(workspaceId, itemPublicId, actor, ctx);
     await this.contentItems.submitForReview({ id: workspaceId }, this.contentActor(actor), itemPublicId, dto, { ipAddress: ctx.ipAddress });
-    return this.pipeline.getReadModel(workspaceId, itemPublicId);
+    return this.pipeline.projectReadModel(workspaceId, itemPublicId);
   }
 
   async approve(workspaceId: string, actor: BlogActor, itemPublicId: string, dto: BlogApproveDto, ctx: RequestContext): Promise<Record<string, unknown>> {
     await this.contentItems.approve({ id: workspaceId }, this.contentActor(actor), itemPublicId, dto, { ipAddress: ctx.ipAddress });
-    return this.pipeline.getReadModel(workspaceId, itemPublicId);
+    return this.pipeline.projectReadModel(workspaceId, itemPublicId);
   }
 
   async reject(workspaceId: string, actor: BlogActor, itemPublicId: string, dto: BlogRejectDto, ctx: RequestContext): Promise<Record<string, unknown>> {
     await this.contentItems.reject({ id: workspaceId }, this.contentActor(actor), itemPublicId, dto, { ipAddress: ctx.ipAddress });
-    return this.pipeline.getReadModel(workspaceId, itemPublicId);
+    return this.pipeline.projectReadModel(workspaceId, itemPublicId);
   }
 }

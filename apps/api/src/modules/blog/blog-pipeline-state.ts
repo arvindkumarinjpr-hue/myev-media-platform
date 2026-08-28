@@ -58,14 +58,21 @@ export function writePipelineState(metadata: unknown, state: BlogPipelineState):
   return bag;
 }
 
-/** Every generation + deterministic gate the human-review handoff requires, per BLOG_AUTOMATION_ENGINE_V1.0 "Quality Gates". */
+/**
+ * Every generation + deterministic gate the human-review handoff
+ * requires, per BLOG_AUTOMATION_ENGINE_V1.0 "Quality Gates". The
+ * internal-linking gate means "the internal-linking stage completed" —
+ * Module 8 is unavailable and zero suggestions is an explicitly valid
+ * completed result (FR-BLOG-005), so it is never "links were actually
+ * added".
+ */
 export function unmetReviewGates(state: BlogPipelineState): string[] {
   const gates: string[] = [];
   if (state.brief.status !== "APPROVED") gates.push("brief_approved");
   if (state.outline.status !== "APPROVED") gates.push("outline_approved");
   if (state.draft.status !== "READY" || !state.draft.contentVersionPublicId) gates.push("draft_generated");
   if (state.seo.status !== "READY") gates.push("seo_complete");
-  if (state.internalLinking.status !== "COMPLETED") gates.push("internal_links_added");
+  if (state.internalLinking.status !== "COMPLETED") gates.push("internal_linking_completed");
   if (state.qa.status !== "COMPLETED") gates.push("qa_complete");
   if (state.scoring.status !== "COMPLETED") gates.push("content_score_run");
   else if (state.scoring.passed !== true) gates.push("content_score_passed");

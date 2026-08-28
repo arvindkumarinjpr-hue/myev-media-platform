@@ -1,3 +1,4 @@
+import { Prisma } from "../generated/prisma";
 import {
   addActiveMemberWithRole,
   bootstrapE2eApp,
@@ -408,6 +409,102 @@ describe("Blog pipeline — full workflow (e2e)", () => {
     const scored = await request(h.server()).post(`/api/v1/workspaces/${ws.publicId}/content-items/${item.body.data.publicId}/score`).set(h.auth(ws)).expect(201);
     expect(scored.body.data.overallScore).toBeGreaterThanOrEqual(0);
   }, 30_000);
+
+  // ---- Read-side / mutation-boundary correction ----
+
+  it("GET /blog/:id (BLOG_VIEW) is strictly read-only — a completed AI job is reported but never materialized by the read", async () => {
+    const ws = await h.createWorkspace();
+    const packId = await h.createActivePack(ws);
+    const create = await request(h.server()).post(h.base(ws)).set(h.auth(ws)).send({ topic: "Read-only proof", knowledgePackVersionId: packId }).expect(202);
+    const itemId = create.body.data.contentItem.publicId;
+
+    // Drive brief → approve → outline → approve → draft, then COMPLETE the draft job — but do NOT run any further mutating stage.
+    await h.completeStageJob(ws, h.briefJobId(create.body.data), BRIEF_OUTPUT);
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/brief/approve`).set(h.auth(ws)).expect(200);
+    const outline = await request(h.server()).post(`${h.base(ws)}/${itemId}/outline`).set(h.auth(ws)).expect(202);
+    await h.completeStageJob(ws, h.stageJobId(outline.body.data, "outline"), OUTLINE_OUTPUT);
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/outline/approve`).set(h.auth(ws)).expect(200);
+    const draft = await request(h.server()).post(`${h.base(ws)}/${itemId}/draft`).set(h.auth(ws)).expect(202);
+    await h.completeStageJob(ws, h.stageJobId(draft.body.data, "draft"), DRAFT_OUTPUT);
+
+    const itemBefore = await ctx.prisma.contentItem.findFirstOrThrow({ where: { publicId: itemId }, select: { updatedAt: true, metadata: true } });
+    const versionsBefore = await ctx.prisma.contentVersion.count({ where: { contentItem: { publicId: itemId } } });
+    const articlesBefore = await ctx.prisma.blogArticle.count({ where: { contentItem: { publicId: itemId } } });
+    const auditBefore = await ctx.prisma.auditLog.count({ where: { workspaceId: ws.id } });
+
+    // Several GETs.
+    for (let i = 0; i < 3; i++) {
+      const read = await request(h.server()).get(`${h.base(ws)}/${itemId}`).set(h.auth(ws)).expect(200);
+      // The read STILL reports the completed draft job — derived, not persisted.
+      expect((read.body.data.draft as { status: string; pendingFinalization: boolean; contentVersionPublicId: string | null }).status).toBe("READY");
+      expect((read.body.data.draft as { pendingFinalization: boolean }).pendingFinalization).toBe(true);
+      expect((read.body.data.draft as { contentVersionPublicId: string | null }).contentVersionPublicId).toBeNull();
+    }
+
+    const itemAfter = await ctx.prisma.contentItem.findFirstOrThrow({ where: { publicId: itemId }, select: { updatedAt: true, metadata: true } });
+    expect(itemAfter.updatedAt.getTime()).toBe(itemBefore.updatedAt.getTime());
+    expect(JSON.stringify(itemAfter.metadata)).toBe(JSON.stringify(itemBefore.metadata));
+    expect(await ctx.prisma.contentVersion.count({ where: { contentItem: { publicId: itemId } } })).toBe(versionsBefore);
+    expect(await ctx.prisma.blogArticle.count({ where: { contentItem: { publicId: itemId } } })).toBe(articlesBefore);
+    expect(await ctx.prisma.auditLog.count({ where: { workspaceId: ws.id } })).toBe(auditBefore);
+
+    // The very next mutating stage (SEO, SEO_EDIT) finalizes the draft exactly once.
+    const seo = await request(h.server()).post(`${h.base(ws)}/${itemId}/seo`).set(h.auth(ws)).expect(202);
+    const afterSeo = await request(h.server()).get(`${h.base(ws)}/${itemId}`).set(h.auth(ws)).expect(200);
+    expect((afterSeo.body.data.draft as { contentVersionPublicId: string | null }).contentVersionPublicId).toBeTruthy();
+    expect((afterSeo.body.data.draft as { pendingFinalization: boolean }).pendingFinalization).toBe(false);
+    void seo;
+    await h.cleanup(ws);
+  }, 90_000);
+
+  it("Draft finalization is exactly-once and SEO upsert is idempotent under repeated mutating reconciliation", async () => {
+    const ws = await h.createWorkspace();
+    const packId = await h.createActivePack(ws);
+    const { itemId } = await walkToDraftAndSeo(h, ws, packId, "Idempotency proof");
+
+    // walkToDraftAndSeo finalized draft (during SEO stage) and SEO (nothing yet — SEO stage submits, next mutating stage finalizes it).
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/internal-linking`).set(h.auth(ws)).expect(200);
+    const v1 = await ctx.prisma.contentVersion.count({ where: { contentItem: { publicId: itemId } } });
+    const a1 = await ctx.prisma.blogArticle.count({ where: { contentItem: { publicId: itemId } } });
+    expect(a1).toBe(1);
+
+    // Re-run mutating stages that each call finalizeStages again — no new artifacts.
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/qa`).set(h.auth(ws)).expect(200);
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/qa`).set(h.auth(ws)).expect(200);
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/internal-linking`).set(h.auth(ws)).expect(200);
+
+    expect(await ctx.prisma.contentVersion.count({ where: { contentItem: { publicId: itemId } } })).toBe(v1);
+    expect(await ctx.prisma.blogArticle.count({ where: { contentItem: { publicId: itemId } } })).toBe(1);
+
+    // The draft content_version carries the generating job id — the exactly-once key.
+    const draftVersion = await ctx.prisma.contentVersion.findFirst({
+      where: { contentItem: { publicId: itemId }, body: { path: ["generatedByAiJobPublicId"], not: Prisma.DbNull } },
+    });
+    expect(draftVersion).toBeTruthy();
+    await h.cleanup(ws);
+  }, 90_000);
+
+  it("RBAC: a BLOG_VIEW-only user can read the pipeline but cannot finalize or mutate any stage", async () => {
+    const ws = await h.createWorkspace();
+    const packId = await h.createActivePack(ws);
+    const create = await request(h.server()).post(h.base(ws)).set(h.auth(ws)).send({ topic: "Viewer RBAC", knowledgePackVersionId: packId }).expect(202);
+    const itemId = create.body.data.contentItem.publicId;
+    await h.completeStageJob(ws, h.briefJobId(create.body.data), BRIEF_OUTPUT);
+
+    const writer = await createActiveUserAndLogin(ctx, "blog-writer-viewonly");
+    // Content Writer holds BLOG_VIEW + BLOG_CREATE + BLOG_EDIT — use Publisher instead: BLOG_VIEW only among blog perms.
+    await addActiveMemberWithRole(ctx, ws.id, writer.userId, "Publisher");
+    const viewerAuth = { Authorization: `Bearer ${writer.accessToken}`, "X-Workspace-Id": ws.publicId };
+
+    const read = await request(h.server()).get(`${h.base(ws)}/${itemId}`).set(viewerAuth).expect(200);
+    expect((read.body.data.brief as { status: string }).status).toBe("READY"); // sees the completed job
+
+    const versionsBefore = await ctx.prisma.contentVersion.count({ where: { contentItem: { publicId: itemId } } });
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/brief/approve`).set(viewerAuth).expect(403);
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/outline`).set(viewerAuth).expect(403);
+    expect(await ctx.prisma.contentVersion.count({ where: { contentItem: { publicId: itemId } } })).toBe(versionsBefore);
+    await h.cleanup(ws);
+  }, 40_000);
 });
 
 // ===========================================================================
