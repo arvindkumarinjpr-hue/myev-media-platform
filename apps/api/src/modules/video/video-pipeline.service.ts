@@ -21,6 +21,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { AuditService } from "../audit/audit.service";
 import { AiJobSubmissionService } from "../ai-jobs/ai-job-submission.service";
 import { VIDEO_ERRORS } from "./video.errors";
+import { VideoScoringService } from "./video-scoring.service";
 import { deriveStage, emptyPipelineState, isPublishReady, readPipelineState, unmetReviewGates, writePipelineState } from "./video-pipeline-state";
 import type {
   AdvisoryStageKey,
@@ -103,6 +104,7 @@ export class VideoPipelineService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly aiJobs: AiJobSubmissionService,
+    private readonly videoScoring: VideoScoringService,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -353,6 +355,7 @@ export class VideoPipelineService {
       state.render = fresh.render;
       state.qa = fresh.qa;
       state.seo = fresh.seo;
+      state.score = fresh.score; // any previous score is stale — the whole video changed
     } else if (key === "script") {
       state.script = { ...fresh.script, status: "GENERATING" };
       state.scenePlan = fresh.scenePlan;
@@ -362,6 +365,7 @@ export class VideoPipelineService {
       state.render = fresh.render;
       state.qa = fresh.qa;
       state.seo = fresh.seo;
+      state.score = fresh.score;
     } else if (key === "scenePlan") {
       state.scenePlan = { ...fresh.scenePlan, status: "GENERATING" };
       state.assets = fresh.assets;
@@ -369,11 +373,15 @@ export class VideoPipelineService {
       state.subtitles = fresh.subtitles;
       state.render = fresh.render;
       state.qa = fresh.qa;
+      state.score = fresh.score; // scene coverage feeds the Video Score's QUALITY factors
     } else if (key === "seo") {
       state.seo = { ...fresh.seo, status: "GENERATING" };
+      state.score = fresh.score; // SEO metadata feeds the Video Score's SEO factors
     } else if (key === "thumbnailConcepts") {
       state.thumbnailConcepts = { ...fresh.thumbnailConcepts, status: "GENERATING" };
+      state.score = fresh.score; // the persisted Thumbnail Score would otherwise reflect the OLD concept
     } else {
+      // recommendations: advisory, never scored — never invalidates freshness.
       state.recommendations = { ...fresh.recommendations, status: "GENERATING" };
     }
   }
@@ -563,6 +571,126 @@ export class VideoPipelineService {
   }
 
   // ---------------------------------------------------------------------
+  // Stage: scoring integration (reuses VideoScoringService — all scoring
+  // math + persistence lives there, mirroring how Blog's runScoring
+  // reuses Phase 6.1's ContentScoringService).
+  // ---------------------------------------------------------------------
+
+  async runScore(workspaceId: string, actor: VideoActor, itemPublicId: string, ctx: RequestContext): Promise<void> {
+    // Materialize any pending completed stages first (same pattern as
+    // Blog's own runScoring), so the score is built from the freshest
+    // persisted artifacts available — never a stage still sitting
+    // COMPLETED-but-unmaterialized in ai_jobs.
+    await this.prisma.$transaction(async (tx) => {
+      const { item, state } = await this.loadLockedPipeline(tx, workspaceId, itemPublicId);
+      this.assertEditable(item);
+      const { state: reconciled, changed } = await this.finalizeStages(tx, item, state);
+      if (changed) {
+        await this.persistState(tx, item, reconciled, {
+          afterState: { "videoPipeline.finalizedForScoring": true },
+          actorInternalId: actor.userInternalId,
+          ipAddress: ctx.ipAddress,
+        });
+      }
+    });
+
+    const run = await this.videoScoring.score(workspaceId, itemPublicId, { internalId: actor.userInternalId });
+
+    await this.prisma.$transaction(async (tx) => {
+      const { item, state } = await this.loadLockedPipeline(tx, workspaceId, itemPublicId);
+      state.score = {
+        status: "COMPLETED",
+        contentScorePublicId: run.contentScorePublicId,
+        overallScore: run.videoResult.overallScore,
+        videoScore: run.videoResult.dimension.score,
+        thumbnailScore: run.thumbnailResult?.dimension.score ?? null,
+        passThreshold: run.threshold.threshold,
+        passed: run.threshold.passed,
+        ranAt: run.calculatedAt.toISOString(),
+      };
+      await this.persistState(tx, item, state, {
+        afterState: { "videoPipeline.score.overall": run.videoResult.overallScore, "videoPipeline.score.passed": run.threshold.passed },
+        actorInternalId: actor.userInternalId,
+        ipAddress: ctx.ipAddress,
+      });
+    });
+  }
+
+  /**
+   * READ-ONLY. The latest score for this VIDEO pipeline item — overall +
+   * the five universal category scores + the Video Score + the
+   * Thumbnail Score (null when no concept existed at scoring time) +
+   * itemized factors/recommendations + the pass decision. Enumeration-
+   * safe and workspace-scoped. Never runs or re-runs scoring.
+   */
+  async getScoreFeedback(workspaceId: string, itemPublicId: string): Promise<Record<string, unknown> | null> {
+    const item = await this.prisma.contentItem.findFirst({ where: { publicId: itemPublicId, workspaceId, deletedAt: null }, select: { contentType: true, metadata: true } });
+    if (!item || item.contentType !== "VIDEO") {
+      throw new NotFoundException({ code: "CONTENT_ITEM_NOT_FOUND", message: "Content item not found." });
+    }
+    if (!readPipelineState(item.metadata)) {
+      throw new UnprocessableEntityException({ code: VIDEO_ERRORS.VIDEO_NOT_A_PIPELINE_ITEM, message: "This video content item was not started as a pipeline video." });
+    }
+
+    const latest = await this.videoScoring.getLatest(workspaceId, itemPublicId);
+    if (!latest) return null;
+    return {
+      overallScore: latest.videoResult.overallScore,
+      passThreshold: latest.threshold.threshold,
+      passed: latest.threshold.passed,
+      categoryScores: latest.videoResult.categoryScores,
+      videoScore: { ...latest.videoResult.dimension },
+      thumbnailScore: latest.thumbnailResult ? { ...latest.thumbnailResult.dimension } : null,
+      factors: latest.videoResult.factors,
+      thumbnailFactors: latest.thumbnailResult?.factors ?? [],
+      recommendations: latest.videoResult.recommendations,
+      thumbnailRecommendations: latest.thumbnailResult?.recommendations ?? [],
+      calculatedAt: latest.calculatedAt,
+    };
+  }
+
+  // ---------------------------------------------------------------------
+  // Human-review handoff — delegates to Module 1E, never re-implements it
+  // (mirrors Blog's assertReadyForReview exactly).
+  // ---------------------------------------------------------------------
+
+  async assertReadyForReview(workspaceId: string, itemPublicId: string, actor: VideoActor, ctx: RequestContext): Promise<void> {
+    const state = await this.prisma.$transaction(async (tx) => {
+      const { item, state: cur } = await this.loadLockedPipeline(tx, workspaceId, itemPublicId);
+      this.assertEditable(item);
+      const { state: finalized, changed } = await this.finalizeStages(tx, item, cur);
+      if (changed) {
+        await this.persistState(tx, item, finalized, {
+          afterState: { "videoPipeline.finalizedForReview": true },
+          actorInternalId: actor.userInternalId,
+          ipAddress: ctx.ipAddress,
+        });
+      }
+      return finalized;
+    });
+
+    const gates = unmetReviewGates(state);
+    if (gates.length === 0) return;
+    if (gates.includes("content_score_passed")) {
+      throw new UnprocessableEntityException({
+        code: VIDEO_ERRORS.VIDEO_SCORE_BELOW_THRESHOLD,
+        message: `Content score ${state.score.overallScore ?? "?"} is below the pass threshold ${state.score.passThreshold ?? "?"}. Address the itemized recommendations and re-score before review.`,
+      });
+    }
+    const first = gates[0];
+    const map: Record<string, string> = {
+      script_approved: VIDEO_ERRORS.VIDEO_SCRIPT_NOT_APPROVED,
+      assets_available: VIDEO_ERRORS.VIDEO_ASSETS_NOT_AVAILABLE,
+      voice_generated: VIDEO_ERRORS.VIDEO_VOICE_NOT_GENERATED,
+      rendering_successful: VIDEO_ERRORS.VIDEO_RENDER_NOT_SUCCESSFUL,
+      qa_passed: VIDEO_ERRORS.VIDEO_QA_NOT_PASSED,
+      seo_complete: VIDEO_ERRORS.VIDEO_SEO_NOT_COMPLETE,
+      content_score_run: VIDEO_ERRORS.VIDEO_SCORE_NOT_RUN,
+    };
+    throw new UnprocessableEntityException({ code: map[first] ?? VIDEO_ERRORS.VIDEO_QA_NOT_PASSED, message: `Cannot submit for review — unmet Quality Gates: ${gates.join(", ")}.` });
+  }
+
+  // ---------------------------------------------------------------------
   // Read model — READ-ONLY. Never locks, never opens a write transaction,
   // never persists. Safe under VIDEO_VIEW.
   // ---------------------------------------------------------------------
@@ -633,6 +761,7 @@ export class VideoPipelineService {
       seo,
       thumbnailConcepts,
       recommendations,
+      score: persisted.score,
       reviewGatesUnmet: gates,
       canSubmitForReview: gates.length === 0 && ["DRAFT", "IN_PROGRESS"].includes(item.status),
       timestamps: { createdAt: item.createdAt.toISOString(), updatedAt: item.updatedAt.toISOString() },

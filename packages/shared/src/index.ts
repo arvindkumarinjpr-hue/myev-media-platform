@@ -66,3 +66,5 @@ export * from "./content-scoring/serialization";
 export * from "./content-scoring/text-analysis";
 export * from "./content-scoring/content-scoring-engine";
 export * from "./content-scoring/dimensions/blog-dimension";
+export * from "./content-scoring/dimensions/video-dimension";
+export * from "./content-scoring/dimensions/thumbnail-dimension";

@@ -147,6 +147,48 @@ function helpers(getCtx: () => E2eApp, getToken: () => string) {
     return { itemId, readModel: approved.body.data };
   }
 
+  /** ...script approved → scene-plan → seo. Leaves the pipeline exactly where Gate #6 (SEO Complete) is satisfied and Gates #2–#5 are still PENDING (the honest, naturally-reachable Phase 7.3 boundary). */
+  async function walkToSeoComplete(ws: Workspace, packId: string, overrides: Record<string, unknown> = {}): Promise<{ itemId: string }> {
+    const { itemId } = await walkToScriptApproved(ws, packId, overrides);
+    const scenePlan = await request(server()).post(`${base(ws)}/${itemId}/scene-plan`).set(auth(ws)).expect(202);
+    await completeStageJob(ws, stageJobId(scenePlan.body.data, "scenePlan"), SCENE_PLAN_OUTPUT);
+    const seo = await request(server()).post(`${base(ws)}/${itemId}/seo`).set(auth(ws)).expect(202);
+    await completeStageJob(ws, stageJobId(seo.body.data, "seo"), SEO_OUTPUT);
+    await reconcileGet(ws, itemId);
+    return { itemId };
+  }
+
+  /**
+   * TEST-STATE SIMULATION — NOT a currently reachable production flow
+   * (checkpoint §10/§27). Phases 7.4/7.5 (Asset Manager, Voice Engine,
+   * Rendering Engine, QA Engine) do not exist yet, so Gates #2–#5 can
+   * never be satisfied by real product code in Phase 7.3. This directly
+   * crafts `metadata.videoPipeline` to mark those 4 gates satisfied —
+   * exactly analogous to how blog-pipeline.e2e-spec.ts's own "already
+   * running" test crafts pipeline state directly — so submit-for-review
+   * / approve / reject / Gate #7 / Gate #8 can be exercised end-to-end
+   * against REAL code (assertReadyForReview, ContentItemsService,
+   * VideoScoringService) without waiting for those later phases.
+   */
+  async function simulateGates2Through5Satisfied(itemId: string): Promise<void> {
+    const row = await ctx().prisma.contentItem.findFirstOrThrow({ where: { publicId: itemId }, select: { id: true, metadata: true } });
+    const md = row.metadata as { videoPipeline: Record<string, unknown> };
+    md.videoPipeline.assets = { status: "READY", scenes: [], missingScenes: [], completedAt: new Date().toISOString(), failureReason: null };
+    md.videoPipeline.voice = { status: "READY", audioAssetPublicId: "00000000-0000-0000-0000-0000000000a1", mediaJobPublicId: null, failureReason: null };
+    md.videoPipeline.subtitles = { status: "READY", subtitleAssetPublicId: "00000000-0000-0000-0000-0000000000a2", mediaJobPublicId: null, failureReason: null };
+    md.videoPipeline.render = { status: "READY", renderJobPublicId: "00000000-0000-0000-0000-0000000000a3", renderedVideoPublicId: "00000000-0000-0000-0000-0000000000a4", attempt: 1, failureReason: null };
+    md.videoPipeline.qa = { status: "COMPLETED", checks: [], completedAt: new Date().toISOString() };
+    await ctx().prisma.contentItem.update({ where: { id: row.id }, data: { metadata: md as object } });
+  }
+
+  /** walkToSeoComplete + the simulated Gates #2–#5 + a real passing score. Genuinely reaches submit-for-review-eligible via real assertReadyForReview/VideoScoringService code. */
+  async function walkToReviewEligible(ws: Workspace, packId: string): Promise<{ itemId: string }> {
+    const { itemId } = await walkToSeoComplete(ws, packId);
+    await simulateGates2Through5Satisfied(itemId);
+    await request(server()).post(`${base(ws)}/${itemId}/score`).set(auth(ws)).expect(201);
+    return { itemId };
+  }
+
   return {
     ctx,
     server,
@@ -164,6 +206,9 @@ function helpers(getCtx: () => E2eApp, getToken: () => string) {
     reconcileGet,
     cleanup,
     walkToScriptApproved,
+    walkToSeoComplete,
+    simulateGates2Through5Satisfied,
+    walkToReviewEligible,
   };
 }
 
@@ -410,7 +455,7 @@ describe("Video pipeline — Phase 7.1 foundation (e2e)", () => {
     expect((d.recommendations as { advisory: boolean }).advisory).toBe(true);
     expect(d.currentStage).toBe("BRIEF");
     expect(d.publishReady).toBe(false);
-    expect(d.reviewGatesUnmet).toEqual(["script_approved", "assets_available", "voice_generated", "rendering_successful", "qa_passed", "seo_complete"]);
+    expect(d.reviewGatesUnmet).toEqual(["script_approved", "assets_available", "voice_generated", "rendering_successful", "qa_passed", "seo_complete", "content_score_run"]);
   });
 
   it("detail 404s for a non-pipeline / unknown / wrong-type item", async () => {
@@ -562,8 +607,10 @@ describe("Video pipeline — Phase 7.2 text agents (e2e)", () => {
   // is pinned to "ASSETS" the moment scenePlan is READY, for the same
   // reason — deriveStage walks the FROZEN 8-stage order, and Phase 7.2
   // deliberately lets SEO run ahead of Assets/Voice/Render (its only
-  // prerequisite is Gate #1, not the full upstream chain).
-  const MEDIA_GATES_UNMET = ["assets_available", "voice_generated", "rendering_successful", "qa_passed"];
+  // prerequisite is Gate #1, not the full upstream chain). Phase 7.3
+  // added the scoring gate (content_score_run/content_score_passed) —
+  // these Phase 7.2 tests never run a score, so it's always unmet too.
+  const MEDIA_GATES_UNMET = ["assets_available", "voice_generated", "rendering_successful", "qa_passed", "content_score_run"];
 
   beforeAll(async () => {
     ctx = await bootstrapE2eApp();
@@ -936,6 +983,337 @@ describe("Video pipeline — Phase 7.2 text agents (e2e)", () => {
     expect(g1).toEqual(g2);
     const jobCountAfter = await ctx.prisma.aiJob.count({ where: { workspaceId: ws.id } });
     expect(jobCountAfter).toBe(jobCountBefore);
+
+    await h.cleanup(ws);
+  });
+});
+
+// ===========================================================================
+describe("Video pipeline — Phase 7.3 scoring + review (e2e)", () => {
+  let ctx: E2eApp;
+  let ownerToken: string;
+  const originalThreshold = process.env.CONTENT_SCORING_PASS_THRESHOLD;
+  const h = helpers(() => ctx, () => ownerToken);
+
+  beforeAll(async () => {
+    // Low, deterministic threshold — these tests assert GATE MECHANICS
+    // (run/not-run, passed/not-passed, fresh/stale), not score tuning.
+    process.env.CONTENT_SCORING_PASS_THRESHOLD = "1";
+    ctx = await bootstrapE2eApp();
+    ownerToken = (await loginAsPlatformOwner(ctx)).accessToken;
+  });
+  afterAll(async () => {
+    await teardownE2eApp(ctx);
+    if (originalThreshold === undefined) delete process.env.CONTENT_SCORING_PASS_THRESHOLD;
+    else process.env.CONTENT_SCORING_PASS_THRESHOLD = originalThreshold;
+  });
+
+  it("GET score returns null data when the item has never been scored (pure read, never runs scoring — mirrors Blog's own GET :id/score contract)", async () => {
+    const ws = await h.createWorkspace();
+    const packId = await h.createActivePack(ws);
+    const create = await h.createVideo(ws, packId);
+    const itemId = (create.contentItem as { publicId: string }).publicId;
+
+    const res = await request(h.server()).get(`${h.base(ws)}/${itemId}/score`).set(h.auth(ws)).expect(200);
+    expect(res.body.data).toBeNull();
+    const scoreCountBefore = await ctx.prisma.contentScore.count({ where: { workspaceId: ws.id } });
+    expect(scoreCountBefore).toBe(0);
+
+    await h.cleanup(ws);
+  });
+
+  it("POST score runs the shared engine and persists Overall/category/Video Score via the append-only ContentScore architecture", async () => {
+    const ws = await h.createWorkspace();
+    const packId = await h.createActivePack(ws);
+    const { itemId } = await h.walkToSeoComplete(ws, packId);
+
+    const res = await request(h.server()).post(`${h.base(ws)}/${itemId}/score`).set(h.auth(ws)).expect(201);
+    const rm = res.body.data as Record<string, unknown>;
+    expect((rm.score as { status: string }).status).toBe("COMPLETED");
+    expect((rm.score as { overallScore: number }).overallScore).toBeGreaterThanOrEqual(0);
+    expect((rm.score as { videoScore: number }).videoScore).toBeGreaterThanOrEqual(0);
+    // No Thumbnail Concepts exist yet at this point in the walk — no fabricated Thumbnail Score.
+    expect((rm.score as { thumbnailScore: number | null }).thumbnailScore).toBeNull();
+
+    const row = await ctx.prisma.contentScore.findFirstOrThrow({ where: { workspaceId: ws.id, contentItemId: (await ctx.prisma.contentItem.findFirstOrThrow({ where: { publicId: itemId } })).id } });
+    expect(row.score).toBe((rm.score as { overallScore: number }).overallScore);
+    const factors = row.factors as { dimension: { name: string }; thumbnail: unknown };
+    expect(factors.dimension.name).toBe("video"); // the Overall Score's own dimension is Video, never Thumbnail
+    expect(factors.thumbnail).toBeNull();
+
+    const getRes = await request(h.server()).get(`${h.base(ws)}/${itemId}/score`).set(h.auth(ws)).expect(200);
+    expect(getRes.body.data.overallScore).toBe((rm.score as { overallScore: number }).overallScore);
+    expect(getRes.body.data.thumbnailScore).toBeNull();
+
+    await h.cleanup(ws);
+  });
+
+  it("produces a separate, non-fabricated Thumbnail Score once a Thumbnail Concept exists — and it is data-model separate from Overall Score", async () => {
+    const ws = await h.createWorkspace();
+    const packId = await h.createActivePack(ws);
+    const { itemId } = await h.walkToSeoComplete(ws, packId);
+
+    const thumbs = await request(h.server()).post(`${h.base(ws)}/${itemId}/thumbnail-concepts`).set(h.auth(ws)).expect(202);
+    await h.completeStageJob(ws, h.stageJobId(thumbs.body.data, "thumbnailConcepts"), THUMBNAIL_OUTPUT);
+
+    const res = await request(h.server()).post(`${h.base(ws)}/${itemId}/score`).set(h.auth(ws)).expect(201);
+    const score = res.body.data.score as { overallScore: number; videoScore: number; thumbnailScore: number };
+    expect(score.thumbnailScore).toBeGreaterThanOrEqual(0);
+    expect(score.thumbnailScore).not.toBe(score.overallScore);
+    expect(score.thumbnailScore).not.toBe(score.videoScore);
+
+    const getRes = await request(h.server()).get(`${h.base(ws)}/${itemId}/score`).set(h.auth(ws)).expect(200);
+    expect(getRes.body.data.thumbnailScore.name).toBe("thumbnail");
+    expect(getRes.body.data.thumbnailScore.score).toBe(score.thumbnailScore);
+    // The category-score breakdown belongs to the ONE Overall Score (Video's), never Thumbnail's own.
+    expect(getRes.body.data.categoryScores).toBeTruthy();
+
+    await h.cleanup(ws);
+  });
+
+  it("scoring is append-only — a second run creates a NEW content_scores row, the first is retained untouched", async () => {
+    const ws = await h.createWorkspace();
+    const packId = await h.createActivePack(ws);
+    const { itemId } = await h.walkToSeoComplete(ws, packId);
+    const itemRow = await ctx.prisma.contentItem.findFirstOrThrow({ where: { publicId: itemId } });
+
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/score`).set(h.auth(ws)).expect(201);
+    const firstCount = await ctx.prisma.contentScore.count({ where: { contentItemId: itemRow.id } });
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/score`).set(h.auth(ws)).expect(201);
+    const secondCount = await ctx.prisma.contentScore.count({ where: { contentItemId: itemRow.id } });
+    expect(secondCount).toBe(firstCount + 1);
+
+    // Both rows are still there — never deleted/overwritten.
+    const rows = await ctx.prisma.contentScore.findMany({ where: { contentItemId: itemRow.id } });
+    expect(rows.length).toBe(2);
+
+    await h.cleanup(ws);
+  });
+
+  it("score freshness: regenerating the SCRIPT invalidates a previous score (status → PENDING) without deleting the historical row", async () => {
+    const ws = await h.createWorkspace();
+    const packId = await h.createActivePack(ws);
+    const { itemId } = await h.walkToSeoComplete(ws, packId);
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/score`).set(h.auth(ws)).expect(201);
+    const before = await h.reconcileGet(ws, itemId);
+    expect((before.score as { status: string }).status).toBe("COMPLETED");
+    const historicalCountBefore = await ctx.prisma.contentScore.count({ where: { workspaceId: ws.id } });
+
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/script`).set(h.auth(ws)).expect(202);
+    const afterClaim = await h.reconcileGet(ws, itemId);
+    expect((afterClaim.score as { status: string }).status).toBe("PENDING");
+
+    const historicalCountAfter = await ctx.prisma.contentScore.count({ where: { workspaceId: ws.id } });
+    expect(historicalCountAfter).toBe(historicalCountBefore); // nothing deleted
+
+    await h.cleanup(ws);
+  });
+
+  it("score freshness: regenerating SEO invalidates the score; regenerating a Thumbnail Concept also invalidates it", async () => {
+    const ws = await h.createWorkspace();
+    const packId = await h.createActivePack(ws);
+    const { itemId } = await h.walkToSeoComplete(ws, packId);
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/score`).set(h.auth(ws)).expect(201);
+
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/seo`).set(h.auth(ws)).expect(202);
+    expect(((await h.reconcileGet(ws, itemId)).score as { status: string }).status).toBe("PENDING");
+    await h.completeStageJob(ws, h.stageJobId((await h.reconcileGet(ws, itemId)), "seo"), SEO_OUTPUT);
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/score`).set(h.auth(ws)).expect(201);
+    expect(((await h.reconcileGet(ws, itemId)).score as { status: string }).status).toBe("COMPLETED");
+
+    const thumbs = await request(h.server()).post(`${h.base(ws)}/${itemId}/thumbnail-concepts`).set(h.auth(ws)).expect(202);
+    expect(((await h.reconcileGet(ws, itemId)).score as { status: string }).status).toBe("PENDING");
+    await h.completeStageJob(ws, h.stageJobId(thumbs.body.data, "thumbnailConcepts"), THUMBNAIL_OUTPUT);
+
+    await h.cleanup(ws);
+  });
+
+  it("regenerating advisory RECOMMENDATIONS does NOT invalidate score freshness (never a scored input)", async () => {
+    const ws = await h.createWorkspace();
+    const packId = await h.createActivePack(ws);
+    const { itemId } = await h.walkToSeoComplete(ws, packId);
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/score`).set(h.auth(ws)).expect(201);
+
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/recommendations`).set(h.auth(ws)).expect(202);
+    expect(((await h.reconcileGet(ws, itemId)).score as { status: string }).status).toBe("COMPLETED");
+
+    await h.cleanup(ws);
+  });
+
+  it("VIDEO_VIEW is required for GET score; SEO_SCORE is required for POST score", async () => {
+    const ws = await h.createWorkspace();
+    const packId = await h.createActivePack(ws);
+    const { itemId } = await h.walkToSeoComplete(ws, packId);
+    const editor = await h.addMember(ws, "video-73-editor-score", "Video Editor"); // VIDEO_VIEW yes, SEO_SCORE no
+    const editorAuth = { Authorization: `Bearer ${editor.accessToken}`, "X-Workspace-Id": ws.publicId };
+
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/score`).set(h.auth(ws)).expect(201); // owner scores first so GET has something
+    await request(h.server()).get(`${h.base(ws)}/${itemId}/score`).set(editorAuth).expect(200);
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/score`).set(editorAuth).expect(403);
+
+    await h.cleanup(ws);
+  });
+
+  it("score routes are workspace-isolated (404 across workspaces)", async () => {
+    const wsA = await h.createWorkspace();
+    const wsB = await h.createWorkspace();
+    const packA = await h.createActivePack(wsA);
+    const { itemId } = await h.walkToSeoComplete(wsA, packA);
+    await request(h.server()).post(`${h.base(wsA)}/${itemId}/score`).set(h.auth(wsA)).expect(201);
+
+    await request(h.server()).get(`${h.base(wsB)}/${itemId}/score`).set(h.auth(wsB)).expect(404);
+    await request(h.server()).post(`${h.base(wsB)}/${itemId}/score`).set(h.auth(wsB)).expect(404);
+
+    await h.cleanup(wsA);
+  });
+
+  it("a naturally-created Phase 7.3 video CANNOT submit for review — Gates #2–#5 are structurally unreachable (EXPECTED)", async () => {
+    const ws = await h.createWorkspace();
+    const packId = await h.createActivePack(ws);
+    const { itemId } = await h.walkToSeoComplete(ws, packId);
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/score`).set(h.auth(ws)).expect(201);
+
+    const res = await request(h.server()).post(`${h.base(ws)}/${itemId}/submit-for-review`).set(h.auth(ws)).expect(422);
+    // Gate #2 (assets) is first in the unmet list — its own error code.
+    expect(res.body.code).toBe("VIDEO_ASSETS_NOT_AVAILABLE");
+
+    const row = await ctx.prisma.contentItem.findFirstOrThrow({ where: { publicId: itemId } });
+    expect(row.status).toBe("IN_PROGRESS");
+
+    await h.cleanup(ws);
+  });
+
+  it("submit-for-review is blocked when the score has never been run, and again when it's below threshold", async () => {
+    const ws = await h.createWorkspace();
+    const packId = await h.createActivePack(ws);
+    const { itemId } = await h.walkToSeoComplete(ws, packId);
+    await h.simulateGates2Through5Satisfied(itemId);
+
+    // Gates #2-#5 satisfied but never scored.
+    const neverScored = await request(h.server()).post(`${h.base(ws)}/${itemId}/submit-for-review`).set(h.auth(ws)).expect(422);
+    expect(neverScored.body.code).toBe("VIDEO_SCORE_NOT_RUN");
+
+    await h.cleanup(ws);
+  });
+
+  it("submit-for-review succeeds once every mandatory gate + a passing score are satisfied (controlled test fixture — see walkToReviewEligible)", async () => {
+    const ws = await h.createWorkspace();
+    const packId = await h.createActivePack(ws);
+    const { itemId } = await h.walkToReviewEligible(ws, packId);
+
+    const rm = await h.reconcileGet(ws, itemId);
+    expect(rm.reviewGatesUnmet).toEqual([]);
+
+    const submitted = await request(h.server()).post(`${h.base(ws)}/${itemId}/submit-for-review`).set(h.auth(ws)).expect(200);
+    expect((submitted.body.data.contentItem as { status: string }).status).toBe("REVIEW");
+
+    await h.cleanup(ws);
+  });
+
+  it("the generic content-items review route stays sealed (409) even for a fully gate-satisfied video pipeline item", async () => {
+    const ws = await h.createWorkspace();
+    const packId = await h.createActivePack(ws);
+    const { itemId } = await h.walkToReviewEligible(ws, packId);
+
+    const res = await request(h.server()).post(`${h.contentItemsBase(ws)}/${itemId}/submit-for-review`).set(h.auth(ws)).expect(409);
+    expect(res.body.code).toBe("CONTENT_ITEM_VIDEO_REVIEW_VIA_PIPELINE");
+
+    await h.cleanup(ws);
+  });
+
+  it("VIDEO_APPROVE is required to approve or reject; a Video Editor (no VIDEO_APPROVE) is refused with 403", async () => {
+    const ws = await h.createWorkspace();
+    const packId = await h.createActivePack(ws);
+    const { itemId } = await h.walkToReviewEligible(ws, packId);
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/submit-for-review`).set(h.auth(ws)).expect(200);
+
+    const editor = await h.addMember(ws, "video-73-editor-approve", "Video Editor");
+    const editorAuth = { Authorization: `Bearer ${editor.accessToken}`, "X-Workspace-Id": ws.publicId };
+    // VideoController's approve/reject use a static @RequirePermission(VIDEO_APPROVE)
+    // (mirrors BlogController exactly) — 403, not the dynamic
+    // ContentPermissionResolver's enumeration-safe 404 the GENERIC
+    // content-items route uses.
+    const res = await request(h.server()).post(`${h.base(ws)}/${itemId}/approve`).set(editorAuth).send({});
+    expect(res.status).toBe(403);
+
+    await h.cleanup(ws);
+  });
+
+  it("approve requires the item to be in REVIEW — direct approval from IN_PROGRESS is rejected", async () => {
+    const ws = await h.createWorkspace();
+    const packId = await h.createActivePack(ws);
+    const { itemId } = await h.walkToSeoComplete(ws, packId); // still IN_PROGRESS — never submitted
+
+    const res = await request(h.server()).post(`${h.base(ws)}/${itemId}/approve`).set(h.auth(ws)).send({});
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("CONTENT_ITEM_INVALID_TRANSITION");
+
+    await h.cleanup(ws);
+  });
+
+  it("reject requires a non-empty comment", async () => {
+    const ws = await h.createWorkspace();
+    const packId = await h.createActivePack(ws);
+    const { itemId } = await h.walkToReviewEligible(ws, packId);
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/submit-for-review`).set(h.auth(ws)).expect(200);
+
+    const blank = await request(h.server()).post(`${h.base(ws)}/${itemId}/reject`).set(h.auth(ws)).send({ comment: "   " });
+    expect(blank.status).toBe(400);
+
+    const rejected = await request(h.server()).post(`${h.base(ws)}/${itemId}/reject`).set(h.auth(ws)).send({ comment: "Needs a stronger hook." }).expect(200);
+    expect(rejected.body.data.contentItem.status).toBe("IN_PROGRESS");
+
+    await h.cleanup(ws);
+  });
+
+  it("Human Approval Gate #7 + Publish Ready Gate #8: approving from REVIEW sets APPROVED and publishReady, with no publishing side effects", async () => {
+    const ws = await h.createWorkspace();
+    const packId = await h.createActivePack(ws);
+    const { itemId } = await h.walkToReviewEligible(ws, packId);
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/submit-for-review`).set(h.auth(ws)).expect(200);
+
+    const beforeApprove = await h.reconcileGet(ws, itemId);
+    expect(beforeApprove.publishReady).toBe(false);
+
+    const approved = await request(h.server()).post(`${h.base(ws)}/${itemId}/approve`).set(h.auth(ws)).send({ comment: "LGTM" }).expect(200);
+    expect((approved.body.data.contentItem as { status: string }).status).toBe("APPROVED");
+    expect(approved.body.data.publishReady).toBe(true);
+
+    // Gate #8 stops here — Module 9 territory is never touched.
+    const row = await ctx.prisma.contentItem.findFirstOrThrow({ where: { publicId: itemId } });
+    expect(row.status).toBe("APPROVED");
+    expect(row.status).not.toBe("PUBLISHED");
+    expect(row.status).not.toBe("SCHEDULED");
+
+    await h.cleanup(ws);
+  });
+
+  // ---- Module 6 regressions (Blog scoring / Blog review unchanged) ----
+  it("Module 6 regression: the generic content-items score endpoint still works unchanged for a BLOG item", async () => {
+    const ws = await h.createWorkspace();
+    const blog = await request(h.server())
+      .post(h.contentItemsBase(ws))
+      .set(h.auth(ws))
+      .send({ contentType: "BLOG", title: "A regression blog post", body: { content: "Charging an EV at home is convenient and affordable for most drivers who plug in nightly." } })
+      .expect(201);
+    const blogId = blog.body.data.publicId as string;
+    const res = await request(h.server()).post(`${h.contentItemsBase(ws)}/${blogId}/score`).set(h.auth(ws)).expect(201);
+    expect(res.body.data.dimension.name).toBe("blog");
+
+    await h.cleanup(ws);
+  });
+
+  it("Module 6 regression: the Blog pipeline's own review seal is unchanged", async () => {
+    const ws = await h.createWorkspace();
+    const blog = await request(h.server())
+      .post(h.contentItemsBase(ws))
+      .set(h.auth(ws))
+      .send({ contentType: "BLOG", title: "A blog", body: { content: "hi" } })
+      .expect(201);
+    const blogId = blog.body.data.publicId as string;
+    await request(h.server()).post(`${h.contentItemsBase(ws)}/${blogId}/start`).set(h.auth(ws)).expect(200);
+    const res = await request(h.server()).post(`${h.contentItemsBase(ws)}/${blogId}/submit-for-review`).set(h.auth(ws)).send({}).expect(409);
+    expect(res.body.code).toBe("CONTENT_ITEM_BLOG_REVIEW_VIA_PIPELINE");
 
     await h.cleanup(ws);
   });

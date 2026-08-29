@@ -69,4 +69,17 @@ export interface ScoringInput {
    * score. When false, keyword/brand factors still run but the engine's
    * dimensions add a recommendation noting the reduced confidence. */
   readonly knowledgePackActive: boolean;
+
+  /**
+   * Module 7 Phase 7.3 — optional platform/format context for a
+   * content-type dimension whose evaluation is platform-aware (e.g.
+   * Video: YOUTUBE_LONG vs YOUTUBE_SHORTS changes what "good pacing"
+   * means). A free-form string, not the Prisma enum, for the same
+   * "@myev/shared has no Prisma dependency" reason `contentType` is a
+   * bare string. Additive and optional: BLOG_DIMENSION_V1 (and any
+   * dimension that ignores it) is byte-for-byte unaffected — this field
+   * simply does not exist in the ScoringInput objects Blog's own
+   * builder produces.
+   */
+  readonly targetPlatform?: string;
 }
