@@ -93,6 +93,11 @@ export async function teardownE2eApp({ app, redis, prisma }: E2eApp): Promise<vo
     // with RESTRICT FKs to content_items (composite) + workspaces +
     // users(created_by) — same teardown ordering requirement.
     await tx.blogArticle.deleteMany({ where: { OR: [{ workspaceId: { in: testWorkspaceIds } }, { createdById: { in: testUserIds } }] } });
+    // Module 7 Phase 7.1: video_scripts is the 1:1 VIDEO content-item
+    // extension — RESTRICT FKs to content_items (composite) + workspaces +
+    // users(created_by), exactly like blog_articles above, so it has the
+    // same teardown ordering requirement.
+    await tx.videoScript.deleteMany({ where: { OR: [{ workspaceId: { in: testWorkspaceIds } }, { createdById: { in: testUserIds } }] } });
 
     // Module 1E: content_items <-> content_versions and content_items <->
     // media_assets are both mutual RESTRICT cycles (current_version_id /
@@ -106,7 +111,16 @@ export async function teardownE2eApp({ app, redis, prisma }: E2eApp): Promise<vo
     // that sets deleted_at, so the deferred current-version-required
     // trigger (which fires at commit, re-reading the row fresh) sees a
     // deleted row and never raises.
-    const testContentItems = await tx.contentItem.findMany({ where: { workspaceId: { in: testWorkspaceIds } }, select: { id: true } });
+    // Also sweep items a non-owner test user created inside a workspace
+    // owned by the real seeded Platform Owner (Module 7 Phase 7.1's
+    // "a Video Editor can create" e2e does exactly this) — otherwise the
+    // content_items_created_by_fkey blocks the user.deleteMany below.
+    // Mirrors the OR: [{ workspaceId }, { createdById }] scoping the
+    // blogArticle/contentScore/mediaAsset sweeps above already use.
+    const testContentItems = await tx.contentItem.findMany({
+      where: { OR: [{ workspaceId: { in: testWorkspaceIds } }, { createdById: { in: testUserIds } }] },
+      select: { id: true },
+    });
     const testContentItemIds = testContentItems.map((c) => c.id);
     if (testContentItemIds.length > 0) {
       await tx.contentItem.updateMany({
