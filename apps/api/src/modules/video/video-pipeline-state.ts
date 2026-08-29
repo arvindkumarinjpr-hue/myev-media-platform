@@ -24,6 +24,7 @@ export function emptyPipelineState(knowledgePackVersionId: string, videoScriptPu
     seo: { status: "PENDING", aiJobPublicId: null, videoScriptPublicId: null, artifact: null, failureReason: null },
     thumbnailConcepts: { status: "PENDING", aiJobPublicId: null, artifact: null, failureReason: null },
     recommendations: { status: "PENDING", aiJobPublicId: null, artifact: null, failureReason: null },
+    score: { status: "PENDING", contentScorePublicId: null, overallScore: null, videoScore: null, thumbnailScore: null, passThreshold: null, passed: null, ranAt: null },
   };
 }
 
@@ -56,6 +57,7 @@ export function readPipelineState(metadata: unknown): VideoPipelineState | null 
     seo: { ...base.seo, ...state.seo },
     thumbnailConcepts: { ...base.thumbnailConcepts, ...state.thumbnailConcepts },
     recommendations: { ...base.recommendations, ...state.recommendations },
+    score: { ...base.score, ...state.score },
   };
 }
 
@@ -84,11 +86,19 @@ export function hasVideoPipeline(metadata: unknown): boolean {
 
 /**
  * Every gate the human-review handoff requires, per the frozen 8 Quality
- * Gates (VIDEO_AUTOMATION_ENGINE_V1.0.md). Gate #7 (Human Approval) and
- * #8 (Publish Ready) are the review action + the APPROVED state itself,
- * so they are not listed among the *pre-review* unmet gates — mirrors
- * Blog's `unmetReviewGates`. Advisory stages (thumbnailConcepts,
- * recommendations) never appear here.
+ * Gates (VIDEO_AUTOMATION_ENGINE_V1.0.md) PLUS the config-driven scoring
+ * gate (mirrors Blog's own `content_score_run` / `content_score_passed`
+ * pair exactly). Gate #7 (Human Approval) and #8 (Publish Ready) are the
+ * review action + the APPROVED state itself, so they are not listed
+ * among the *pre-review* unmet gates. Advisory stages (thumbnailConcepts,
+ * recommendations) never appear here — they never gate anything.
+ *
+ * Gates #2–#5 (assets/voice/render/qa) are Phase 7.4/7.5 territory: no
+ * Phase 7.3 code path ever sets them READY/COMPLETED, so they are
+ * ALWAYS present in this list for a naturally-created item today — by
+ * design, this makes submit-for-review structurally unreachable in
+ * production until those phases land (checkpoint §10: "This is
+ * EXPECTED").
  */
 export function unmetReviewGates(state: VideoPipelineState): string[] {
   const gates: string[] = [];
@@ -98,6 +108,8 @@ export function unmetReviewGates(state: VideoPipelineState): string[] {
   if (state.render.status !== "READY") gates.push("rendering_successful");
   if (state.qa.status !== "COMPLETED") gates.push("qa_passed");
   if (state.seo.status !== "READY") gates.push("seo_complete");
+  if (state.score.status !== "COMPLETED") gates.push("content_score_run");
+  else if (state.score.passed !== true) gates.push("content_score_passed");
   return gates;
 }
 

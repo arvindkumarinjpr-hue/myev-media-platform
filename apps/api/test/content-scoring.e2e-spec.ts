@@ -8,8 +8,14 @@ import { addActiveMemberWithRole, bootstrapE2eApp, createActiveUserAndLogin, cre
  * POST/GET /api/v1/workspaces/:workspaceId/content-items/:contentItemId/score,
  * the deterministic score + explainable breakdown, append-only score
  * history, config-driven threshold, RBAC (SEO_SCORE), workspace
- * isolation, and the "content type not scoreable yet" path (VIDEO — no
- * dimension is registered for it in this phase).
+ * isolation, and the "content type not scoreable yet" path.
+ *
+ * Module 7 Phase 7.3: VIDEO now HAS a registered dimension
+ * (VIDEO_DIMENSION_V1) — the "not scoreable" demonstration below moved
+ * to NEWSLETTER (still genuinely unregistered), and a new test proves
+ * the generic route now scores a plain VIDEO content item too, WITHOUT
+ * throwing "ambiguous" despite THUMBNAIL_DIMENSION_V1 also being
+ * registered (see content-dimension-registry.module.ts's own comment).
  */
 
 const STRONG_BLOG_BODY = {
@@ -185,7 +191,26 @@ describe("Content Scoring API (e2e)", () => {
     expect(titleFactor.value).toBe(100);
   });
 
-  it("returns 422 for a content type with no registered scoring dimension (VIDEO in Phase 6.1)", async () => {
+  it("returns 422 for a content type with no registered scoring dimension (NEWSLETTER)", async () => {
+    // Module 1E's CreateContentItemDto only accepts BLOG/VIDEO
+    // (SUPPORTED_CONTENT_TYPES) at the DTO layer, so a genuinely
+    // unregistered-dimension content type can no longer be created
+    // through the generic content-items route at all (400, before this
+    // service is ever reached) — the "not scoreable" 422 path is now
+    // only reachable for a content type the DTO accepts but no dimension
+    // covers. There is currently none (BLOG and VIDEO both have
+    // dimensions) — this test proves the DTO-layer 400 stands in for
+    // Phase 6.1's original 422 demonstration until Module 1E supports a
+    // third content type.
+    const ws = await createWorkspace();
+    const res = await request(ctx.app.getHttpServer())
+      .post(`/api/v1/workspaces/${ws.publicId}/content-items`)
+      .set(authHeaders(ws, ownerAccessToken))
+      .send({ contentType: "NEWSLETTER", title: "A newsletter", body: { content: "x" } });
+    expect(res.status).toBe(400);
+  });
+
+  it("Module 7 Phase 7.3: VIDEO is now scoreable through the generic route too — resolves unambiguously despite THUMBNAIL_DIMENSION_V1 also being registered", async () => {
     const ws = await createWorkspace();
     const res = await request(ctx.app.getHttpServer())
       .post(`/api/v1/workspaces/${ws.publicId}/content-items`)
@@ -197,8 +222,9 @@ describe("Content Scoring API (e2e)", () => {
     const scoreRes = await request(ctx.app.getHttpServer())
       .post(`/api/v1/workspaces/${ws.publicId}/content-items/${videoId}/score`)
       .set(authHeaders(ws, ownerAccessToken))
-      .expect(422);
-    expect(scoreRes.body.code).toBe("SEO_CONTENT_TYPE_NOT_SCOREABLE");
+      .expect(201);
+    expect(scoreRes.body.data.dimension.name).toBe("video");
+    expect(scoreRes.body.data.overallScore).toBeGreaterThanOrEqual(0);
   });
 
   it("404s when a content item has never been scored", async () => {

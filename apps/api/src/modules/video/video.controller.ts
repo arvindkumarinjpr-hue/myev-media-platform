@@ -11,26 +11,28 @@ import { PERMISSIONS } from "../rbac/permissions.constants";
 import { VideoService, type VideoActor } from "./video.service";
 import { VideoPipelineService } from "./video-pipeline.service";
 import { CreateVideoDto } from "./dto/create-video.dto";
+import { VideoApproveDto, VideoRejectDto, VideoSubmitForReviewDto } from "./dto/video-review.dto";
 
 /**
- * Module 7 Phase 7.1 — Video Pipeline API
+ * Module 7 Phase 7.1–7.3 — Video Pipeline API
  * (POST/GET /api/v1/workspaces/:workspaceId/video...).
  *
  * Thin: every state-transition rule lives in VideoService /
  * VideoPipelineService. Every route is gated server-side by an EXISTING
- * frozen VIDEO_ permission (AI_CONTENT_ROLE_PERMISSION_MATRIX_V1.0.md,
- * already seeded). Because every item this controller touches is
- * contentType VIDEO, a static `@RequirePermission` per route is correct
- * (same precedent as BlogController); the delegated `ContentItemsService`
- * calls re-check the same permission via `ContentPermissionResolver`.
- * Workspace isolation is structural in every service query.
+ * frozen VIDEO_/SEO_ permission (AI_CONTENT_ROLE_PERMISSION_MATRIX_
+ * V1.0.md, already seeded). Because every item this controller touches
+ * is contentType VIDEO, a static `@RequirePermission` per route is
+ * correct (same precedent as BlogController); the delegated
+ * `ContentItemsService` calls re-check the same permission via
+ * `ContentPermissionResolver`. Workspace isolation is structural in
+ * every service query.
  *
- * Phase 7.1 exposed the foundation routes (create / list / detail).
- * Phase 7.2 adds the 6 text-generation routes (brief / script / script
+ * Phase 7.1: foundation routes (create / list / detail).
+ * Phase 7.2: the 6 text-generation routes (brief / script / script
  * approval / scene-plan / seo / thumbnail-concepts / recommendations).
- * Media / render / qa / submit-for-review / approve / reject routes
- * arrive in Phases 7.3–7.5 — no placeholder endpoints are exposed for
- * them now.
+ * Phase 7.3: score (GET/POST) + submit-for-review + approve/reject
+ * (Gate #7 Human Approval). Media / render / qa routes arrive in
+ * Phases 7.4–7.5 — no placeholder endpoints are exposed for them now.
  */
 @Controller("api/v1/workspaces/:workspaceId/video")
 @UseGuards(SessionGuard, WorkspaceContextGuard, PermissionGuard)
@@ -127,5 +129,49 @@ export class VideoController {
   async recommendations(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Req() req: Request) {
     await this.pipeline.generateRecommendations(w.id, this.actor(u, w), id, this.ctx(req));
     return { data: await this.pipeline.projectReadModel(w.id, id) };
+  }
+
+  // ---- Score (Video Score + Thumbnail Score) ----
+  @Get(":itemId/score")
+  @RequirePermission(PERMISSIONS.VIDEO_VIEW)
+  async scoreFeedback(@CurrentWorkspace() workspace: WorkspaceContext, @Param("itemId") itemId: string) {
+    return { data: await this.pipeline.getScoreFeedback(workspace.id, itemId) };
+  }
+
+  @Post(":itemId/score")
+  @RequirePermission(PERMISSIONS.SEO_SCORE)
+  @HttpCode(HttpStatus.CREATED)
+  async score(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Req() req: Request) {
+    await this.pipeline.runScore(w.id, this.actor(u, w), id, this.ctx(req));
+    return { data: await this.pipeline.projectReadModel(w.id, id) };
+  }
+
+  // ---- Human-review handoff (delegates to Module 1E) ----
+  @Post(":itemId/submit-for-review")
+  @RequirePermission(PERMISSIONS.VIDEO_EDIT)
+  @HttpCode(HttpStatus.OK)
+  async submitForReview(
+    @CurrentUser() u: AuthenticatedRequest["user"],
+    @CurrentWorkspace() w: WorkspaceContext,
+    @Param("itemId") id: string,
+    @Body() dto: VideoSubmitForReviewDto,
+    @Req() req: Request,
+  ) {
+    return { data: await this.video.submitForReview(w.id, this.actor(u, w), id, dto, this.ctx(req)) };
+  }
+
+  // ---- Human Approval — Quality Gate #7 ----
+  @Post(":itemId/approve")
+  @RequirePermission(PERMISSIONS.VIDEO_APPROVE)
+  @HttpCode(HttpStatus.OK)
+  async approve(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Body() dto: VideoApproveDto, @Req() req: Request) {
+    return { data: await this.video.approve(w.id, this.actor(u, w), id, dto, this.ctx(req)) };
+  }
+
+  @Post(":itemId/reject")
+  @RequirePermission(PERMISSIONS.VIDEO_APPROVE)
+  @HttpCode(HttpStatus.OK)
+  async reject(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Body() dto: VideoRejectDto, @Req() req: Request) {
+    return { data: await this.video.reject(w.id, this.actor(u, w), id, dto, this.ctx(req)) };
   }
 }

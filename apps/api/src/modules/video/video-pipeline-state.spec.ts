@@ -54,6 +54,7 @@ function fullyReady(): VideoPipelineState {
     videoScriptPublicId: VS,
     artifact: { metaTitle: "m", metaDescription: "d", tags: ["t"], chapters: [], hashtags: ["#t"], schemaMarkup: { "@type": "VideoObject", name: "m" } },
   };
+  s.score = { status: "COMPLETED", contentScorePublicId: "cs1", overallScore: 82, videoScore: 80, thumbnailScore: null, passThreshold: 70, passed: true, ranAt: new Date().toISOString() };
   return s;
 }
 
@@ -88,10 +89,11 @@ describe("video-pipeline-state", () => {
     expect(state.qa.status).toBe("PENDING");
     expect(state.thumbnailConcepts.status).toBe("PENDING");
     expect(state.recommendations.status).toBe("PENDING");
+    expect(state.score.status).toBe("PENDING");
     expect(state.brief.status).toBe("READY");
   });
 
-  it("unmetReviewGates lists every pre-review gate for a fresh pipeline and none for a fully-ready one", () => {
+  it("unmetReviewGates lists every pre-review gate for a fresh pipeline and none for a fully-ready + fully-scored one", () => {
     expect(unmetReviewGates(emptyPipelineState(KP, VS))).toEqual([
       "script_approved",
       "assets_available",
@@ -99,8 +101,15 @@ describe("video-pipeline-state", () => {
       "rendering_successful",
       "qa_passed",
       "seo_complete",
+      "content_score_run",
     ]);
     expect(unmetReviewGates(fullyReady())).toEqual([]);
+  });
+
+  it("unmetReviewGates flags a below-threshold score specifically (mirrors Blog's content_score_passed)", () => {
+    const s = fullyReady();
+    s.score = { ...s.score, passed: false };
+    expect(unmetReviewGates(s)).toEqual(["content_score_passed"]);
   });
 
   it("advisory stages (thumbnailConcepts / recommendations) never appear as unmet review gates", () => {
@@ -141,5 +150,6 @@ describe("video-pipeline-state", () => {
     expect(s.videoScriptPublicId).toBe(VS);
     expect(s.thumbnailConcepts.status).toBe("PENDING");
     expect(s.recommendations.status).toBe("PENDING");
+    expect(s.score.status).toBe("PENDING");
   });
 });

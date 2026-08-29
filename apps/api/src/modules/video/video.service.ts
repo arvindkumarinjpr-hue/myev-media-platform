@@ -6,6 +6,7 @@ import { AuditService } from "../audit/audit.service";
 import { KnowledgePacksService } from "../knowledge-packs/knowledge-packs.service";
 import { ContentItemsService, type ContentActor } from "../content/content-items.service";
 import { CreateVideoDto } from "./dto/create-video.dto";
+import type { VideoApproveDto, VideoRejectDto, VideoSubmitForReviewDto } from "./dto/video-review.dto";
 import { VIDEO_ERRORS } from "./video.errors";
 import { emptyPipelineState, readPipelineState, writePipelineState } from "./video-pipeline-state";
 import { VideoPipelineService } from "./video-pipeline.service";
@@ -161,5 +162,30 @@ export class VideoService {
           seo: state.seo.status,
         };
       });
+  }
+
+  // ---------------------------------------------------------------------
+  // Human-review handoff — delegates to Module 1E, never re-implements it
+  // (mirrors BlogService.submitForReview/approve/reject exactly).
+  // ---------------------------------------------------------------------
+
+  async submitForReview(workspaceId: string, actor: VideoActor, itemPublicId: string, dto: VideoSubmitForReviewDto, ctx: RequestContext): Promise<Record<string, unknown>> {
+    await this.pipeline.assertReadyForReview(workspaceId, itemPublicId, actor, ctx);
+    // viaVideoPipeline: true — the internal-only flag Phase 7.1 added to
+    // ContentItemsService.submitForReview. Not part of any DTO; a caller
+    // can never supply it over HTTP. The generic route stays sealed with
+    // CONTENT_ITEM_VIDEO_REVIEW_VIA_PIPELINE.
+    await this.contentItems.submitForReview({ id: workspaceId }, this.contentActor(actor), itemPublicId, dto, { ipAddress: ctx.ipAddress }, { viaVideoPipeline: true });
+    return this.pipeline.projectReadModel(workspaceId, itemPublicId);
+  }
+
+  async approve(workspaceId: string, actor: VideoActor, itemPublicId: string, dto: VideoApproveDto, ctx: RequestContext): Promise<Record<string, unknown>> {
+    await this.contentItems.approve({ id: workspaceId }, this.contentActor(actor), itemPublicId, dto, { ipAddress: ctx.ipAddress });
+    return this.pipeline.projectReadModel(workspaceId, itemPublicId);
+  }
+
+  async reject(workspaceId: string, actor: VideoActor, itemPublicId: string, dto: VideoRejectDto, ctx: RequestContext): Promise<Record<string, unknown>> {
+    await this.contentItems.reject({ id: workspaceId }, this.contentActor(actor), itemPublicId, dto, { ipAddress: ctx.ipAddress });
+    return this.pipeline.projectReadModel(workspaceId, itemPublicId);
   }
 }

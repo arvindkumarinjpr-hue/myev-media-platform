@@ -165,6 +165,31 @@ export interface RecommendationsStageState {
   failureReason: string | null;
 }
 
+/**
+ * Module 7 Phase 7.3 — mirrors Blog's own `ScoringStageState` exactly:
+ * `status` is the FRESHNESS flag, not a job status. PENDING means "no
+ * current score" (either never scored, or an upstream artifact was
+ * regenerated since the last score — see `claimStage`'s reset rules in
+ * video-pipeline-state.ts). COMPLETED means the persisted
+ * `contentScorePublicId` genuinely reflects the CURRENT brief/script/
+ * scenePlan/seo/thumbnailConcepts. The append-only `content_scores`
+ * history is never deleted or edited when this resets — only this
+ * pointer moves back to PENDING (checkpoint §14: "freshness/current-
+ * version semantics rather than destructive score updates").
+ */
+export interface ScoreStageState {
+  status: DeterministicStageStatus;
+  contentScorePublicId: string | null;
+  overallScore: number | null;
+  /** The Video Score (`ScoreResult.dimension.score` for VIDEO_DIMENSION_V1) — separate from overallScore. */
+  videoScore: number | null;
+  /** The Thumbnail Score, or null when no Thumbnail Concept existed at scoring time (never fabricated). */
+  thumbnailScore: number | null;
+  passThreshold: number | null;
+  passed: boolean | null;
+  ranAt: string | null;
+}
+
 export interface VideoPipelineState {
   /** The EXACT Knowledge Pack version publicId this pipeline is bound to, locked at create time (ADR-004 non-substitution). */
   knowledgePackVersionId: string;
@@ -181,6 +206,7 @@ export interface VideoPipelineState {
   seo: SeoStageState;
   thumbnailConcepts: ThumbnailConceptsStageState;
   recommendations: RecommendationsStageState;
+  score: ScoreStageState;
 }
 
 /** Coarse read-model label for "where is this video in the pipeline right now". Derived, never stored as the source of truth. */
