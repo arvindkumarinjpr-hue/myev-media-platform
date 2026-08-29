@@ -1,6 +1,6 @@
 import { Injectable } from "@nestjs/common";
 
-const MIN_LENGTH = 12;
+const MIN_LENGTH = 8;
 
 export class PasswordPolicyViolationError extends Error {
   constructor(reason: string) {
