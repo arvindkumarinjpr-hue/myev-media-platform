@@ -5,6 +5,12 @@ import { BLOG_DRAFT_AGENT_V1 } from "./blog-draft-agent";
 import { BLOG_OUTLINE_AGENT_V1 } from "./blog-outline-agent";
 import { RESEARCH_AGENT_V1 } from "./research-agent";
 import { SEO_METADATA_AGENT_V1 } from "./seo-metadata-agent";
+import { VIDEO_BRIEF_AGENT_V1 } from "./video-brief-agent";
+import { VIDEO_SCRIPT_AGENT_V1 } from "./video-script-agent";
+import { VIDEO_SCENE_PLANNER_AGENT_V1 } from "./video-scene-planner-agent";
+import { VIDEO_SEO_METADATA_AGENT_V1 } from "./video-seo-metadata-agent";
+import { THUMBNAIL_CONCEPT_AGENT_V1 } from "./thumbnail-concept-agent";
+import { VIDEO_RECOMMENDATIONS_AGENT_V1 } from "./video-recommendations-agent";
 
 /**
  * Module 6 Phase 6.2 architecture-review correction — the single,
@@ -31,7 +37,20 @@ import { SEO_METADATA_AGENT_V1 } from "./seo-metadata-agent";
  *
  *   agent.timeoutMs  <  AI_EXECUTE_V1_MANIFEST.timeout  <=  AI_EXECUTE_V1_MANIFEST.maximumRuntime
  */
-const PRODUCTION_AGENTS = [RESEARCH_AGENT_V1, BLOG_BRIEF_AGENT_V1, BLOG_OUTLINE_AGENT_V1, BLOG_DRAFT_AGENT_V1, SEO_METADATA_AGENT_V1];
+const PRODUCTION_AGENTS = [
+  RESEARCH_AGENT_V1,
+  BLOG_BRIEF_AGENT_V1,
+  BLOG_OUTLINE_AGENT_V1,
+  BLOG_DRAFT_AGENT_V1,
+  SEO_METADATA_AGENT_V1,
+  // Module 7 Phase 7.2 — Video text agents.
+  VIDEO_BRIEF_AGENT_V1,
+  VIDEO_SCRIPT_AGENT_V1,
+  VIDEO_SCENE_PLANNER_AGENT_V1,
+  VIDEO_SEO_METADATA_AGENT_V1,
+  THUMBNAIL_CONCEPT_AGENT_V1,
+  VIDEO_RECOMMENDATIONS_AGENT_V1,
+];
 
 describe("ai.execute.v1 timeout hierarchy invariant", () => {
   it("the manifest's outer timeout does not exceed its maximumRuntime ceiling", () => {
@@ -47,7 +66,19 @@ describe("ai.execute.v1 timeout hierarchy invariant", () => {
 
   it("every registered production agent is covered by this invariant (regression guard against a silently-added, unchecked agent)", () => {
     expect(PRODUCTION_AGENTS.map((a) => a.identifier).sort()).toEqual(
-      ["blog-brief-agent", "blog-draft-agent", "blog-outline-agent", "research-agent", "seo-metadata-agent"].sort(),
+      [
+        "blog-brief-agent",
+        "blog-draft-agent",
+        "blog-outline-agent",
+        "research-agent",
+        "seo-metadata-agent",
+        "video-brief-agent",
+        "video-script-agent",
+        "video-scene-planner-agent",
+        "video-seo-metadata-agent",
+        "thumbnail-concept-agent",
+        "video-recommendations-agent",
+      ].sort(),
     );
   });
 

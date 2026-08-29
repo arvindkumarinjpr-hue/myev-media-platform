@@ -1,8 +1,8 @@
 import { VIDEO_PIPELINE_METADATA_KEY, type VideoPipelineStage, type VideoPipelineState } from "./video-pipeline.types";
 
 /**
- * Module 7 Phase 7.1 — pure helpers over the video pipeline state blob.
- * No I/O, no NestJS. The one place the
+ * Module 7 Phase 7.1/7.2 — pure helpers over the video pipeline state
+ * blob. No I/O, no NestJS. The one place the
  * `content_items.metadata.videoPipeline` shape is read, defaulted, and
  * reduced to a coarse stage label + the publish-ready flag. Everything
  * here is deterministic and unit-tested in isolation
@@ -22,6 +22,8 @@ export function emptyPipelineState(knowledgePackVersionId: string, videoScriptPu
     render: { status: "PENDING", renderJobPublicId: null, renderedVideoPublicId: null, attempt: 0, failureReason: null },
     qa: { status: "PENDING", checks: [], completedAt: null },
     seo: { status: "PENDING", aiJobPublicId: null, videoScriptPublicId: null, artifact: null, failureReason: null },
+    thumbnailConcepts: { status: "PENDING", aiJobPublicId: null, artifact: null, failureReason: null },
+    recommendations: { status: "PENDING", aiJobPublicId: null, artifact: null, failureReason: null },
   };
 }
 
@@ -52,6 +54,8 @@ export function readPipelineState(metadata: unknown): VideoPipelineState | null 
     render: { ...base.render, ...state.render },
     qa: { ...base.qa, ...state.qa },
     seo: { ...base.seo, ...state.seo },
+    thumbnailConcepts: { ...base.thumbnailConcepts, ...state.thumbnailConcepts },
+    recommendations: { ...base.recommendations, ...state.recommendations },
   };
 }
 
@@ -66,10 +70,11 @@ export function writePipelineState(metadata: unknown, state: VideoPipelineState)
 }
 
 /**
- * True once the item's metadata carries a Video pipeline bag. Used by the
- * shared Module 1E review-gate seal to recognise a pipeline-governed
- * VIDEO item without importing this module (it inlines the same key
- * check). Kept here as the single source of truth for the shape.
+ * True once a content item's metadata carries a Video pipeline bag. Used
+ * by the shared Module 1E review-gate seal to recognise a
+ * pipeline-governed VIDEO item without importing this module (it inlines
+ * the same key check — see ContentItemsService.isVideoPipelineItem).
+ * Kept here as the single source of truth for the shape.
  */
 export function hasVideoPipeline(metadata: unknown): boolean {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return false;
@@ -81,10 +86,9 @@ export function hasVideoPipeline(metadata: unknown): boolean {
  * Every gate the human-review handoff requires, per the frozen 8 Quality
  * Gates (VIDEO_AUTOMATION_ENGINE_V1.0.md). Gate #7 (Human Approval) and
  * #8 (Publish Ready) are the review action + the APPROVED state itself,
- * so they are not listed among the *pre-review* unmet gates. In Phase 7.1
- * no stage can be executed, so this always returns the full pre-review
- * set for a freshly created pipeline — submit-for-review is not wired
- * until Phase 7.3, and the shared seal (below) blocks the generic route.
+ * so they are not listed among the *pre-review* unmet gates — mirrors
+ * Blog's `unmetReviewGates`. Advisory stages (thumbnailConcepts,
+ * recommendations) never appear here.
  */
 export function unmetReviewGates(state: VideoPipelineState): string[] {
   const gates: string[] = [];

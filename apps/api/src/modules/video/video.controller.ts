@@ -25,10 +25,12 @@ import { CreateVideoDto } from "./dto/create-video.dto";
  * calls re-check the same permission via `ContentPermissionResolver`.
  * Workspace isolation is structural in every service query.
  *
- * Phase 7.1 exposes only the foundation routes (create / list / detail).
- * Per-stage routes (brief, script, scene, assets, voice, subtitles,
- * render, qa, seo, submit-for-review, approve, reject) arrive in Phases
- * 7.2–7.5 — no placeholder endpoints are exposed for them now.
+ * Phase 7.1 exposed the foundation routes (create / list / detail).
+ * Phase 7.2 adds the 6 text-generation routes (brief / script / script
+ * approval / scene-plan / seo / thumbnail-concepts / recommendations).
+ * Media / render / qa / submit-for-review / approve / reject routes
+ * arrive in Phases 7.3–7.5 — no placeholder endpoints are exposed for
+ * them now.
  */
 @Controller("api/v1/workspaces/:workspaceId/video")
 @UseGuards(SessionGuard, WorkspaceContextGuard, PermissionGuard)
@@ -62,5 +64,68 @@ export class VideoController {
   @RequirePermission(PERMISSIONS.VIDEO_VIEW)
   async read(@CurrentWorkspace() workspace: WorkspaceContext, @Param("itemId") itemId: string) {
     return { data: await this.pipeline.projectReadModel(workspace.id, itemId) };
+  }
+
+  // ---- Brief ----
+  @Post(":itemId/brief")
+  @RequirePermission(PERMISSIONS.VIDEO_EDIT)
+  @HttpCode(HttpStatus.ACCEPTED)
+  async brief(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Req() req: Request) {
+    await this.pipeline.generateBrief(w.id, this.actor(u, w), id, this.ctx(req));
+    return { data: await this.pipeline.projectReadModel(w.id, id) };
+  }
+
+  // ---- Script ----
+  @Post(":itemId/script")
+  @RequirePermission(PERMISSIONS.VIDEO_EDIT)
+  @HttpCode(HttpStatus.ACCEPTED)
+  async script(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Req() req: Request) {
+    await this.pipeline.generateScript(w.id, this.actor(u, w), id, this.ctx(req));
+    return { data: await this.pipeline.projectReadModel(w.id, id) };
+  }
+
+  // ---- Script approval — Quality Gate #1 ----
+  @Post(":itemId/script/approve")
+  @RequirePermission(PERMISSIONS.VIDEO_EDIT)
+  @HttpCode(HttpStatus.OK)
+  async approveScript(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Req() req: Request) {
+    await this.pipeline.approveScript(w.id, this.actor(u, w), id, this.ctx(req));
+    return { data: await this.pipeline.projectReadModel(w.id, id) };
+  }
+
+  // ---- Scene planning ----
+  @Post(":itemId/scene-plan")
+  @RequirePermission(PERMISSIONS.VIDEO_EDIT)
+  @HttpCode(HttpStatus.ACCEPTED)
+  async scenePlan(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Req() req: Request) {
+    await this.pipeline.generateScenePlan(w.id, this.actor(u, w), id, this.ctx(req));
+    return { data: await this.pipeline.projectReadModel(w.id, id) };
+  }
+
+  // ---- SEO — Quality Gate #6 ----
+  @Post(":itemId/seo")
+  @RequirePermission(PERMISSIONS.SEO_EDIT)
+  @HttpCode(HttpStatus.ACCEPTED)
+  async seo(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Req() req: Request) {
+    await this.pipeline.generateSeo(w.id, this.actor(u, w), id, this.ctx(req));
+    return { data: await this.pipeline.projectReadModel(w.id, id) };
+  }
+
+  // ---- Thumbnail concepts (advisory) ----
+  @Post(":itemId/thumbnail-concepts")
+  @RequirePermission(PERMISSIONS.VIDEO_EDIT)
+  @HttpCode(HttpStatus.ACCEPTED)
+  async thumbnailConcepts(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Req() req: Request) {
+    await this.pipeline.generateThumbnailConcepts(w.id, this.actor(u, w), id, this.ctx(req));
+    return { data: await this.pipeline.projectReadModel(w.id, id) };
+  }
+
+  // ---- Recommendations (advisory) ----
+  @Post(":itemId/recommendations")
+  @RequirePermission(PERMISSIONS.VIDEO_EDIT)
+  @HttpCode(HttpStatus.ACCEPTED)
+  async recommendations(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Req() req: Request) {
+    await this.pipeline.generateRecommendations(w.id, this.actor(u, w), id, this.ctx(req));
+    return { data: await this.pipeline.projectReadModel(w.id, id) };
   }
 }
