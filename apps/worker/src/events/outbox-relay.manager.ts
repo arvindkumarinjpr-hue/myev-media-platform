@@ -27,8 +27,13 @@ import { isExpectedIdempotencyViolation } from "../scheduler/idempotency-violati
 // SchedulerTickManager's own SCHEDULER_QUEUE_NAME: this is
 // infrastructure, its own dedicated Worker consumes it, and
 // BullMqWorkerManager's frozen pipeline is never involved.
-const OUTBOX_RELAY_QUEUE_NAME = "OUTBOX_RELAY_INTERNAL";
-const OUTBOX_RELAY_SCHEDULER_ID = "outbox-relay-primary";
+//
+// Exported (Module 6 Phase 6.5-A2) solely so E2E test-only teardown code
+// can reference the canonical name/ID instead of duplicating string
+// literals prone to drift — no behavior here changes; this manager's own
+// registration/consumption logic is untouched.
+export const OUTBOX_RELAY_QUEUE_NAME = "OUTBOX_RELAY_INTERNAL";
+export const OUTBOX_RELAY_SCHEDULER_ID = "outbox-relay-primary";
 const OUTBOX_RELAY_TICK_JOB_NAME = "outbox.relay.tick.v1";
 
 // A lease is renewed once less than this fraction of its total duration
