@@ -36,6 +36,25 @@ export function friendlyMessage(error: unknown): string {
   return "Something went wrong. Please try again.";
 }
 
+/**
+ * Most error bodies already match the app's own {code, message: string}
+ * convention (every hand-written controller error, e.g. auth's token/
+ * reuse errors). class-validator DTO violations (e.g. ResetPasswordDto's
+ * `@MinLength(12)` on newPassword) bypass that convention entirely and
+ * arrive as Nest's own default shape instead — {statusCode, message:
+ * string[], error} — before the request ever reaches a controller.
+ * Normalizing here, once, keeps every call site free to just do
+ * `new ApiError(status, normalizeApiErrorBody(payload))` without needing
+ * to know which shape a given endpoint happens to produce.
+ */
+export function normalizeApiErrorBody(payload: unknown): ApiErrorBody {
+  const body = (payload ?? {}) as Record<string, unknown>;
+  const rawMessage = body.message;
+  const message = Array.isArray(rawMessage) ? rawMessage.filter((m) => typeof m === "string").join(" ") : typeof rawMessage === "string" ? rawMessage : "";
+  const code = typeof body.code === "string" ? body.code : typeof body.error === "string" ? body.error : "UNKNOWN_ERROR";
+  return { code, message };
+}
+
 export function isStaleLockConflict(error: unknown): boolean {
   return error instanceof ApiError && error.status === 409 && error.code === "KNOWLEDGE_CONFLICT";
 }

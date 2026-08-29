@@ -10,6 +10,16 @@ interface FormFieldProps {
   error?: ReactNode;
   optional?: boolean;
   className?: string;
+  /**
+   * A sibling to the label — e.g. a "Forgot password?" link next to a
+   * Password label — rendered OUTSIDE the actual <label> element.
+   * Deliberately not just extra `label` content: a <label>'s accessible
+   * name concatenates all its own text content, so nesting an unrelated
+   * interactive link inside it would corrupt getByLabelText("Password")
+   * (and any real screen reader's announcement of the field) into
+   * "Password Forgot password?".
+   */
+  labelAction?: ReactNode;
 }
 
 /**
@@ -17,7 +27,7 @@ interface FormFieldProps {
  * aria-invalid. The control is supplied through a render-prop so the
  * wiring can't be forgotten at a call site.
  */
-export function FormField({ label, children, hint, error, optional, className }: FormFieldProps) {
+export function FormField({ label, children, hint, error, optional, className, labelAction }: FormFieldProps) {
   const id = useId();
   const hintId = `${id}-hint`;
   const errorId = `${id}-error`;
@@ -25,10 +35,13 @@ export function FormField({ label, children, hint, error, optional, className }:
 
   return (
     <div className={cx(styles.field, className)}>
-      <label htmlFor={id} className={styles.label}>
-        {label}
-        {optional && <span className={styles.optional}>Optional</span>}
-      </label>
+      <div className={cx(styles.labelRow, !labelAction && styles.labelRowSingle)}>
+        <label htmlFor={id} className={styles.label}>
+          {label}
+          {optional && <span className={styles.optional}>Optional</span>}
+        </label>
+        {labelAction}
+      </div>
       {hint && (
         <p id={hintId} className={styles.hint}>
           {hint}

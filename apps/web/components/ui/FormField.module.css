@@ -13,6 +13,21 @@
   color: var(--color-text-strong);
 }
 
+/* Wraps the <label> + an optional sibling action (e.g. "Forgot
+ * password?"). display: contents when there's no action at all — the
+ * wrapper disappears from layout entirely, so every existing FormField
+ * call site (no labelAction) renders byte-for-byte as before. */
+.labelRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.labelRowSingle {
+  display: contents;
+}
+
 .optional {
   font-weight: var(--weight-normal);
   font-size: var(--text-xs);

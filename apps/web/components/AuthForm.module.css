@@ -1,3 +1,9 @@
+/* Shared card styles for the unauthenticated auth forms that sit beside
+ * LoginForm — ForgotPasswordForm, PasswordResetForm (reset + activate).
+ * Base card/heading/subtext/submit/toggleVisibility rules are copied
+ * verbatim from LoginForm.module.css so all these forms stay visually
+ * identical; LoginForm.module.css itself is untouched. */
+
 .card {
   display: flex;
   flex-direction: column;
@@ -34,15 +40,6 @@
   margin-top: var(--space-2);
 }
 
-.forgotLink {
-  font-weight: var(--weight-normal);
-  color: var(--color-text-muted);
-}
-
-.forgotLink:hover {
-  color: var(--color-text-strong);
-}
-
 .toggleVisibility {
   display: inline-flex;
   align-items: center;
@@ -62,6 +59,45 @@
 .toggleVisibility:hover {
   color: var(--color-text-strong);
   background: var(--color-surface-hover);
+}
+
+/* Back-to-sign-in text link — under the submit button, or standing alone
+ * in a terminal (success/invalid-link) state. */
+.backLink {
+  align-self: center;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.backLink:hover {
+  color: var(--color-text-strong);
+}
+
+/* Terminal states (success, invalid/expired link) — same card shell,
+ * centered icon + copy instead of a form. */
+.stateIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 3rem;
+  height: 3rem;
+  border-radius: var(--radius-full);
+  align-self: flex-start;
+}
+
+.stateIcon svg {
+  width: 1.5rem;
+  height: 1.5rem;
+}
+
+.stateIconSuccess {
+  color: var(--color-success-fg);
+  background: var(--color-success-bg);
+}
+
+.stateIconInvalid {
+  color: var(--color-danger-fg);
+  background: var(--color-danger-bg);
 }
 
 @media (max-width: 25rem) {

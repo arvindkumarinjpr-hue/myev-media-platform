@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { login } from "../lib/api/auth";
 import { friendlyMessage } from "../lib/errors";
@@ -64,7 +65,14 @@ export function LoginForm() {
         )}
       </FormField>
 
-      <FormField label="Password">
+      <FormField
+        label="Password"
+        labelAction={
+          <Link href="/forgot-password" className={styles.forgotLink}>
+            Forgot password?
+          </Link>
+        }
+      >
         {(field) => (
           <Input
             {...field}
