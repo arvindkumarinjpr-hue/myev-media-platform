@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger, type OnModuleInit } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { S3PutClient } from "@myev/shared";
 import type { WorkerConfig } from "../config/configuration";
@@ -10,7 +10,8 @@ import type { WorkerConfig } from "../config/configuration";
  * untouched.
  */
 @Injectable()
-export class MediaStorageService {
+export class MediaStorageService implements OnModuleInit {
+  private readonly logger = new Logger(MediaStorageService.name);
   private readonly client: S3PutClient;
   readonly bucket: string;
   readonly providerIdentity: string;
@@ -28,6 +29,21 @@ export class MediaStorageService {
       secretAccessKey: s.secretKey,
       forcePathStyle: s.forcePathStyle,
     });
+  }
+
+  /**
+   * The Worker E2E suite runs before apps/api's own suite (which is what
+   * normally auto-creates the bucket via MinioStorageProvider.onModuleInit)
+   * — so a media worker must ensure its own bucket, exactly as the API
+   * provider does. Idempotent; a failure here is warned, not fatal (a
+   * later putObject surfaces a real problem loudly).
+   */
+  async onModuleInit(): Promise<void> {
+    try {
+      await this.client.ensureBucket();
+    } catch (err) {
+      this.logger.warn(`Could not ensure media bucket "${this.bucket}" exists: ${(err as Error).message}`);
+    }
   }
 
   async put(key: string, body: Buffer, contentType: string, signal?: AbortSignal): Promise<void> {

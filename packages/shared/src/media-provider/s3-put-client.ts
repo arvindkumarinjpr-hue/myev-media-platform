@@ -79,16 +79,32 @@ export class S3PutClient {
     return Buffer.from(await res.arrayBuffer());
   }
 
+  /**
+   * Idempotently ensures the configured bucket exists. Mirrors apps/api's
+   * `MinioStorageProvider.onModuleInit` — every environment that boots a
+   * media worker gets a working bucket with no separate manual step
+   * (local dev, CI). A pre-existing bucket ("BucketAlreadyOwnedByYou" /
+   * 409) is a success.
+   */
+  async ensureBucket(signal?: AbortSignal): Promise<void> {
+    const res = await this.signedRequest("PUT", "", { signal, bucketOp: true });
+    if (res.ok || res.status === 409) return;
+    const detail = await res.text().catch(() => "");
+    if (/BucketAlreadyOwnedByYou|BucketAlreadyExists/.test(detail)) return;
+    throw new S3PutError(`S3 CreateBucket failed with ${res.status}${detail ? `: ${detail.slice(0, 200)}` : ""}`, res.status);
+  }
+
   private async signedRequest(
     method: "PUT" | "GET",
     key: string,
-    opts: { body?: Buffer; contentType?: string; signal?: AbortSignal },
+    opts: { body?: Buffer; contentType?: string; signal?: AbortSignal; bucketOp?: boolean },
   ): Promise<Response> {
     const { endpoint, region, bucket, accessKeyId, secretAccessKey, forcePathStyle } = this.config;
     const url = new URL(endpoint);
     const encodedKey = uriEncodeKey(key);
-    const canonicalUri = forcePathStyle ? `/${bucket}/${encodedKey}` : `/${encodedKey}`;
-    const requestHost = forcePathStyle ? url.host : `${bucket}.${url.host}`;
+    // A bucket-level operation (CreateBucket) targets `/{bucket}` itself.
+    const canonicalUri = opts.bucketOp ? `/${bucket}` : forcePathStyle ? `/${bucket}/${encodedKey}` : `/${encodedKey}`;
+    const requestHost = forcePathStyle || opts.bucketOp ? url.host : `${bucket}.${url.host}`;
     const requestUrl = `${url.protocol}//${requestHost}${canonicalUri}`;
 
     const { amzDate: xAmzDate, dateStamp } = amzDate(new Date());
