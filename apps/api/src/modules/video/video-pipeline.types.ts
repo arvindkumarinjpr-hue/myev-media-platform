@@ -1,23 +1,27 @@
 /**
- * Module 7 Phase 7.1 — Video Automation pipeline orchestration state.
+ * Module 7 Phase 7.1/7.2 — Video Automation pipeline orchestration state.
  *
- * Mirrors Module 6's `blog-pipeline.types.ts` exactly. The pipeline's
- * per-item progress is persisted in the EXISTING generic
- * `content_items.metadata` JSON bag under the `videoPipeline` key — Module
- * 1E deliberately provides this "generic, type-agnostic bag" precisely so
- * type-specific orchestration state does not need its own table. No
- * video_pipeline / brief / scene tables are introduced (an explicit Phase
- * 7.1 boundary, same as Blog Phase 6.3).
+ * Mirrors Module 6's `blog-pipeline.types.ts`. The pipeline's per-item
+ * progress is persisted in the EXISTING generic `content_items.metadata`
+ * JSON bag under the `videoPipeline` key — Module 1E deliberately
+ * provides this "generic, type-agnostic bag" precisely so type-specific
+ * orchestration state does not need its own table. No video_pipeline /
+ * brief / scene tables are introduced (an explicit Phase 7.1 boundary,
+ * same as Blog Phase 6.3).
  *
- * The `video_scripts` row (1:1, `target_platform` + the eventual
- * script_body / scene_plan / SEO metadata) is real persistence. Only the
- * orchestration bookkeeping — which stage, which AI job, whether an
- * artifact was approved — lives in this metadata bag.
- *
- * Phase 7.1 does not EXECUTE any stage: every stage starts and stays
- * `PENDING`. The full 10-stage shape is defined now so that Phases
- * 7.2–7.5 are purely additive (checkpoint §8 "future stage contracts").
+ * The `video_scripts` row (1:1, `target_platform` + script_body /
+ * scene_plan / SEO metadata) is real persistence. Only the orchestration
+ * bookkeeping — which stage, which AI job, whether Gate #1 was approved —
+ * lives in this metadata bag.
  */
+import type {
+  ThumbnailConceptAgentOutput,
+  VideoBriefAgentOutput,
+  VideoRecommendationsAgentOutput,
+  VideoScenePlannerAgentOutput,
+  VideoScriptAgentOutput,
+  VideoSeoMetadataAgentOutput,
+} from "@myev/shared";
 
 export const VIDEO_PIPELINE_METADATA_KEY = "videoPipeline" as const;
 
@@ -39,22 +43,17 @@ export const VIDEO_QUALITY_GATES = [
 ] as const;
 export type VideoQualityGate = (typeof VIDEO_QUALITY_GATES)[number];
 
-/** A generation stage backed by an AI text job (brief / script / scene / seo). */
+/** A generation stage backed by an AI text job (brief / script / scenePlan / seo). */
 export type GenerationStageStatus = "PENDING" | "GENERATING" | "READY" | "APPROVED" | "FAILED";
+
+/** An advisory generation stage (thumbnailConcepts / recommendations) — never gates anything. */
+export type AdvisoryStageStatus = "PENDING" | "GENERATING" | "READY" | "FAILED";
 
 /** A media stage backed by a MEDIA-queue job (assets / voice / subtitles / render) — Phases 7.4–7.5. */
 export type MediaStageStatus = "PENDING" | "RUNNING" | "READY" | "FAILED";
 
 /** A deterministic stage with no job of its own (qa). */
 export type DeterministicStageStatus = "PENDING" | "COMPLETED";
-
-/**
- * Phase 7.1 keeps every stage's structured artifact loosely typed
- * (`Record<string, unknown> | null`). Phase 7.2 replaces these with the
- * real `@myev/shared` agent output types (VideoBriefAgentOutput,
- * VideoScriptAgentOutput, …) — the field names here do not change.
- */
-type Artifact = Record<string, unknown> | null;
 
 export interface BriefStageState {
   /**
@@ -65,14 +64,14 @@ export interface BriefStageState {
   status: GenerationStageStatus;
   /** publicId of the most recent ai_jobs row for this stage — history is never destroyed. */
   aiJobPublicId: string | null;
-  artifact: Artifact;
+  artifact: VideoBriefAgentOutput | null;
   failureReason: string | null;
 }
 
 export interface ScriptStageState {
   status: GenerationStageStatus;
   aiJobPublicId: string | null;
-  artifact: Artifact;
+  artifact: VideoScriptAgentOutput | null;
   /** Quality Gate #1 — Script Approved. */
   approvedAt: string | null;
   approvedByUserPublicId: string | null;
@@ -82,7 +81,7 @@ export interface ScriptStageState {
 export interface ScenePlanStageState {
   status: GenerationStageStatus;
   aiJobPublicId: string | null;
-  artifact: Artifact;
+  artifact: VideoScenePlannerAgentOutput | null;
   failureReason: string | null;
 }
 
@@ -146,7 +145,23 @@ export interface SeoStageState {
   aiJobPublicId: string | null;
   /** Written onto the video_scripts row (meta_title / meta_description / tags / chapters / hashtags / schema_markup). */
   videoScriptPublicId: string | null;
-  artifact: Artifact;
+  artifact: VideoSeoMetadataAgentOutput | null;
+  failureReason: string | null;
+}
+
+/** ADVISORY — never gates review, never invalidated by mandatory-stage regeneration (except its own). */
+export interface ThumbnailConceptsStageState {
+  status: AdvisoryStageStatus;
+  aiJobPublicId: string | null;
+  artifact: ThumbnailConceptAgentOutput | null;
+  failureReason: string | null;
+}
+
+/** ADVISORY — same non-blocking contract as thumbnailConcepts. */
+export interface RecommendationsStageState {
+  status: AdvisoryStageStatus;
+  aiJobPublicId: string | null;
+  artifact: VideoRecommendationsAgentOutput | null;
   failureReason: string | null;
 }
 
@@ -164,6 +179,8 @@ export interface VideoPipelineState {
   render: RenderStageState;
   qa: QaStageState;
   seo: SeoStageState;
+  thumbnailConcepts: ThumbnailConceptsStageState;
+  recommendations: RecommendationsStageState;
 }
 
 /** Coarse read-model label for "where is this video in the pipeline right now". Derived, never stored as the source of truth. */
@@ -181,3 +198,8 @@ export type VideoPipelineStage =
   | "IN_REVIEW"
   | "APPROVED"
   | "PUBLISH_READY";
+
+/** The 4 mandatory TEXT generation stages Phase 7.2 actually executes, in dependency order. */
+export type TextGenerationStageKey = "brief" | "script" | "scenePlan" | "seo";
+/** The 2 advisory TEXT generation stages Phase 7.2 executes — never gate anything. */
+export type AdvisoryStageKey = "thumbnailConcepts" | "recommendations";

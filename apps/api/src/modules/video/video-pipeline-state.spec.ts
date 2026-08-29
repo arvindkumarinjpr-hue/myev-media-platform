@@ -6,15 +6,54 @@ const VS = "22222222-2222-2222-2222-222222222222";
 
 function fullyReady(): VideoPipelineState {
   const s = emptyPipelineState(KP, VS);
-  s.brief = { ...s.brief, status: "READY", artifact: { objective: "o" } };
-  s.script = { ...s.script, status: "APPROVED", artifact: { body: "b" }, approvedAt: new Date().toISOString(), approvedByUserPublicId: "u1" };
-  s.scenePlan = { ...s.scenePlan, status: "READY", artifact: { scenes: [] } };
+  s.brief = {
+    ...s.brief,
+    status: "READY",
+    artifact: { objective: "o", audience: "a", targetPlatform: "YOUTUBE_LONG", durationSeconds: 120, cta: "c", rationale: "r" },
+  };
+  s.script = {
+    ...s.script,
+    status: "APPROVED",
+    artifact: {
+      hook: "h",
+      segments: [{ order: 1, id: "seg-1", label: "Hook", narration: "n", purpose: "p" }],
+      cta: "c",
+      scriptBody: "body",
+    },
+    approvedAt: new Date().toISOString(),
+    approvedByUserPublicId: "u1",
+  };
+  s.scenePlan = {
+    ...s.scenePlan,
+    status: "READY",
+    artifact: {
+      scenePlanVersion: 1,
+      targetPlatform: "YOUTUBE_LONG",
+      scenes: [
+        {
+          order: 1,
+          sceneId: "scene-1",
+          scriptSegmentRef: "seg-1",
+          startSeconds: 0,
+          durationSeconds: 5,
+          visualInstruction: "v",
+          transition: "cut",
+          assetRequirements: [{ kind: "video_clip", description: "d", sourceHint: "stock" }],
+        },
+      ],
+    },
+  };
   s.assets = { ...s.assets, status: "READY", scenes: [], missingScenes: [], completedAt: new Date().toISOString() };
   s.voice = { ...s.voice, status: "READY", audioAssetPublicId: "a1" };
   s.subtitles = { ...s.subtitles, status: "READY", subtitleAssetPublicId: "sub1" };
   s.render = { ...s.render, status: "READY", renderJobPublicId: "rj1", renderedVideoPublicId: "rv1", attempt: 1 };
   s.qa = { status: "COMPLETED", checks: [], completedAt: new Date().toISOString() };
-  s.seo = { ...s.seo, status: "READY", videoScriptPublicId: VS, artifact: { metaTitle: "m" } };
+  s.seo = {
+    ...s.seo,
+    status: "READY",
+    videoScriptPublicId: VS,
+    artifact: { metaTitle: "m", metaDescription: "d", tags: ["t"], chapters: [], hashtags: ["#t"], schemaMarkup: { "@type": "VideoObject", name: "m" } },
+  };
   return s;
 }
 
@@ -47,6 +86,8 @@ describe("video-pipeline-state", () => {
     expect(state.script.status).toBe("PENDING");
     expect(state.render.status).toBe("PENDING");
     expect(state.qa.status).toBe("PENDING");
+    expect(state.thumbnailConcepts.status).toBe("PENDING");
+    expect(state.recommendations.status).toBe("PENDING");
     expect(state.brief.status).toBe("READY");
   });
 
@@ -60,6 +101,13 @@ describe("video-pipeline-state", () => {
       "seo_complete",
     ]);
     expect(unmetReviewGates(fullyReady())).toEqual([]);
+  });
+
+  it("advisory stages (thumbnailConcepts / recommendations) never appear as unmet review gates", () => {
+    const s = fullyReady();
+    s.thumbnailConcepts = { ...s.thumbnailConcepts, status: "FAILED", failureReason: "provider error" };
+    s.recommendations = { ...s.recommendations, status: "PENDING" };
+    expect(unmetReviewGates(s)).toEqual([]);
   });
 
   it("deriveStage walks the pipeline and respects the content-item lifecycle status", () => {
@@ -91,5 +139,7 @@ describe("video-pipeline-state", () => {
     const s = emptyPipelineState(KP, VS);
     expect(s.knowledgePackVersionId).toBe(KP);
     expect(s.videoScriptPublicId).toBe(VS);
+    expect(s.thumbnailConcepts.status).toBe("PENDING");
+    expect(s.recommendations.status).toBe("PENDING");
   });
 });

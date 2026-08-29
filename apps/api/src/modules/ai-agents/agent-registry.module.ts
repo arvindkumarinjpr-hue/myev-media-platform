@@ -10,6 +10,12 @@ import {
   TEST_FLAKY_AGENT_V1,
   TEST_PERMANENT_FAIL_AGENT_V1,
   TEST_TIMEOUT_AGENT_V1,
+  THUMBNAIL_CONCEPT_AGENT_V1,
+  VIDEO_BRIEF_AGENT_V1,
+  VIDEO_RECOMMENDATIONS_AGENT_V1,
+  VIDEO_SCENE_PLANNER_AGENT_V1,
+  VIDEO_SCRIPT_AGENT_V1,
+  VIDEO_SEO_METADATA_AGENT_V1,
   type AgentRegistry,
 } from "@myev/shared";
 
@@ -44,6 +50,16 @@ export const AGENT_REGISTRY = Symbol("AGENT_REGISTRY");
         builder.register(BLOG_OUTLINE_AGENT_V1);
         builder.register(BLOG_DRAFT_AGENT_V1);
         builder.register(SEO_METADATA_AGENT_V1);
+        // Module 7 Phase 7.2 — the Video pipeline text agents. Registered
+        // identically here and in apps/worker's own agent-registry.module.ts
+        // (same @myev/shared objects) — api-worker-agent-registry-sync.spec.ts
+        // proves the two module source files stay synchronized.
+        builder.register(VIDEO_BRIEF_AGENT_V1);
+        builder.register(VIDEO_SCRIPT_AGENT_V1);
+        builder.register(VIDEO_SCENE_PLANNER_AGENT_V1);
+        builder.register(VIDEO_SEO_METADATA_AGENT_V1);
+        builder.register(THUMBNAIL_CONCEPT_AGENT_V1);
+        builder.register(VIDEO_RECOMMENDATIONS_AGENT_V1);
         builder.register(TEST_ECHO_AGENT_V1);
         // Module 3 Phase 3.3 test-only fixtures — apps/api's own
         // AGENT_REGISTRY must know about these too (AiJobSubmissionService
