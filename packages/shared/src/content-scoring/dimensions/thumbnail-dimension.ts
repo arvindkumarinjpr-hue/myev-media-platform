@@ -161,6 +161,22 @@ export const THUMBNAIL_DIMENSION_V1: ContentDimension = {
     const dimCtrPotential = mk("thumbnail-ctr-potential", null, "CTR potential", ctrValue, 2, "Same measurement as the VIRAL category's CTR-hypothesis-strength factor.");
     const dimBrandConsistency = mk("thumbnail-brand-consistency", null, "Brand consistency", businessBrandConsistency.value, 1.5, "Same measurement as the BUSINESS category's brand-consistency factor.");
     const dimensionFactors = [dimVisualClarity, dimTextReadability, dimCtrPotential, dimBrandConsistency];
+
+    // Module 7 Phase 7.4 — when a REAL thumbnail image artifact exists,
+    // add ONLY truthful, objectively-measured image facts. No CV, no
+    // subjective quality claims (facial expression / semantic contrast /
+    // pixel composition) — an implemented mechanism actually provides
+    // each of these. Absent evidence → identical to Phase 7.3 output.
+    const img = input.thumbnailImageEvidence;
+    if (img?.present) {
+      const dimsValid = img.width >= 640 && img.height >= 360;
+      dimensionFactors.push(
+        mk("thumbnail-image-present", null, "Rendered thumbnail image exists", 100, 1.5, "A real thumbnail image artifact has been generated and persisted for this video."),
+        mk("thumbnail-image-dimensions", null, "Image dimensions are usable", dimsValid ? 100 : 40, 1, dimsValid ? `Image is ${img.width}x${img.height} — at or above the minimum usable resolution.` : `Image is only ${img.width}x${img.height} — below a comfortable thumbnail resolution.`, { width: img.width, height: img.height }),
+        mk("thumbnail-image-aspect-ratio", null, "Aspect ratio matches the target platform", img.aspectRatioOk ? 100 : 30, 1, img.aspectRatioOk ? "The image's aspect ratio matches the video's target platform." : "The image's aspect ratio does not match the video's target platform — it may be cropped or letterboxed."),
+      );
+    }
+
     const dimensionScore = hasConcept ? roundScore(weightedFactorMean(dimensionFactors)) : 0;
 
     return { categoryFactors, dimensionScore, dimensionFactors, recommendations: recs };

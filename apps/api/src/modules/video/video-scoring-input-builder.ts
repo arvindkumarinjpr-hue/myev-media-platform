@@ -50,8 +50,20 @@ export interface VideoScoreItemContext {
  */
 @Injectable()
 export class VideoScoringInputBuilder {
-  /** Builds the ScoringInput VIDEO_DIMENSION_V1 evaluates. */
-  buildVideoInput(item: VideoScoreItemContext, kp: KnowledgePackContextForScoring): ScoringInput {
+  /**
+   * Builds the ScoringInput VIDEO_DIMENSION_V1 evaluates.
+   *
+   * `thumbnailEnrichment` (Phase 7.4) is passed ONLY when a REAL, FRESH
+   * thumbnail image artifact exists — it carries the already-computed
+   * Thumbnail Score + objective image facts so VIDEO_DIMENSION_V1's
+   * "thumbnail quality" measure is a derived read, never a second pass.
+   * Omitted for every Phase 7.1–7.3 item → identical output.
+   */
+  buildVideoInput(
+    item: VideoScoreItemContext,
+    kp: KnowledgePackContextForScoring,
+    thumbnailEnrichment?: { currentThumbnailScore: number | null; imageEvidence?: { present: boolean; width: number; height: number; aspectRatioOk: boolean } },
+  ): ScoringInput {
     const segments = item.script?.segments ?? [];
     const bodyText = segments.map((s) => s.narration).join("\n\n");
     const chapterTitles = this.extractChapterTitles(item.seo.chapters);
@@ -80,6 +92,8 @@ export class VideoScoringInputBuilder {
       brandTerms: kp.brandTerms,
       knowledgePackActive: kp.active,
       targetPlatform: item.targetPlatform,
+      ...(thumbnailEnrichment ? { currentThumbnailScore: thumbnailEnrichment.currentThumbnailScore } : {}),
+      ...(thumbnailEnrichment?.imageEvidence ? { thumbnailImageEvidence: thumbnailEnrichment.imageEvidence } : {}),
     };
   }
 
@@ -92,7 +106,11 @@ export class VideoScoringInputBuilder {
    * Score" (checkpoint §8) means never calling evaluate() with empty
    * input, not calling it and discarding a fabricated 0.
    */
-  buildThumbnailInput(concepts: ThumbnailConceptAgentOutput | null, kp: KnowledgePackContextForScoring): ScoringInput | null {
+  buildThumbnailInput(
+    concepts: ThumbnailConceptAgentOutput | null,
+    kp: KnowledgePackContextForScoring,
+    imageEvidence?: { present: boolean; width: number; height: number; aspectRatioOk: boolean },
+  ): ScoringInput | null {
     const concept = concepts?.concepts?.[0];
     if (!concept) return null;
     return {
@@ -107,6 +125,7 @@ export class VideoScoringInputBuilder {
       ...(kp.keywords[0] ? { primaryKeyword: kp.keywords[0] } : {}),
       brandTerms: kp.brandTerms,
       knowledgePackActive: kp.active,
+      ...(imageEvidence ? { thumbnailImageEvidence: imageEvidence } : {}),
     };
   }
 

@@ -100,14 +100,30 @@ export class VideoScoringService {
     // non-null already implies `item.videoScript` exists; the fallback
     // below only guards a theoretical inconsistency, never fabricates SEO
     // evidence (every field stays null/empty).
-    const videoInput = this.inputBuilder.buildVideoInput(toVideoScoreItemContext(item.title, item.videoScript ?? this.emptyScript(), state), kpContext);
-    const videoResult = this.engine.score(videoInput, videoDimension);
-
     // Only ever run — and only ever score — when a Thumbnail Concept
     // artifact genuinely exists. Absent means no Thumbnail Score, never
-    // a fabricated zero.
-    const thumbnailInput = this.inputBuilder.buildThumbnailInput(state.thumbnailConcepts.artifact, kpContext);
+    // a fabricated zero. Computed FIRST (Phase 7.4) so its score can feed
+    // the Video dimension's "thumbnail quality" measure when a real image
+    // exists.
+    const thumb = state.thumbnailImage;
+    const realImageReady = thumb.status === "READY" && !!thumb.imageAssetPublicId;
+    const thumbnailInput = this.inputBuilder.buildThumbnailInput(state.thumbnailConcepts.artifact, kpContext, realImageReady ? { present: true, width: thumb.imageWidth ?? 0, height: thumb.imageHeight ?? 0, aspectRatioOk: this.aspectRatioOk(item.videoScript?.targetPlatform ?? "YOUTUBE_LONG", thumb.imageWidth, thumb.imageHeight) } : undefined);
     const thumbnailResult = thumbnailInput ? this.engine.score(thumbnailInput, this.dimensions.resolve("thumbnail", 1)) : null;
+
+    const videoInput = this.inputBuilder.buildVideoInput(
+      toVideoScoreItemContext(item.title, item.videoScript ?? this.emptyScript(), state),
+      kpContext,
+      // Only feed the Video dimension a Thumbnail Score when a REAL,
+      // fresh thumbnail image exists — never for a text concept alone
+      // (that keeps Phase 7.1–7.3 video scores unchanged).
+      realImageReady && thumbnailResult
+        ? {
+            currentThumbnailScore: thumbnailResult.dimension.score,
+            imageEvidence: { present: true, width: thumb.imageWidth ?? 0, height: thumb.imageHeight ?? 0, aspectRatioOk: this.aspectRatioOk(item.videoScript?.targetPlatform ?? "YOUTUBE_LONG", thumb.imageWidth, thumb.imageHeight) },
+          }
+        : undefined,
+    );
+    const videoResult = this.engine.score(videoInput, videoDimension);
 
     const threshold = evaluateThreshold(videoResult.overallScore, this.passThreshold());
 
@@ -157,6 +173,14 @@ export class VideoScoringService {
 
   private passThreshold(): number {
     return this.config.get("contentScoring", { infer: true }).passThreshold;
+  }
+
+  /** True when the image's aspect ratio matches the target platform's expected ratio (±8%). */
+  private aspectRatioOk(targetPlatform: string, width: number | null, height: number | null): boolean {
+    if (!width || !height) return false;
+    const actual = width / height;
+    const expected = /SHORT|REEL/i.test(targetPlatform) ? 9 / 16 : /SQUARE/i.test(targetPlatform) ? 1 : 16 / 9;
+    return Math.abs(actual - expected) / expected <= 0.08;
   }
 
   private emptyScript(): { targetPlatform: string; metaTitle: null; metaDescription: null; tags: null; chapters: null; schemaMarkup: null } {

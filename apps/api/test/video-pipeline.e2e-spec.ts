@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { Prisma } from "../generated/prisma";
 import {
   addActiveMemberWithRole,
@@ -9,6 +10,7 @@ import {
   teardownE2eApp,
   type E2eApp,
 } from "./helpers/e2e-app";
+import { scriptVersionHash } from "../src/modules/video/video-media-hash";
 
 /**
  * Module 7 Phase 7.1 — Video Automation domain + pipeline foundation
@@ -170,15 +172,93 @@ function helpers(getCtx: () => E2eApp, getToken: () => string) {
    * against REAL code (assertReadyForReview, ContentItemsService,
    * VideoScoringService) without waiting for those later phases.
    */
+  async function createActiveMediaAsset(ws: Workspace, itemInternalId: string, createdById: string, assetType: string, mime: string): Promise<{ publicId: string; assetGroupId: string }> {
+    const id = randomUUID();
+    const row = await ctx().prisma.mediaAsset.create({
+      data: {
+        id,
+        workspaceId: ws.id,
+        contentItemId: itemInternalId,
+        assetType: assetType as "IMAGE",
+        originalFilename: `sim-${assetType}`,
+        normalizedFilename: `sim-${assetType}`,
+        storageProviderIdentity: "MINIO",
+        bucket: "test",
+        objectKey: `sim/${id}`,
+        declaredMimeType: mime,
+        declaredSizeBytes: BigInt(1000),
+        verifiedMimeType: mime,
+        verifiedSizeBytes: BigInt(1000),
+        extension: ".bin",
+        assetGroupId: id,
+        versionNumber: 1,
+        status: "ACTIVE",
+        visibility: "WORKSPACE_PRIVATE",
+        verifiedAt: new Date(),
+        createdById,
+      },
+      select: { publicId: true, assetGroupId: true },
+    });
+    return row;
+  }
+
+  /**
+   * TEST-STATE SIMULATION — NOT a currently reachable production flow
+   * (checkpoint §10/§27). Gates #4/#5 (Render/QA) do not exist yet, so a
+   * naturally-created item can never be review-eligible. Phase 7.4 DID
+   * make Gates #2/#3 (Assets/Voice) real — so this helper now crafts the
+   * REAL persisted artifacts the reconcile validates: ACTIVE MediaAsset
+   * rows for each scene image, the narration audio (+ a matching COMPLETED
+   * TTS media_job carrying the word-timing sidecar key + script hash), and
+   * the SRT/VTT subtitles — plus the still-simulated Render/QA state.
+   */
   async function simulateGates2Through5Satisfied(itemId: string): Promise<void> {
-    const row = await ctx().prisma.contentItem.findFirstOrThrow({ where: { publicId: itemId }, select: { id: true, metadata: true } });
-    const md = row.metadata as { videoPipeline: Record<string, unknown> };
-    md.videoPipeline.assets = { status: "READY", scenes: [], missingScenes: [], completedAt: new Date().toISOString(), failureReason: null };
-    md.videoPipeline.voice = { status: "READY", audioAssetPublicId: "00000000-0000-0000-0000-0000000000a1", mediaJobPublicId: null, failureReason: null };
-    md.videoPipeline.subtitles = { status: "READY", subtitleAssetPublicId: "00000000-0000-0000-0000-0000000000a2", mediaJobPublicId: null, failureReason: null };
-    md.videoPipeline.render = { status: "READY", renderJobPublicId: "00000000-0000-0000-0000-0000000000a3", renderedVideoPublicId: "00000000-0000-0000-0000-0000000000a4", attempt: 1, failureReason: null };
+    const item = await ctx().prisma.contentItem.findFirstOrThrow({ where: { publicId: itemId }, select: { id: true, workspaceId: true, metadata: true, createdById: true } });
+    const ws: Workspace = { id: item.workspaceId, publicId: "" };
+    const md = item.metadata as { videoPipeline: Record<string, unknown> };
+    const plan = (md.videoPipeline.scenePlan as { artifact: { scenes: { sceneId: string }[] } }).artifact;
+
+    const scenes = [];
+    for (const s of plan.scenes) {
+      const a = await createActiveMediaAsset(ws, item.id, item.createdById, "IMAGE", "image/png");
+      scenes.push({ sceneId: s.sceneId, mediaAssetGroupId: a.assetGroupId, mediaAssetPublicId: a.publicId, source: "ai_generated", mediaJobPublicId: null, failureReason: null });
+    }
+    md.videoPipeline.assets = { status: "READY", scenes, missingScenes: [], completedAt: new Date().toISOString(), failureReason: null };
+
+    const audio = await createActiveMediaAsset(ws, item.id, item.createdById, "AUDIO", "audio/mpeg");
+    const hash = scriptVersionHash(SCRIPT_OUTPUT as never);
+    const timingKey = `sim/${audio.publicId}.timings.json`;
+    await ctx().prisma.mediaJob.create({
+      data: {
+        workspaceId: item.workspaceId,
+        contentItemId: item.id,
+        operation: "TTS",
+        status: "COMPLETED",
+        correlationId: randomUUID(),
+        inputPayload: {},
+        outputPayload: { audioAssetPublicId: audio.publicId, wordTimingObjectKey: timingKey, durationMs: 8000, scriptVersionHash: hash, voiceProfileId: "en-in-neerja" },
+        createdById: item.createdById,
+        completedAt: new Date(),
+      },
+    });
+    md.videoPipeline.voice = {
+      status: "READY",
+      audioAssetPublicId: audio.publicId,
+      wordTimingObjectKey: timingKey,
+      scriptVersionHash: hash,
+      voiceProfileId: "en-in-neerja",
+      audioDurationMs: 8000,
+      mediaJobPublicId: null,
+      failureReason: null,
+    };
+
+    const srt = await createActiveMediaAsset(ws, item.id, item.createdById, "SUBTITLE", "application/x-subrip");
+    const vtt = await createActiveMediaAsset(ws, item.id, item.createdById, "SUBTITLE", "text/vtt");
+    md.videoPipeline.subtitles = { status: "READY", srtAssetPublicId: srt.publicId, vttAssetPublicId: vtt.publicId, sourceAudioAssetPublicId: audio.publicId, cueCount: 4, mediaJobPublicId: null, failureReason: null };
+
+    md.videoPipeline.render = { status: "READY", renderJobPublicId: randomUUID(), renderedVideoPublicId: randomUUID(), attempt: 1, failureReason: null };
     md.videoPipeline.qa = { status: "COMPLETED", checks: [], completedAt: new Date().toISOString() };
-    await ctx().prisma.contentItem.update({ where: { id: row.id }, data: { metadata: md as object } });
+    await ctx().prisma.contentItem.update({ where: { id: item.id }, data: { metadata: md as object } });
   }
 
   /** walkToSeoComplete + the simulated Gates #2–#5 + a real passing score. Genuinely reaches submit-for-review-eligible via real assertReadyForReview/VideoScoringService code. */

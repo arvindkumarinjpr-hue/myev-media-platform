@@ -64,6 +64,9 @@ export interface AppConfig {
       audio: number;
       video: number;
       document: number;
+      // Module 7 Phase 7.4 — generated caption documents are tiny; a small
+      // hard ceiling guards against a runaway subtitle build.
+      subtitle: number;
     };
     // ACR (approved): Module 1D's synchronous verification ceiling. The
     // EFFECTIVE per-type max is min(maxSizeBytes[type], this) — only VIDEO
@@ -80,6 +83,10 @@ export interface AppConfig {
     uploadIntent: { limit: number; windowSeconds: number };
     downloadUrl: { limit: number; windowSeconds: number };
     retryVerification: { limit: number; windowSeconds: number };
+  };
+  videoMedia: {
+    voiceCatalogJson: string;
+    imageAspectByPlatform: string;
   };
   content: {
     // Module 1E Engineering Plan's Body Validation Contract. No frozen FRD
@@ -191,6 +198,7 @@ export default (): AppConfig => ({
       audio: parseInt(process.env.MEDIA_MAX_SIZE_AUDIO_BYTES ?? "104857600", 10), // 100MB
       video: parseInt(process.env.MEDIA_MAX_SIZE_VIDEO_BYTES ?? "2147483648", 10), // 2GB (frozen FRD ceiling)
       document: parseInt(process.env.MEDIA_MAX_SIZE_DOCUMENT_BYTES ?? "20971520", 10), // 20MB
+      subtitle: parseInt(process.env.MEDIA_MAX_SIZE_SUBTITLE_BYTES ?? "1048576", 10), // 1MB
     },
     // ACR approved 2026-08-06: 500MB default synchronous verification
     // ceiling. Full 2GB VIDEO support is deferred to Queue Engine.
@@ -214,6 +222,15 @@ export default (): AppConfig => ({
       limit: parseInt(process.env.MEDIA_RETRY_VERIFICATION_RATE_LIMIT ?? "10", 10),
       windowSeconds: parseInt(process.env.MEDIA_RETRY_VERIFICATION_RATE_WINDOW_SECONDS ?? "3600", 10),
     },
+  },
+  // Module 7 Phase 7.4 — Video media generation. The API only enqueues
+  // media.* jobs; the worker holds provider credentials. `voiceCatalogJson`
+  // is a config-driven Azure voice catalog (D8) — parsed + validated in
+  // media-generation/voice-catalog.ts; empty falls back to the built-in
+  // en-IN/hi-IN default.
+  videoMedia: {
+    voiceCatalogJson: process.env.VIDEO_VOICE_CATALOG_JSON ?? "",
+    imageAspectByPlatform: process.env.VIDEO_THUMBNAIL_ASPECT_JSON ?? "",
   },
   content: {
     maxBodySizeBytes: parseInt(process.env.CONTENT_MAX_BODY_SIZE_BYTES ?? "2000000", 10), // 2MB
