@@ -408,21 +408,43 @@ export class ContentItemsService {
     });
   }
 
+  /**
+   * True once a content item's metadata carries the Module 7 Video
+   * pipeline bag (`videoPipeline` key, written by VideoService.create).
+   * Inlined here rather than imported from the video module to avoid a
+   * ContentModule ⇄ VideoModule import cycle — the key name is the single
+   * coupling point and is also asserted in video-pipeline-state.ts's
+   * `hasVideoPipeline` + the video e2e suite.
+   */
+  private isVideoPipelineItem(metadata: unknown): boolean {
+    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return false;
+    const bag = (metadata as Record<string, unknown>).videoPipeline;
+    return !!bag && typeof bag === "object" && !Array.isArray(bag);
+  }
+
   async submitForReview(
     workspace: { id: string },
     actor: ContentActor,
     itemPublicId: string,
     dto: SubmitForReviewDto,
     context: RequestContext,
-    // Module 6 Phase 6.3 review-gate seal: this shared lifecycle service
-    // stays the single authority for the REVIEW transition, but a BLOG
-    // content item may ONLY enter REVIEW through the Blog pipeline
-    // (BlogService, which enforces the frozen FR-BLOG-001..006 Quality
-    // Gates, incl. the FR-BLOG-006 score threshold, before calling here).
-    // The generic public route never sets this flag, so it cannot be used
-    // to bypass those gates. Not part of any DTO — it can never be set
+    // Module 6 Phase 6.3 / Module 7 Phase 7.1 review-gate seal: this
+    // shared lifecycle service stays the single authority for the REVIEW
+    // transition, but a pipeline-governed content item may ONLY enter
+    // REVIEW through its own pipeline service (BlogService / VideoService),
+    // which enforces the frozen Quality Gates before calling here. The
+    // generic public route never sets these flags, so it cannot be used
+    // to bypass those gates. Not part of any DTO — they can never be set
     // from an HTTP request.
-    options?: { viaBlogPipeline?: boolean },
+    //
+    //  - BLOG: sealed unconditionally (every BLOG item goes through the
+    //    Blog pipeline — Phase 6.3).
+    //  - VIDEO: sealed only when the item carries a `videoPipeline`
+    //    metadata bag (i.e. it was created via POST /video). A plain
+    //    Module 1E VIDEO content item — the type the generic editorial-
+    //    lifecycle e2e tests deliberately exercise — is NOT sealed and
+    //    keeps working through this route unchanged.
+    options?: { viaBlogPipeline?: boolean; viaVideoPipeline?: boolean },
   ): Promise<ContentItemWithPublicRefs> {
     const item = await this.resolveForAction(workspace.id, actor, itemPublicId, "edit");
     if (item.contentType === "BLOG" && !options?.viaBlogPipeline) {
@@ -430,6 +452,13 @@ export class ContentItemsService {
         code: "CONTENT_ITEM_BLOG_REVIEW_VIA_PIPELINE",
         message:
           "A blog article must be submitted for review through the Blog pipeline (POST /api/v1/workspaces/:workspaceId/blog/:itemId/submit-for-review), which enforces the Module 6 quality gates.",
+      });
+    }
+    if (item.contentType === "VIDEO" && this.isVideoPipelineItem(item.metadata) && !options?.viaVideoPipeline) {
+      throw new ConflictException({
+        code: "CONTENT_ITEM_VIDEO_REVIEW_VIA_PIPELINE",
+        message:
+          "A video must be submitted for review through the Video pipeline (POST /api/v1/workspaces/:workspaceId/video/:itemId/submit-for-review), which enforces the Module 7 quality gates.",
       });
     }
     const comment = this.validateAndNormalizeComment(dto.comment, { required: false });

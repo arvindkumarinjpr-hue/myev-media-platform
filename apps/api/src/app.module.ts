@@ -21,6 +21,7 @@ import { MediaAssetsModule } from "./modules/media-assets/media-assets.module";
 import { ContentModule } from "./modules/content/content.module";
 import { ContentScoringModule } from "./modules/content-scoring/content-scoring.module";
 import { BlogModule } from "./modules/blog/blog.module";
+import { VideoModule } from "./modules/video/video.module";
 import { BackgroundJobsModule } from "./modules/background-jobs/background-jobs.module";
 import { SchedulesModule } from "./modules/schedules/schedules.module";
 import { EventsModule } from "./modules/events/events.module";
@@ -69,6 +70,7 @@ import type { AppConfig } from "./config/configuration";
     ContentModule,
     ContentScoringModule,
     BlogModule,
+    VideoModule,
     BackgroundJobsModule,
     SchedulesModule,
     EventsModule,

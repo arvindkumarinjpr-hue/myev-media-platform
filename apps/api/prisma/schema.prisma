@@ -165,6 +165,23 @@ enum ContentItemStatus {
   PUBLISHED
 }
 
+// Module 7 Phase 7.1 — the frozen Video Automation Engine "Supported
+// Outputs" list (VIDEO_AUTOMATION_ENGINE_V1.0.md) and FR-VID-001 ("Target
+// platform required. Missing platform → 400"). A closed set: the video
+// pipeline never renders to a platform outside this list. YouTube
+// Shorts / Instagram Reel / Facebook Reel are captured here as the
+// target platform/format of a single VIDEO content item — Module 1E only
+// grants BLOG/VIDEO permission families, so SHORT/REEL are not separate
+// content types in this phase (see MODULE 7 PHASE 7.1 report, §20).
+enum VideoTargetPlatform {
+  YOUTUBE_LONG
+  YOUTUBE_SHORTS
+  INSTAGRAM_REEL
+  FACEBOOK_REEL
+  SQUARE_SOCIAL
+  LANDSCAPE_PRESENTATION
+}
+
 enum ContentReviewAction {
   SUBMITTED
   APPROVED
@@ -368,6 +385,8 @@ model User {
   createdSeoReports      SeoReport[]           @relation("SeoReportCreatedBy")
   createdBlogArticles    BlogArticle[]         @relation("BlogArticleCreatedBy")
   updatedBlogArticles    BlogArticle[]         @relation("BlogArticleUpdatedBy")
+  createdVideoScripts    VideoScript[]         @relation("VideoScriptCreatedBy")
+  updatedVideoScripts    VideoScript[]         @relation("VideoScriptUpdatedBy")
 
   @@map("users")
 }
@@ -585,6 +604,7 @@ model Workspace {
   contentScores           ContentScore[]
   seoReports              SeoReport[]
   blogArticles            BlogArticle[]
+  videoScripts            VideoScript[]
 
   @@index([slug])
   @@index([status])
@@ -952,6 +972,7 @@ model ContentItem {
   contentScores ContentScore[]
   seoReports    SeoReport[]
   blogArticle   BlogArticle?
+  videoScript   VideoScript?
 
   // Workspace-safe composite FK target for content_review_events'
   // contentItemId relation.
@@ -2074,4 +2095,95 @@ model BlogArticle {
   @@unique([contentItemId, workspaceId])
   @@index([workspaceId])
   @@map("blog_articles")
+}
+
+// Module 7 Phase 7.1 — the 1:1 (content_type = VIDEO) extension row for
+// the Video Automation pipeline. AI_CONTENT_DATABASE_AND_ENTITY_DESIGN_
+// V1.0.md §5.4 (`video_scripts`: script_body, scene_plan JSONB,
+// voice_profile_id, render_job_id). Structurally identical to
+// BlogArticle: workspace-safe composite FK, one row per VIDEO content
+// item, created when the video pipeline is started.
+//
+// Only `targetPlatform` is populated at create time (FR-VID-001). Every
+// other column is nullable and stays null until the phase that produces
+// it: script_body / scene_plan (Phase 7.2 Script + Scene agents),
+// meta_* / tags / chapters / hashtags / schema_markup (Phase 7.2/7.3 SEO
+// step), voice_profile_id (Phase 7.4 Voice Engine), render_job_id
+// (Phase 7.5 rendering).
+//
+// voice_profile_id and render_job_id are plain nullable UUID columns, NOT
+// foreign keys — the voice_profiles table and the VideoRenderJob
+// extension of background_jobs (checkpoint decision D5) are later-phase
+// concerns, and adding the constraint now would force those tables to
+// exist prematurely (checkpoint: "Prefer incremental schema evolution
+// over creating all future tables early").
+model VideoScript {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  // 1:1 with a VIDEO content item, in the SAME workspace — workspace-safe
+  // composite FK, same pattern as BlogArticle / ContentScore. The
+  // content_type = VIDEO constraint is a service-layer rule (Phase 7.1),
+  // not expressible as a single FK.
+  contentItemId String      @unique @map("content_item_id") @db.Uuid
+  contentItem   ContentItem @relation(fields: [contentItemId, workspaceId], references: [id, workspaceId])
+
+  // FR-VID-001: required at pipeline-create time. The frozen "Supported
+  // Outputs" list — see the VideoTargetPlatform enum.
+  targetPlatform VideoTargetPlatform @map("target_platform")
+
+  // Frozen Rendering Engine "Export profiles" — resolved during the
+  // brief/script stage (Phase 7.2+). Free-form string, matched against
+  // the target platform's spec at render time (FR-VID-007).
+  exportProfile String? @map("export_profile")
+
+  // FR-VID-001 brief output "Duration" — the target length in seconds.
+  durationSecondsTarget Int? @map("duration_seconds_target")
+
+  // FR-VID-002 Script Engine output.
+  scriptBody String? @map("script_body")
+
+  // FR-VID-003 Scene Planner output — scene timeline, visual
+  // instructions, B-roll suggestions, transition plan. DB Design §5.4
+  // `scene_plan` JSONB.
+  scenePlan Json? @map("scene_plan")
+
+  // DB Design §5.4 `voice_profile_id` — forward reference to the Voice
+  // Engine (Phase 7.4). Plain nullable UUID, not a FK (see model comment).
+  voiceProfileId String? @map("voice_profile_id") @db.Uuid
+
+  // DB Design §5.4 `render_job_id` — forward reference to VideoRenderJob
+  // (Phase 7.5, checkpoint D5). Plain nullable UUID, not a FK.
+  renderJobId String? @map("render_job_id") @db.Uuid
+
+  // FR-VID-009 / FR-SEO-001 video SEO metadata (Quality Gate #6) —
+  // title / description / tags / chapters / hashtags — and FR-SEO-002
+  // VideoObject schema. All nullable until the SEO stage (Phase 7.2/7.3).
+  // Mirrors BlogArticle's meta_title / meta_description / schema_markup.
+  metaTitle       String? @map("meta_title")
+  metaDescription String? @map("meta_description")
+  tags            Json?
+  chapters        Json?
+  hashtags        Json?
+  schemaMarkup    Json?   @map("schema_markup")
+
+  createdById String  @map("created_by") @db.Uuid
+  createdBy   User    @relation("VideoScriptCreatedBy", fields: [createdById], references: [id])
+  updatedById String? @map("updated_by") @db.Uuid
+  updatedBy   User?   @relation("VideoScriptUpdatedBy", fields: [updatedById], references: [id])
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  // `contentItemId` alone is already @unique (the real 1:1 guarantee);
+  // Prisma additionally requires the composite declared so it recognises
+  // the to-one shape of the workspace-safe (contentItemId, workspaceId)
+  // relation — same pattern as BlogArticle.@@unique([contentItemId, workspaceId]).
+  @@unique([contentItemId, workspaceId])
+  @@index([workspaceId])
+  @@map("video_scripts")
 }
