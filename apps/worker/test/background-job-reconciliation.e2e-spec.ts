@@ -67,6 +67,28 @@ describe("Worker (e2e) — DEFECT-1F-006 BackgroundJobReconciliationManager", ()
   // "very large interval to suppress the real tick" technique.
   process.env.BACKGROUND_JOB_RECONCILIATION_INTERVAL_MS = "3600000";
   process.env.BACKGROUND_JOB_RECONCILIATION_BATCH_SIZE = process.env.BACKGROUND_JOB_RECONCILIATION_BATCH_SIZE ?? "50";
+  // Module 6 Phase 6.5-A2 (E2E test isolation): bootstrap() below compiles
+  // the FULL AppModule, so every one of this file's ~20 bootstrap/cleanup
+  // cycles also brings up a real OutboxRelayManager as pure collateral —
+  // this suite never touches outbox events at all. Left at its 2000ms
+  // default, each cycle re-registers BullMQ's OUTBOX_RELAY_INTERNAL
+  // repeatable-job scheduler at that short interval; moduleRef.close()'s
+  // onApplicationShutdown() closes the tickWorker/tickQueue CLIENT objects
+  // but — correctly, for production, where the scheduler is meant to
+  // survive a graceful restart of a replica — never deregisters the
+  // scheduler itself server-side in Redis. Across 20 cycles that leaves a
+  // live, still-ticking scheduler plus an accumulating backlog of
+  // "outbox.relay.tick.v1" jobs in a shared (non-test-scoped) queue that
+  // outlives this file entirely: proven, empirically, to be exactly what
+  // caused event-consumer-execution.e2e-spec.ts's own freshly-booted
+  // OutboxRelayManager/tickWorker (sharing the same fixed queue name) to
+  // start draining that backlog the instant it boots, racing that suite's
+  // own manual claimUndispatchedEvents() calls (DEFECT-1F-006 root cause,
+  // Phase 6.5-A2). Suppressing it here — this file's own concern, exactly
+  // like the reconciliation suppression above — keeps every cycle's
+  // upsert at the harmless 1-hour interval, so no such backlog can ever
+  // form in the first place.
+  process.env.OUTBOX_RELAY_INTERVAL_MS = "3600000";
 
   const originalRedisUrl = process.env.REDIS_URL;
   afterEach(() => {
