@@ -1,0 +1,72 @@
+/* Shared split-panel shell (brand panel + form panel) for every
+ * unauthenticated auth page — /login, /forgot-password, /reset-password,
+ * /activate. Extracted verbatim from login/page.module.css so all four
+ * pages stay visually identical without importing across route
+ * directories; login/page.module.css itself is untouched. */
+
+.page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg);
+}
+
+.formPanel {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-8) var(--space-4);
+  overflow: hidden;
+}
+
+/* Extremely subtle right-panel decoration — a soft gradient wash plus a
+ * faint dotted texture, purely background, never competing with the
+ * form. */
+.formPanel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(60% 50% at 85% 0%, rgba(77, 110, 245, 0.06), transparent 70%),
+    radial-gradient(50% 45% at 100% 100%, rgba(139, 92, 246, 0.05), transparent 70%);
+  pointer-events: none;
+}
+
+.formPanel::after {
+  content: "";
+  position: absolute;
+  top: 2.5rem;
+  right: 3rem;
+  width: 9rem;
+  height: 9rem;
+  background-image: radial-gradient(rgba(77, 110, 245, 0.35) 1px, transparent 1.5px);
+  background-size: 14px 14px;
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.formWrap {
+  position: relative;
+  width: 100%;
+  max-width: 27rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-5);
+}
+
+/* Desktop / tablet: full split composition. Kept down to 48rem (768px)
+ * so it still applies at the tablet check width — only below that does
+ * the page switch to the stacked mobile hero. */
+@media (min-width: 48rem) {
+  .page {
+    flex-direction: row;
+  }
+
+  .formPanel {
+    flex: 0 0 44%;
+    max-width: 44%;
+    padding: var(--space-8) clamp(1.5rem, 4vw, 3rem);
+  }
+}
