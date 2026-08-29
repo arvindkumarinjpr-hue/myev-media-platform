@@ -298,15 +298,15 @@ describe("Auth (e2e)", () => {
       expect(res.body.code).toBe("AUTH_RESET_TOKEN_INVALID");
     });
 
-    it("enforces the password policy on reset — 7 characters rejected", async () => {
+    it("enforces the password policy on reset — 11 characters rejected", async () => {
       const res = await request(app.getHttpServer())
         .post("/api/v1/auth/reset-password")
-        .send({ token: "irrelevant-fails-length-check-first", newPassword: "1234567" })
+        .send({ token: "irrelevant-fails-length-check-first", newPassword: "12345678901" })
         .expect(400);
-      expect(res.body.message).toEqual(expect.arrayContaining([expect.stringContaining("8 characters")]));
+      expect(res.body.message).toEqual(expect.arrayContaining([expect.stringContaining("12 characters")]));
     });
 
-    it("full lifecycle: a fresh token completes a reset (8-character password accepted), the new password is properly hashed and usable to log in, and the token becomes single-use", async () => {
+    it("full lifecycle: a fresh token completes a reset (12-character password accepted), the new password is properly hashed and usable to log in, and the token becomes single-use", async () => {
       const { user, email } = await createActiveUser("reset-lifecycle");
 
       await request(app.getHttpServer()).post("/api/v1/auth/forgot-password").send({ email }).expect(200);
@@ -332,8 +332,8 @@ describe("Auth (e2e)", () => {
       const stillPending = await prisma.userActionToken.findUniqueOrThrow({ where: { id: issued.id } });
       expect(stillPending.status).toBe("PENDING");
 
-      // Exactly 8 characters — the new minimum's own boundary.
-      const newPassword = "8chars12";
+      // Exactly 12 characters — the policy's own boundary.
+      const newPassword = "twelvechars1";
       await request(app.getHttpServer())
         .post("/api/v1/auth/reset-password")
         .send({ token: plaintextToken, newPassword })
@@ -389,7 +389,7 @@ describe("Auth (e2e)", () => {
   });
 
   describe("POST /api/v1/auth/change-password", () => {
-    it("enforces the same 8-character minimum as reset: 7 characters rejected, exactly 8 accepted", async () => {
+    it("enforces the same 12-character minimum as reset: 11 characters rejected, exactly 12 accepted", async () => {
       const { email, password } = await createActiveUser("change-min-length");
       const login = await request(app.getHttpServer()).post("/api/v1/auth/login").send({ email, password }).expect(200);
       const accessToken = login.body.data.access_token as string;
@@ -397,14 +397,14 @@ describe("Auth (e2e)", () => {
       const tooShort = await request(app.getHttpServer())
         .post("/api/v1/auth/change-password")
         .set("Authorization", `Bearer ${accessToken}`)
-        .send({ currentPassword: password, newPassword: "1234567" })
+        .send({ currentPassword: password, newPassword: "12345678901" })
         .expect(400);
-      expect(tooShort.body.message).toEqual(expect.arrayContaining([expect.stringContaining("8 characters")]));
+      expect(tooShort.body.message).toEqual(expect.arrayContaining([expect.stringContaining("12 characters")]));
 
       await request(app.getHttpServer())
         .post("/api/v1/auth/change-password")
         .set("Authorization", `Bearer ${accessToken}`)
-        .send({ currentPassword: password, newPassword: "8chars99" })
+        .send({ currentPassword: password, newPassword: "twelvechars9" })
         .expect(200);
     });
 
