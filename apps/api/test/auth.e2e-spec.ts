@@ -6,6 +6,7 @@ import request from "supertest";
 import { AppModule } from "../src/app.module";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { PasswordHashService } from "../src/common/crypto/password-hash.service";
+import { extractToken, getLatestEmailFor } from "./helpers/e2e-app";
 
 /**
  * Module 1B.1 Engineering Plan §13 integration/E2E coverage. Runs against a
@@ -297,16 +298,116 @@ describe("Auth (e2e)", () => {
       expect(res.body.code).toBe("AUTH_RESET_TOKEN_INVALID");
     });
 
-    it("enforces the password policy on reset", async () => {
+    it("enforces the password policy on reset — 7 characters rejected", async () => {
       const res = await request(app.getHttpServer())
         .post("/api/v1/auth/reset-password")
-        .send({ token: "irrelevant-fails-length-check-first", newPassword: "short" })
+        .send({ token: "irrelevant-fails-length-check-first", newPassword: "1234567" })
         .expect(400);
-      expect(res.body.message).toEqual(expect.arrayContaining([expect.stringContaining("12 characters")]));
+      expect(res.body.message).toEqual(expect.arrayContaining([expect.stringContaining("8 characters")]));
+    });
+
+    it("full lifecycle: a fresh token completes a reset (8-character password accepted), the new password is properly hashed and usable to log in, and the token becomes single-use", async () => {
+      const { user, email } = await createActiveUser("reset-lifecycle");
+
+      await request(app.getHttpServer()).post("/api/v1/auth/forgot-password").send({ email }).expect(200);
+
+      // Merely requesting/generating a token — nothing has been opened or
+      // submitted yet — must not consume it.
+      const issued = await prisma.userActionToken.findFirstOrThrow({
+        where: { userId: user.id, purpose: "PASSWORD_RESET", status: "PENDING" },
+        orderBy: { createdAt: "desc" },
+      });
+      expect(issued.status).toBe("PENDING");
+
+      const email1 = await getLatestEmailFor(email);
+      expect(email1.subject).toContain("Reset");
+      const plaintextToken = extractToken(email1.body);
+
+      // An invalid (too-short) password submission against the REAL,
+      // still-valid token must not consume it either.
+      await request(app.getHttpServer())
+        .post("/api/v1/auth/reset-password")
+        .send({ token: plaintextToken, newPassword: "short1" })
+        .expect(400);
+      const stillPending = await prisma.userActionToken.findUniqueOrThrow({ where: { id: issued.id } });
+      expect(stillPending.status).toBe("PENDING");
+
+      // Exactly 8 characters — the new minimum's own boundary.
+      const newPassword = "8chars12";
+      await request(app.getHttpServer())
+        .post("/api/v1/auth/reset-password")
+        .send({ token: plaintextToken, newPassword })
+        .expect(200);
+
+      const consumed = await prisma.userActionToken.findUniqueOrThrow({ where: { id: issued.id } });
+      expect(consumed.status).toBe("USED");
+      expect(consumed.usedAt).not.toBeNull();
+
+      // Properly hashed: never stored/comparable as the raw plaintext, and
+      // the only way to prove it decodes back to the same password is a
+      // real login.
+      const updatedUser = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+      expect(updatedUser.passwordHash).not.toBe(newPassword);
+      expect(updatedUser.passwordHash).not.toContain(newPassword);
+
+      const login = await request(app.getHttpServer()).post("/api/v1/auth/login").send({ email, password: newPassword }).expect(200);
+      expect(login.body.data.access_token).toEqual(expect.any(String));
+
+      // Same token cannot be reused.
+      const reuse = await request(app.getHttpServer())
+        .post("/api/v1/auth/reset-password")
+        .send({ token: plaintextToken, newPassword: "Another-Password-8" })
+        .expect(410);
+      expect(reuse.body.code).toBe("AUTH_RESET_TOKEN_INVALID");
+      expect(reuse.body.message).toBe("Link has already been used.");
+    });
+
+    it("rejects a genuinely expired token, and durably persists its EXPIRED status (regression: the status write must survive even though the request still returns 410 — throwing inside prisma.$transaction() would otherwise roll it back, mirroring the refresh-token-reuse fix elsewhere in this file)", async () => {
+      const { user, email } = await createActiveUser("reset-expired");
+      await request(app.getHttpServer()).post("/api/v1/auth/forgot-password").send({ email }).expect(200);
+
+      const issued = await prisma.userActionToken.findFirstOrThrow({
+        where: { userId: user.id, purpose: "PASSWORD_RESET", status: "PENDING" },
+        orderBy: { createdAt: "desc" },
+      });
+      const email1 = await getLatestEmailFor(email);
+      const plaintextToken = extractToken(email1.body);
+
+      // Backdate the real row's expiry — the token's own validation logic
+      // (expiresAt < now) is what's under test, not a fabricated scenario.
+      await prisma.userActionToken.update({ where: { id: issued.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
+
+      const res = await request(app.getHttpServer())
+        .post("/api/v1/auth/reset-password")
+        .send({ token: plaintextToken, newPassword: "Some-Valid-Password-8" })
+        .expect(410);
+      expect(res.body.code).toBe("AUTH_RESET_TOKEN_EXPIRED");
+
+      const afterward = await prisma.userActionToken.findUniqueOrThrow({ where: { id: issued.id } });
+      expect(afterward.status).toBe("EXPIRED");
     });
   });
 
   describe("POST /api/v1/auth/change-password", () => {
+    it("enforces the same 8-character minimum as reset: 7 characters rejected, exactly 8 accepted", async () => {
+      const { email, password } = await createActiveUser("change-min-length");
+      const login = await request(app.getHttpServer()).post("/api/v1/auth/login").send({ email, password }).expect(200);
+      const accessToken = login.body.data.access_token as string;
+
+      const tooShort = await request(app.getHttpServer())
+        .post("/api/v1/auth/change-password")
+        .set("Authorization", `Bearer ${accessToken}`)
+        .send({ currentPassword: password, newPassword: "1234567" })
+        .expect(400);
+      expect(tooShort.body.message).toEqual(expect.arrayContaining([expect.stringContaining("8 characters")]));
+
+      await request(app.getHttpServer())
+        .post("/api/v1/auth/change-password")
+        .set("Authorization", `Bearer ${accessToken}`)
+        .send({ currentPassword: password, newPassword: "8chars99" })
+        .expect(200);
+    });
+
     it("rejects the wrong current password", async () => {
       const { email, password } = await createActiveUser("change-wrong-current");
       const login = await request(app.getHttpServer()).post("/api/v1/auth/login").send({ email, password }).expect(200);

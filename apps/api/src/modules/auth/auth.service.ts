@@ -32,6 +32,17 @@ type RefreshOutcome =
   | { kind: "rotation_in_progress" }
   | { kind: "reuse_detected" };
 
+// Same reasoning as RefreshOutcome above, applied to resetPassword()'s own
+// transaction: the "expired" branch writes the token's status to EXPIRED
+// and must survive even though the request still ends in a 410 — throwing
+// inside the transaction that made that write would roll it back.
+type ResetPasswordOutcome =
+  | { kind: "success"; activatedMemberships: { workspaceId: string }[]; userId: string }
+  | { kind: "invalid" }
+  | { kind: "already_used" }
+  | { kind: "expired" }
+  | { kind: "password_reuse" };
+
 @Injectable()
 export class AuthService {
   /**
@@ -247,23 +258,30 @@ export class AuthService {
     this.passwordPolicyService.assertValid(newPassword);
     const tokenHash = this.tokenService.hashToken(tokenPlaintext);
 
-    await this.prisma.$transaction(async (tx) => {
+    // Throwing inside a Prisma interactive transaction callback rolls back
+    // every write made in it — including the EXPIRED-status write below,
+    // which must survive even though the request still ends in a 410.
+    // Matches refresh()'s own established fix for the identical class of
+    // bug: every branch *returns* an outcome and lets the transaction
+    // commit normally; the corresponding exception is only thrown after
+    // $transaction resolves.
+    const outcome = await this.prisma.$transaction(async (tx): Promise<ResetPasswordOutcome> => {
       const token = await tx.userActionToken.findUnique({ where: { tokenHash } });
       if (!token) {
-        throw new BadRequestException({ code: "AUTH_RESET_TOKEN_INVALID", message: "Link is invalid." });
+        return { kind: "invalid" };
       }
       if (token.status !== "PENDING") {
-        throw new GoneException({ code: "AUTH_RESET_TOKEN_INVALID", message: "Link has already been used." });
+        return { kind: "already_used" };
       }
       if (token.expiresAt < new Date()) {
         await tx.userActionToken.update({ where: { id: token.id }, data: { status: "EXPIRED" } });
-        throw new GoneException({ code: "AUTH_RESET_TOKEN_EXPIRED", message: "Link has expired." });
+        return { kind: "expired" };
       }
 
       const isActivation = token.purpose === "ACCOUNT_ACTIVATION";
 
       if (!isActivation && (await this.usersService.isPasswordReused(token.userId, newPassword))) {
-        throw new BadRequestException({ code: "PASSWORD_REUSE_DETECTED", message: "You've used this password recently. Choose a different one." });
+        return { kind: "password_reuse" };
       }
 
       const newHash = await this.passwordHashService.hash(newPassword);
@@ -313,10 +331,24 @@ export class AuthService {
         afterState: isActivation ? { status: "ACTIVE" } : undefined,
       });
 
-      return { activatedMemberships, userId: token.userId };
-    }).then(async ({ activatedMemberships, userId }) => {
-      await Promise.all(activatedMemberships.map((m) => this.workspaceCache.invalidateForMembershipChange(m.workspaceId, userId)));
+      return { kind: "success", activatedMemberships, userId: token.userId };
     });
+
+    switch (outcome.kind) {
+      case "invalid":
+        throw new BadRequestException({ code: "AUTH_RESET_TOKEN_INVALID", message: "Link is invalid." });
+      case "already_used":
+        throw new GoneException({ code: "AUTH_RESET_TOKEN_INVALID", message: "Link has already been used." });
+      case "expired":
+        throw new GoneException({ code: "AUTH_RESET_TOKEN_EXPIRED", message: "Link has expired." });
+      case "password_reuse":
+        throw new BadRequestException({ code: "PASSWORD_REUSE_DETECTED", message: "You've used this password recently. Choose a different one." });
+      case "success":
+        await Promise.all(
+          outcome.activatedMemberships.map((m) => this.workspaceCache.invalidateForMembershipChange(m.workspaceId, outcome.userId)),
+        );
+        return;
+    }
   }
 
   async changePassword(userId: string, currentSessionId: string, currentPassword: string, newPassword: string): Promise<void> {

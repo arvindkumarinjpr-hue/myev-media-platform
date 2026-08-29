@@ -46,12 +46,27 @@ describe("PasswordResetForm", () => {
       expect(screen.getByRole("button", { name: "Reset password" })).toBeDisabled();
     });
 
-    it("flags a too-short password client-side and blocks submission", async () => {
+    it("flags a 7-character password client-side and blocks submission", async () => {
       render(<PasswordResetForm mode="reset" />);
-      await userEvent.type(screen.getByLabelText("New password"), "short1234");
+      await userEvent.type(screen.getByLabelText("New password"), "1234567");
 
-      expect(await screen.findByText("Must be at least 12 characters.")).toBeInTheDocument();
+      expect(await screen.findByText("Must be at least 8 characters.")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Reset password" })).toBeDisabled();
+    });
+
+    it("accepts exactly 8 characters — the policy's own boundary — and enables submit", async () => {
+      render(<PasswordResetForm mode="reset" />);
+      await userEvent.type(screen.getByLabelText("New password"), "12345678");
+      await userEvent.type(screen.getByLabelText("Confirm password"), "12345678");
+
+      expect(screen.queryByText("Must be at least 8 characters.")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Reset password" })).not.toBeDisabled();
+    });
+
+    it("shows no 12-character guidance anywhere — the hint reflects the current 8-character policy", () => {
+      render(<PasswordResetForm mode="reset" />);
+      expect(screen.getByText("At least 8 characters.")).toBeInTheDocument();
+      expect(screen.queryByText(/12 character/)).not.toBeInTheDocument();
     });
 
     it("submits the token and new password, then shows success without auto-login", async () => {

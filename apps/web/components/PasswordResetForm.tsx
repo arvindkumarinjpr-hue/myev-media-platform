@@ -12,7 +12,7 @@ import { Input } from "./ui/Input";
 import { CheckCircleIcon, EyeIcon, EyeOffIcon, LockIcon, XCircleIcon } from "./ui/icons";
 import styles from "./AuthForm.module.css";
 
-const MIN_PASSWORD_LENGTH = 12;
+const MIN_PASSWORD_LENGTH = 8;
 // Both codes mean "this specific link no longer works" — the backend's
 // own message text (already safe/specific: "Link is invalid.", "Link has
 // already been used.", "Link has expired.") is what actually

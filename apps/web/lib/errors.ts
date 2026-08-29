@@ -40,7 +40,7 @@ export function friendlyMessage(error: unknown): string {
  * Most error bodies already match the app's own {code, message: string}
  * convention (every hand-written controller error, e.g. auth's token/
  * reuse errors). class-validator DTO violations (e.g. ResetPasswordDto's
- * `@MinLength(12)` on newPassword) bypass that convention entirely and
+ * `@MinLength(8)` on newPassword) bypass that convention entirely and
  * arrive as Nest's own default shape instead — {statusCode, message:
  * string[], error} — before the request ever reaches a controller.
  * Normalizing here, once, keeps every call site free to just do
