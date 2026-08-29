@@ -8,6 +8,7 @@ import { PrismaService } from "../src/prisma/prisma.service";
 import { WorkerHeartbeatService } from "../src/heartbeat/worker-heartbeat.service";
 import { BackgroundJobReconciliationManager } from "../src/reconciliation/background-job-reconciliation.manager";
 import { BullMqWorkerManager, JobLifecycleConflictError } from "../src/bullmq/bullmq-worker.manager";
+import { OUTBOX_RELAY_QUEUE_NAME, OUTBOX_RELAY_SCHEDULER_ID } from "../src/events/outbox-relay.manager";
 import type { BackgroundJob, BackgroundJobHistory } from "../../api/generated/prisma";
 
 /**
@@ -67,6 +68,21 @@ describe("Worker (e2e) — DEFECT-1F-006 BackgroundJobReconciliationManager", ()
   // "very large interval to suppress the real tick" technique.
   process.env.BACKGROUND_JOB_RECONCILIATION_INTERVAL_MS = "3600000";
   process.env.BACKGROUND_JOB_RECONCILIATION_BATCH_SIZE = process.env.BACKGROUND_JOB_RECONCILIATION_BATCH_SIZE ?? "50";
+  // Module 6 Phase 6.5-A2 (E2E test isolation): bootstrap() below compiles
+  // the FULL AppModule, so every one of this file's ~20 bootstrap/cleanup
+  // cycles also brings up a real OutboxRelayManager as pure collateral —
+  // this suite never touches outbox events at all. This suppresses only
+  // THIS FILE'S OWN runtime: without it, a real tick could fire mid-test
+  // on the manager's 2000ms default, doing pointless collateral work (and,
+  // across ~20 cycles, needlessly registering/re-registering the shared
+  // OUTBOX_RELAY_INTERNAL scheduler at that short interval many times
+  // over). It is NOT what makes this file safe for the NEXT suite to run
+  // after it — that guarantee now comes solely from the explicit
+  // scheduler teardown in cleanup() below (see its own comment), proven
+  // independently of this interval by the "outbox relay scheduler
+  // cleanup" describe block further down, which deliberately runs at the
+  // real 2000ms default and still proves the scheduler gone afterward.
+  process.env.OUTBOX_RELAY_INTERVAL_MS = "3600000";
 
   const originalRedisUrl = process.env.REDIS_URL;
   afterEach(() => {
@@ -88,6 +104,16 @@ describe("Worker (e2e) — DEFECT-1F-006 BackgroundJobReconciliationManager", ()
   // production behavior.
   const cleanupConnection = new Redis(process.env.REDIS_URL as string, { maxRetriesPerRequest: null });
   const cleanupQueue = new Queue(SYSTEM_PING_V1_MANIFEST.queue, { connection: cleanupConnection });
+
+  // Module 6 Phase 6.5-A2: an independent connection to the OWN queue
+  // OutboxRelayManager registers its repeatable-job scheduler on —
+  // deliberately not this module's own tickQueue, which dies with
+  // moduleRef.close() before removal could ever run. Reuses
+  // cleanupConnection (one ioredis connection safely backs multiple
+  // BullMQ Queue objects) and is closed only in afterAll, so it outlives
+  // every individual test's moduleRef and is always available for
+  // teardown regardless of that module's own lifecycle state.
+  const outboxSchedulerQueue = new Queue(OUTBOX_RELAY_QUEUE_NAME, { connection: cleanupConnection });
 
   async function bootstrap(): Promise<{ moduleRef: TestingModule; prisma: PrismaService; heartbeat: WorkerHeartbeatService }> {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
@@ -114,6 +140,20 @@ describe("Worker (e2e) — DEFECT-1F-006 BackgroundJobReconciliationManager", ()
     }
 
     await moduleRef.close();
+
+    // Module 6 Phase 6.5-A2 (DEFECT-1F-006 root cause): moduleRef.close()
+    // above correctly leaves the shared OUTBOX_RELAY_INTERNAL scheduler
+    // registered server-side in Redis — production-correct, since a
+    // graceful replica restart must not globally remove a scheduler other
+    // replicas may still depend on. This test suite is not a replica; it
+    // is the sole thing that registered this scheduler for the lifetime
+    // of this bootstrap/cleanup cycle, so it is this suite's own
+    // responsibility to deregister it here, deterministically, rather
+    // than leaving it to keep ticking into whatever suite runs next.
+    // removeJobScheduler resolves to false (not an error) when nothing is
+    // registered, so this is also safe to call after a test that never
+    // reached bootstrap()/registration.
+    await outboxSchedulerQueue.removeJobScheduler(OUTBOX_RELAY_SCHEDULER_ID);
   }
 
   /** Constructs a RUNNING row with a backdated startedAt, bypassing a real pickup — the deliberate, established technique for testing staleness/fencing mechanics in isolation (see class doc comment). */
@@ -143,6 +183,7 @@ describe("Worker (e2e) — DEFECT-1F-006 BackgroundJobReconciliationManager", ()
 
   afterAll(async () => {
     await cleanupQueue.close().catch(() => undefined);
+    await outboxSchedulerQueue.close().catch(() => undefined);
     cleanupConnection.disconnect();
   });
 
@@ -500,5 +541,43 @@ describe("Worker (e2e) — DEFECT-1F-006 BackgroundJobReconciliationManager", ()
       await cleanup(moduleRef, heartbeat);
       expect(Date.now() - start).toBeLessThan(10_000);
     });
+  });
+
+  describe("outbox relay scheduler cleanup (collateral OutboxRelayManager)", () => {
+    /**
+     * Module 6 Phase 6.5-A2, direct proof (DEFECT-1F-006 root cause):
+     * proves cleanup() actually deregisters the shared
+     * OUTBOX_RELAY_INTERNAL scheduler from Redis itself — not merely that
+     * no failure was observed downstream. Deliberately runs at
+     * OutboxRelayManager's real 2000ms default (temporarily overriding
+     * this file's own 3600000 suppression, restored in `finally`) so a
+     * surviving scheduler would be directly observable via
+     * getJobSchedulers() if this teardown regressed — proving the fix
+     * works independently of the interval suppression above, which by
+     * itself only ever bought this file ~an hour of safety, not removal.
+     */
+    it("bootstrap() registers the scheduler; cleanup() removes it — asserted directly against Redis/BullMQ, not inferred from a lack of failures", async () => {
+      const originalInterval = process.env.OUTBOX_RELAY_INTERVAL_MS;
+      process.env.OUTBOX_RELAY_INTERVAL_MS = "2000";
+      try {
+        // BullMQ's own JobSchedulerJson.id is never actually populated by
+        // getJobSchedulers() (verified against bullmq@6.0.8's own
+        // transformSchedulerData, which only ever sets key/name/next/...);
+        // .key is the scheduler's real identity — the exact string passed
+        // to upsertJobScheduler/removeJobScheduler.
+        const before = await outboxSchedulerQueue.getJobSchedulers();
+        expect(before.some((s) => s.key === OUTBOX_RELAY_SCHEDULER_ID)).toBe(false);
+
+        const { moduleRef, heartbeat } = await bootstrap();
+        const afterBootstrap = await outboxSchedulerQueue.getJobSchedulers();
+        expect(afterBootstrap.some((s) => s.key === OUTBOX_RELAY_SCHEDULER_ID)).toBe(true);
+
+        await cleanup(moduleRef, heartbeat);
+        const afterCleanup = await outboxSchedulerQueue.getJobSchedulers();
+        expect(afterCleanup.some((s) => s.key === OUTBOX_RELAY_SCHEDULER_ID)).toBe(false);
+      } finally {
+        process.env.OUTBOX_RELAY_INTERVAL_MS = originalInterval;
+      }
+    }, 15_000);
   });
 });
