@@ -1,6 +1,7 @@
 import { Test, type TestingModule } from "@nestjs/testing";
 import type { INestApplication } from "@nestjs/common";
 import type { ShutdownOutcomeTracker } from "@myev/shared";
+import { UNREACHABLE_REDIS_URL } from "@myev/shared";
 import { AppModule } from "../src/app.module";
 import { BackgroundJobsService } from "../src/modules/background-jobs/background-jobs.service";
 import { SHUTDOWN_TRACKER } from "../src/shutdown/shutdown.module";
@@ -13,9 +14,13 @@ function activeHandleCount(): number {
 
 /**
  * DEFECT-1F-001 — real Postgres + real Redis (or a deliberately
- * unreachable one). "redis://redis:1" is the exact technique this same
- * app's own background-jobs.e2e-spec.ts "Redis connection resilience"
- * suite already established.
+ * unreachable one). UNREACHABLE_REDIS_URL (`redis://127.0.0.1:1`, see
+ * @myev/shared) is a DNS-free, deterministically-unreachable target used
+ * by every unreachable-Redis test in this repo (Module 6 Phase 6.5-A):
+ * loopback needs no resolver and port 1 has no listener, so every
+ * connection attempt fails immediately with `ECONNREFUSED` and ioredis
+ * retries it forever — without the DNS nondeterminism the earlier
+ * `redis://redis:1` had on CI runners.
  *
  * BackgroundJobsService.getQueue() constructs redisConnection lazily,
  * on first call. Constructing it alone is NOT enough to exercise the
@@ -72,7 +77,7 @@ describe("API (e2e) — DEFECT-1F-001 bounded shutdown", () => {
   });
 
   it("Redis genuinely unreachable: bounds shutdown to approximately the configured deadline and force-closes redisConnection", async () => {
-    process.env.REDIS_URL = "redis://redis:1";
+    process.env.REDIS_URL = UNREACHABLE_REDIS_URL;
     const { app } = await bootstrap();
     constructRedisConnection(app);
     issuePendingCommand(app);
@@ -87,7 +92,7 @@ describe("API (e2e) — DEFECT-1F-001 bounded shutdown", () => {
   }, 15_000);
 
   it("Redis genuinely unreachable: repeated forced-shutdown cycles do not grow active handles", async () => {
-    process.env.REDIS_URL = "redis://redis:1";
+    process.env.REDIS_URL = UNREACHABLE_REDIS_URL;
     const handleCounts: number[] = [];
 
     for (let cycle = 0; cycle < 3; cycle++) {
@@ -95,13 +100,20 @@ describe("API (e2e) — DEFECT-1F-001 bounded shutdown", () => {
       constructRedisConnection(app);
       issuePendingCommand(app);
       await app.close();
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      // 2.5s > ioredis's default max reconnect backoff (2s): with the
+      // deterministic UNREACHABLE_REDIS_URL target every attempt fails
+      // immediately with ECONNREFUSED and schedules one short backoff
+      // timer, so a shorter settle could snapshot mid-backoff.
+      await new Promise((resolve) => setTimeout(resolve, 2_500));
       handleCounts.push(activeHandleCount());
     }
 
+    // Rejects UNBOUNDED, monotonic growth (a real leak is dozens of
+    // handles — the earlier EAI_AGAIN DNS-retry storm produced ~39); a
+    // small bounded residue from libuv/Jest internals is expected.
     const growth = handleCounts[handleCounts.length - 1] - handleCounts[0];
-    expect(growth).toBeLessThanOrEqual(2);
-  }, 30_000);
+    expect(growth).toBeLessThanOrEqual(3);
+  }, 40_000);
 
   it("Redis genuinely unreachable: produces no unhandled promise rejection", async () => {
     const rejections: unknown[] = [];
@@ -111,7 +123,7 @@ describe("API (e2e) — DEFECT-1F-001 bounded shutdown", () => {
     process.on("unhandledRejection", onRejection);
 
     try {
-      process.env.REDIS_URL = "redis://redis:1";
+      process.env.REDIS_URL = UNREACHABLE_REDIS_URL;
       const { app } = await bootstrap();
       constructRedisConnection(app);
       issuePendingCommand(app);

@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { UNREACHABLE_REDIS_URL } from "@myev/shared";
 import { Test, type TestingModule } from "@nestjs/testing";
 import { ConfigService } from "@nestjs/config";
 import { Queue } from "bullmq";
@@ -443,7 +444,7 @@ describe("Worker (e2e) — SchedulerTickManager", () => {
     it("bootstrap against unreachable Redis completes well within the configured deadline — never hangs indefinitely", async () => {
       const originalRedisUrl = process.env.REDIS_URL;
       const originalTimeout = process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS;
-      process.env.REDIS_URL = "redis://redis:1";
+      process.env.REDIS_URL = UNREACHABLE_REDIS_URL;
       process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS = SHORT_TIMEOUT_MS;
       let brokenModuleRef: TestingModule | undefined;
       try {
@@ -468,7 +469,7 @@ describe("Worker (e2e) — SchedulerTickManager", () => {
       const originalRedisUrl = process.env.REDIS_URL;
       const originalTimeout = process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS;
       const originalRetryInterval = process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS;
-      process.env.REDIS_URL = "redis://redis:1";
+      process.env.REDIS_URL = UNREACHABLE_REDIS_URL;
       process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS = SHORT_TIMEOUT_MS;
       process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS = SHORT_RETRY_INTERVAL_MS;
       let brokenModuleRef: TestingModule | undefined;
@@ -537,7 +538,7 @@ describe("Worker (e2e) — SchedulerTickManager", () => {
       const originalRedisUrl = process.env.REDIS_URL;
       const originalTimeout = process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS;
       const originalRetryInterval = process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS;
-      process.env.REDIS_URL = "redis://redis:1";
+      process.env.REDIS_URL = UNREACHABLE_REDIS_URL;
       process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS = "400";
       process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS = "200";
       let brokenModuleRef: TestingModule | undefined;
@@ -591,7 +592,7 @@ describe("Worker (e2e) — SchedulerTickManager", () => {
       const originalTimeout = process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS;
       const originalRetryInterval = process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS;
       const healthyRedisUrl = originalRedisUrl as string;
-      process.env.REDIS_URL = "redis://redis:1";
+      process.env.REDIS_URL = UNREACHABLE_REDIS_URL;
       process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS = "400";
       process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS = "300";
       let brokenModuleRef: TestingModule | undefined;
@@ -657,7 +658,7 @@ describe("Worker (e2e) — SchedulerTickManager", () => {
       const originalTimeout = process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS;
       const originalRetryInterval = process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS;
       const healthyRedisUrl = originalRedisUrl as string;
-      process.env.REDIS_URL = "redis://redis:1";
+      process.env.REDIS_URL = UNREACHABLE_REDIS_URL;
       process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS = "400";
       process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS = "300";
       let firstModuleRef: TestingModule | undefined;
@@ -713,7 +714,7 @@ describe("Worker (e2e) — SchedulerTickManager", () => {
       const originalRedisUrl = process.env.REDIS_URL;
       const originalTimeout = process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS;
       const originalRetryInterval = process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS;
-      process.env.REDIS_URL = "redis://redis:1";
+      process.env.REDIS_URL = UNREACHABLE_REDIS_URL;
       process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS = "400";
       process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS = "300";
 
@@ -813,7 +814,7 @@ describe("Worker (e2e) — SchedulerTickManager", () => {
       const originalRedisUrl = process.env.REDIS_URL;
       const originalTimeout = process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS;
       const originalRetryInterval = process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS;
-      process.env.REDIS_URL = "redis://redis:1";
+      process.env.REDIS_URL = UNREACHABLE_REDIS_URL;
       process.env.SCHEDULER_REGISTRATION_TIMEOUT_MS = "300";
       process.env.SCHEDULER_REGISTRATION_RETRY_INTERVAL_MS = "200";
       let brokenModuleRef: TestingModule | undefined;

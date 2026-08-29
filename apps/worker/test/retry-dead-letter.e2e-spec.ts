@@ -2,7 +2,7 @@ import { randomUUID } from "crypto";
 import { Test, type TestingModule } from "@nestjs/testing";
 import { Queue, QueueEvents } from "bullmq";
 import Redis from "ioredis";
-import { SYSTEM_PING_V1_MANIFEST } from "@myev/shared";
+import { SYSTEM_PING_V1_MANIFEST, UNREACHABLE_REDIS_URL } from "@myev/shared";
 import { AppModule } from "../src/app.module";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { WorkerHeartbeatService } from "../src/heartbeat/worker-heartbeat.service";
@@ -364,7 +364,7 @@ describe("Worker (e2e) — retry, backoff, and dead-letter", () => {
       // process survives long enough to be cleanly torn down, proving the
       // fix rather than asserting on log output.
       const originalRedisUrl = process.env.REDIS_URL;
-      process.env.REDIS_URL = "redis://redis:1";
+      process.env.REDIS_URL = UNREACHABLE_REDIS_URL;
       let brokenModuleRef: TestingModule | undefined;
       try {
         brokenModuleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();

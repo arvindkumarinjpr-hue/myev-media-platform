@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
+import { UNREACHABLE_REDIS_URL } from "@myev/shared";
 import path from "path";
 import { PrismaService } from "../src/prisma/prisma.service";
 
@@ -139,7 +140,7 @@ describe("Worker (e2e) — DEFECT-1F-001 real SIGTERM/SIGINT", () => {
 
   it("SIGTERM against a genuinely unreachable Redis: still exits within the bounded deadline via correct signal termination (FORCED still terminates via the signal, not a distinct exit code — see main.ts's own policy comment)", async () => {
     const applicationVersion = `e2e-signal-broken-${Date.now()}`;
-    const child = spawnWorker(applicationVersion, { REDIS_URL: "redis://redis:1" });
+    const child = spawnWorker(applicationVersion, { REDIS_URL: UNREACHABLE_REDIS_URL });
     spawnedProcesses.push(child);
 
     await waitForReady(child, 15_000);
