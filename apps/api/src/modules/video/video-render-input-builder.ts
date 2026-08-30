@@ -3,6 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import {
   VIDEO_RENDER_INPUT_SCHEMA_VERSION,
   deriveSceneTimeline,
+  normalizeTransition,
   resolveExportProfile,
   validateVideoRenderInput,
   type VideoRenderInputV1,
@@ -173,7 +174,10 @@ export class VideoRenderInputBuilder {
           scriptSegmentId: t.scriptSegmentId,
           startMs: t.startMs,
           durationMs: t.durationMs,
-          transition: t.transition,
+          // Normalized to what the V1 composition actually renders — the
+          // snapshot never claims a slide/wipe/zoom that was really a cut
+          // (checkpoint §M).
+          transition: normalizeTransition(t.transition),
           asset: {
             assetGroupId: asset.assetGroupId,
             mediaAssetPublicId: asset.publicId,

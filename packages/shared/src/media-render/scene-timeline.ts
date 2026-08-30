@@ -18,6 +18,23 @@
  *  - a plan whose scene id set differs from the supplied current set
  */
 
+/**
+ * The transitions the V1 Remotion composition actually renders as
+ * distinct effects. The ScenePlan schema keeps the full closed
+ * vocabulary (cut/fade/dissolve/slide/wipe/zoom) for forward
+ * extensibility, but a scene requesting `slide`/`wipe`/`zoom` is
+ * NORMALIZED to `cut` when the render input snapshot is frozen — so the
+ * snapshot's `transition` always reflects what was actually rendered
+ * (checkpoint §M — never claim a distinct transition that was really a
+ * cut/fade).
+ */
+export const RENDERED_TRANSITIONS = ["cut", "fade", "dissolve"] as const;
+export type RenderedTransition = (typeof RENDERED_TRANSITIONS)[number];
+
+export function normalizeTransition(transition: string): RenderedTransition {
+  return transition === "fade" || transition === "dissolve" ? transition : "cut";
+}
+
 export interface SceneTimelineEntry {
   readonly sceneId: string;
   readonly order: number;

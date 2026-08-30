@@ -1,6 +1,6 @@
 import { EXPORT_PROFILES, resolveExportProfile, ExportProfileError } from "./export-profile";
 import { VIDEO_TARGET_PLATFORMS } from "../agent-framework/agents/video-brief-agent";
-import { deriveSceneTimeline } from "./scene-timeline";
+import { deriveSceneTimeline, normalizeTransition } from "./scene-timeline";
 import { buildDeterministicMp4, parseMp4 } from "./mp4";
 import { validateVideoRenderInput, VIDEO_RENDER_INPUT_SCHEMA_VERSION } from "./video-render-input";
 import { runVideoQa, type VideoQaInput } from "./video-qa";
@@ -64,6 +64,18 @@ describe("deriveSceneTimeline", () => {
   it("rejects a non-positive scene duration", () => {
     const r = deriveSceneTimeline([{ ...scenes[0], durationSeconds: 0 }, scenes[1]], { ...base, voiceDurationMs: 10_000 });
     expect(r.ok).toBe(false);
+  });
+});
+
+describe("normalizeTransition (checkpoint §M)", () => {
+  it("passes fade/dissolve through and maps every other transition to cut", () => {
+    expect(normalizeTransition("fade")).toBe("fade");
+    expect(normalizeTransition("dissolve")).toBe("dissolve");
+    expect(normalizeTransition("cut")).toBe("cut");
+    expect(normalizeTransition("slide")).toBe("cut");
+    expect(normalizeTransition("wipe")).toBe("cut");
+    expect(normalizeTransition("zoom")).toBe("cut");
+    expect(normalizeTransition("anything-unknown")).toBe("cut");
   });
 });
 
