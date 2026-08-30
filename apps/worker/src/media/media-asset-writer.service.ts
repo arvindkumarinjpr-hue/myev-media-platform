@@ -42,6 +42,8 @@ const EXT_BY_MIME: Record<string, string> = {
   "audio/ogg": ".ogg",
   "text/vtt": ".vtt",
   "application/x-subrip": ".srt",
+  "video/mp4": ".mp4",
+  "video/webm": ".webm",
 };
 
 /**
@@ -63,7 +65,7 @@ export class MediaAssetWriterService {
     @InjectPinoLogger(MediaAssetWriterService.name) private readonly logger: PinoLogger,
   ) {
     const media = config.get("media", { infer: true });
-    this.maxBytesByType = { IMAGE: media.maxImageBytes, AUDIO: media.maxAudioBytes, SUBTITLE: media.maxSubtitleBytes };
+    this.maxBytesByType = { IMAGE: media.maxImageBytes, AUDIO: media.maxAudioBytes, SUBTITLE: media.maxSubtitleBytes, VIDEO: media.maxVideoBytes };
   }
 
   async write(input: WriteMediaAssetInput): Promise<WrittenMediaAsset> {

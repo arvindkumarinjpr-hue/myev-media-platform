@@ -86,4 +86,20 @@ export class MediaStorageService implements OnModuleInit {
     if (!res.Body) throw new Error(`getText: object ${key} has no body`);
     return (await streamToBuffer(res.Body as Readable)).toString("utf8");
   }
+
+  /**
+   * Reads an object's full bytes from the trusted internal store. Used by
+   * the render worker to materialize a render's private input assets
+   * (scene images, narration audio, subtitle track) into a job-scoped
+   * temp dir. `maxBytes` fails closed on an unexpectedly large object.
+   */
+  async getBytes(key: string, maxBytes: number, signal?: AbortSignal): Promise<Buffer> {
+    const res = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }), { abortSignal: signal });
+    if (!res.Body) throw new Error(`getBytes: object ${key} has no body`);
+    const declared = res.ContentLength ?? 0;
+    if (declared > maxBytes) throw new Error(`getBytes: object ${key} is ${declared} bytes, over the ${maxBytes} limit`);
+    const buf = await streamToBuffer(res.Body as Readable);
+    if (buf.length > maxBytes) throw new Error(`getBytes: object ${key} exceeded the ${maxBytes} limit while streaming`);
+    return buf;
+  }
 }

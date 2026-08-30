@@ -107,10 +107,17 @@ export class BullMqWorkerManager implements OnApplicationBootstrap, OnApplicatio
     const queues = this.config.get("queues", { infer: true });
     const applicationVersion = this.config.get("applicationVersion", { infer: true });
 
+    // Module 7 Phase 7.5 — the MEDIA queue (image / voice / subtitle /
+    // video render) runs at a low fixed concurrency: the frozen Queue
+    // Engine caps video renders at 2 concurrent global (FRD §21.1), and a
+    // single render can saturate a CPU. Every other queue keeps the
+    // default.
+    const renderConcurrency = this.config.get("render", { infer: true }).concurrency;
+
     for (const queueName of queues) {
       const worker = new Worker(queueName, (job) => this.process(job, queueName, applicationVersion), {
         connection: this.connection,
-        concurrency: 5,
+        concurrency: queueName === "MEDIA" ? renderConcurrency : 5,
       });
 
       worker.on("error", (error) => {

@@ -7,6 +7,7 @@ import type { WorkerConfig } from "./config/configuration";
 import { PrismaModule } from "./prisma/prisma.module";
 import { MediaProviderRegistryModule } from "./media-provider/media-provider-registry.module";
 import { MediaModule } from "./media/media.module";
+import { RenderEngineModule } from "./render/render-engine.module";
 import { QueueRegistryModule } from "./queue/queue-registry.module";
 import { HeartbeatModule } from "./heartbeat/heartbeat.module";
 import { BullMqModule } from "./bullmq/bullmq.module";
@@ -39,6 +40,7 @@ import { SimulatedShutdownFailureModule } from "./testing/simulated-shutdown-fai
     PrismaModule,
     MediaProviderRegistryModule,
     MediaModule,
+    RenderEngineModule,
     QueueRegistryModule,
     HeartbeatModule,
     BullMqModule,

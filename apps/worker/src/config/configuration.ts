@@ -101,6 +101,23 @@ export interface WorkerConfig {
     maxImageBytes: number;
     maxAudioBytes: number;
     maxSubtitleBytes: number;
+    maxVideoBytes: number;
+  };
+  // Module 7 Phase 7.5 — Video Rendering. Only meaningful for a worker
+  // whose WORKER_QUEUES includes MEDIA (the dedicated render/media
+  // worker) — a general SYSTEM/AI worker never loads the render engine.
+  render: {
+    /** "deterministic-test" (default, no FFmpeg/Chromium) or "remotion". */
+    engine: string;
+    engineVersion: string;
+    /** Global concurrent render cap for THIS worker (frozen: 2 renders global — FRD §21.1). */
+    concurrency: number;
+    /** Root for per-job isolated temp directories (checkpoint §28). */
+    tempDir: string;
+    /** Hard ceiling on a produced render file. */
+    maxOutputBytes: number;
+    /** Optional system Chromium path for the Remotion engine (never downloads in this phase). */
+    chromiumExecutablePath: string;
   };
 }
 
@@ -211,6 +228,15 @@ export default function configuration(): WorkerConfig {
       maxImageBytes: parseInt(process.env.MEDIA_MAX_SIZE_IMAGE_BYTES ?? "26214400", 10),
       maxAudioBytes: parseInt(process.env.MEDIA_MAX_SIZE_AUDIO_BYTES ?? "104857600", 10),
       maxSubtitleBytes: parseInt(process.env.MEDIA_MAX_SIZE_SUBTITLE_BYTES ?? "1048576", 10),
+      maxVideoBytes: parseInt(process.env.MEDIA_MAX_SIZE_VIDEO_BYTES ?? "2147483648", 10),
+    },
+    render: {
+      engine: process.env.RENDER_ENGINE ?? "deterministic-test",
+      engineVersion: process.env.RENDER_ENGINE_VERSION ?? process.env.WORKER_APPLICATION_VERSION ?? "0.1.0",
+      concurrency: parseInt(process.env.RENDER_CONCURRENCY ?? "2", 10),
+      tempDir: process.env.RENDER_TEMP_DIR ?? "",
+      maxOutputBytes: parseInt(process.env.RENDER_MAX_OUTPUT_BYTES ?? "2147483648", 10),
+      chromiumExecutablePath: process.env.RENDER_CHROMIUM_PATH ?? "",
     },
   };
 }
