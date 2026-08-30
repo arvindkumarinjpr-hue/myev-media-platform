@@ -1,7 +1,7 @@
 import { Logger } from "@nestjs/common";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
-import { AIProviderRegistryBuilder, AnthropicProvider, FakeProvider, GeminiProvider, OpenAIProvider, type AIProvider, type AIProviderRegistry } from "@myev/shared";
+import { AIProviderRegistryBuilder, AnthropicProvider, FakeProvider, GeminiProvider, OpenAIProvider, VideoUatFixtureProvider, type AIProvider, type AIProviderRegistry } from "@myev/shared";
 import type { WorkerConfig } from "../config/configuration";
 
 const logger = new Logger("AiProviderClientFactory");
@@ -79,6 +79,21 @@ export async function buildAiProviderRegistry(ai: WorkerConfig["ai"], env: strin
     builder.register(new FakeProvider("flaky_then_success", {}, 1, "fake-flaky"));
     builder.register(new FakeProvider("permanent_error", {}, 1, "fake-permanent"));
     builder.register(new FakeProvider("timeout", {}, 1, "fake-timeout"));
+    // Module 7 Phase 7.7 closure — the deterministic Video-agent fixture,
+    // registered under its OWN id (never shadowing "openai"). It only
+    // does anything if `ai-execute.processor` also routes a Video agent
+    // to it, which it only does when this id is present in the registry —
+    // i.e. here, under BOTH `env !== "production"` AND an EXPLICIT
+    // VIDEO_UAT_FIXTURE_PROVIDER=true opt-in that is set nowhere in
+    // CI/dev/prod. Blog/Research/every other agent is completely
+    // untouched (they still resolve their own preference and still fail
+    // PROVIDER_NOT_CONFIGURED when unconfigured). Used only to bring a
+    // staging Video pipeline to a valid pre-render state for the
+    // mandatory real-Remotion-render staging UAT.
+    if (process.env.VIDEO_UAT_FIXTURE_PROVIDER === "true") {
+      builder.register(new VideoUatFixtureProvider("video-uat-fixture"));
+      logger.warn("Video UAT fixture provider registered (env !== production, VIDEO_UAT_FIXTURE_PROVIDER=true) — the six Video agents will return deterministic fixture output; every other agent is unaffected");
+    }
   }
   return builder.freeze();
 }

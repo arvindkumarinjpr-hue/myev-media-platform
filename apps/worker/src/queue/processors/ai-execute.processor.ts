@@ -35,6 +35,20 @@ const KNOWLEDGE_PACK_INCLUDE = {
 
 const TERMINAL_STATUSES: AiJobStatus[] = ["COMPLETED", "FAILED", "TIMED_OUT"];
 
+// Module 7 Phase 7.7 closure — the six Video Automation agents, and the
+// id the deterministic Video-agent fixture provider registers under
+// (staging/UAT only — see the override in `handle` and
+// ai-provider-client-factory.ts).
+const VIDEO_UAT_FIXTURE_PROVIDER_ID = "video-uat-fixture";
+const VIDEO_UAT_FIXTURE_AGENTS = new Set([
+  "video-brief-agent",
+  "video-script-agent",
+  "video-scene-planner-agent",
+  "video-seo-metadata-agent",
+  "thumbnail-concept-agent",
+  "video-recommendations-agent",
+]);
+
 /**
  * Module 3 Phase 3.3 — the generic durable AI execution processor. This
  * IS the worker-process counterpart to AgentExecutorService's own
@@ -90,6 +104,22 @@ export class AiExecuteProcessor {
       throw new PermanentProcessorError("AI_AGENT_NOT_FOUND", "No agent is registered under the given identifier/version.");
     }
 
+    // Module 7 Phase 7.7 closure — staging/UAT ONLY. When the deterministic
+    // Video-agent fixture provider is present in the registry (it is
+    // registered ONLY under `env !== "production"` AND an explicit
+    // VIDEO_UAT_FIXTURE_PROVIDER=true opt-in — see
+    // ai-provider-client-factory.ts), route the six Video Automation
+    // agents to it so a full Video pipeline can reach a valid pre-render
+    // state for the mandatory real-Remotion-render staging UAT without any
+    // external AI keys. Every other agent (Blog, Research, …) is
+    // untouched: it keeps its own providerPreference and still fails
+    // PROVIDER_NOT_CONFIGURED when unconfigured. A no-op in every normal
+    // environment (the provider id is simply absent).
+    const executionDefinition =
+      VIDEO_UAT_FIXTURE_AGENTS.has(definition.identifier) && this.providerRegistry.has(VIDEO_UAT_FIXTURE_PROVIDER_ID)
+        ? { ...definition, providerPreference: { ...definition.providerPreference, provider: VIDEO_UAT_FIXTURE_PROVIDER_ID } }
+        : definition;
+
     // Module 3 Phase 3.5 — resolve provider/model/generation-settings
     // BEFORE the atomic RUNNING claim below, deliberately: this only
     // needs `definition` (no DB access), same as the agent-lookup check
@@ -102,7 +132,7 @@ export class AiExecuteProcessor {
     // silently no-ops, reporting false BullMQ success).
     let resolved;
     try {
-      resolved = resolveAgentExecution(definition, this.providerRegistry);
+      resolved = resolveAgentExecution(executionDefinition, this.providerRegistry);
     } catch (err) {
       if (err instanceof AgentExecutionResolutionError) {
         await this.terminal(job.id, "FAILED", err.failure.code, err.failure.messageSafe);

@@ -281,4 +281,42 @@ describe("Worker (e2e) — Video pipeline agents against a production-style prov
       expect(finished.errorCode).toBe("PROVIDER_NOT_CONFIGURED");
     }
   }, 60_000);
+
+  // Module 7 Phase 7.7 closure — the deterministic Video-agent fixture,
+  // opted in ONLY by VIDEO_UAT_FIXTURE_PROVIDER=true in a non-production
+  // env (staging UAT). Proves: (a) with it on, the six Video agents
+  // COMPLETE through the entire real durable path (queue -> processor ->
+  // resolve -> execute -> parseStructuredOutput -> postProcessOutput ->
+  // persist) with schema-valid output; (b) it never touches any other
+  // agent — a Blog agent still fails PROVIDER_NOT_CONFIGURED.
+  describe("VIDEO_UAT_FIXTURE_PROVIDER=true (staging UAT opt-in)", () => {
+    const original = process.env.VIDEO_UAT_FIXTURE_PROVIDER;
+    beforeAll(() => {
+      process.env.VIDEO_UAT_FIXTURE_PROVIDER = "true";
+    });
+    afterAll(() => {
+      if (original === undefined) delete process.env.VIDEO_UAT_FIXTURE_PROVIDER;
+      else process.env.VIDEO_UAT_FIXTURE_PROVIDER = original;
+    });
+
+    it("every Video agent COMPLETES with schema-valid fixture output through the real durable path", async () => {
+      const { processor } = await bootstrapDefaultRegistry();
+      const prisma = moduleRef!.get(PrismaService);
+      for (const c of CASES) {
+        const finished = await run(processor, prisma, c.agentName, c.input);
+        expect(finished.status).toBe("COMPLETED");
+        expect(finished.errorCode).toBeNull();
+        expect(finished.outputPayload).toBeTruthy();
+        expect(finished.providerUsed).toBe("video-uat-fixture");
+      }
+    }, 60_000);
+
+    it("does NOT touch a non-Video agent — a Blog agent still fails PROVIDER_NOT_CONFIGURED", async () => {
+      const { processor } = await bootstrapDefaultRegistry();
+      const prisma = moduleRef!.get(PrismaService);
+      const finished = await run(processor, prisma, "blog-brief-agent", { topic: "Home EV charging" });
+      expect(finished.status).toBe("FAILED");
+      expect(finished.errorCode).toBe("PROVIDER_NOT_CONFIGURED");
+    }, 30_000);
+  });
 });

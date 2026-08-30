@@ -27,6 +27,7 @@ export * from "./ai-provider/ai-provider-registry";
 export * from "./ai-provider/model-config";
 export * from "./ai-provider/structured-output";
 export * from "./ai-provider/providers/fake-provider";
+export * from "./ai-provider/providers/video-uat-fixture-provider";
 export * from "./ai-provider/providers/openai-provider";
 export * from "./ai-provider/providers/anthropic-provider";
 export * from "./ai-provider/providers/gemini-provider";
