@@ -148,8 +148,18 @@ describe("Video media — Phase 7.4 (e2e)", () => {
   }
 
   async function completeMediaJob(ws: Workspace, itemId: string, mediaJobPublicId: string, output: Record<string, unknown>): Promise<void> {
-    const job = await ctx.prisma.mediaJob.findFirstOrThrow({ where: { workspaceId: ws.id, publicId: mediaJobPublicId } });
-    await ctx.prisma.mediaJob.update({ where: { id: job.id }, data: { status: "COMPLETED", outputPayload: output as object, completedAt: new Date() } });
+    // Module 7 Phase 7.5 — the CI worker now also runs the MEDIA queue
+    // (the render-worker doubles up for the API E2E suite), so the real
+    // fake-provider media processor may race this crafted output. Wait
+    // for the job to settle first, then unconditionally pin the fixture
+    // output — same pattern as completeAiJob's own waitTerminal.
+    const deadline = Date.now() + 20_000;
+    let job = await ctx.prisma.mediaJob.findFirstOrThrow({ where: { workspaceId: ws.id, publicId: mediaJobPublicId } });
+    while (Date.now() < deadline && !["COMPLETED", "FAILED", "TIMED_OUT"].includes(job.status)) {
+      await new Promise((r) => setTimeout(r, 150));
+      job = await ctx.prisma.mediaJob.findFirstOrThrow({ where: { workspaceId: ws.id, publicId: mediaJobPublicId } });
+    }
+    await ctx.prisma.mediaJob.update({ where: { id: job.id }, data: { status: "COMPLETED", outputPayload: output as object, errorCode: null, completedAt: new Date() } });
     if (job.backgroundJobId) await ctx.prisma.backgroundJob.update({ where: { id: job.backgroundJobId }, data: { status: "COMPLETED" } }).catch(() => undefined);
     void itemId;
   }
