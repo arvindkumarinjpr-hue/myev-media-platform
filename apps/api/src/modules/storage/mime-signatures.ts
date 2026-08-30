@@ -114,6 +114,10 @@ export const ALLOWED_MIME_BY_ASSET_TYPE: Record<MediaAssetType, string[]> = {
   AUDIO: ["audio/mpeg", "audio/wav", "audio/mp4", "audio/ogg"],
   VIDEO: ["video/mp4", "video/quicktime", "video/webm"],
   DOCUMENT: ["application/pdf"],
+  // Module 7 Phase 7.4 — generated caption documents. Plain-text formats,
+  // verified structurally (see verifySubtitleBytes) rather than by magic
+  // bytes.
+  SUBTITLE: ["text/vtt", "application/x-subrip"],
 };
 
 // Extension <-> declared-MIME compatibility (soft check at intent time,
@@ -132,7 +136,30 @@ export const EXTENSION_TO_MIME: Record<string, string> = {
   ".mov": "video/quicktime",
   ".webm": "video/webm",
   ".pdf": "application/pdf",
+  ".vtt": "text/vtt",
+  ".srt": "application/x-subrip",
 };
+
+/**
+ * Module 7 Phase 7.4 — subtitle content is UTF-8 text with a recognisable
+ * structure, not a magic-byte format. Fail-closed: returns the verified
+ * MIME only when the bytes genuinely look like the format they claim.
+ *  - VTT: must begin with the "WEBVTT" signature line.
+ *  - SRT: must contain a "HH:MM:SS,mmm --> HH:MM:SS,mmm" cue line.
+ * Rejects (returns null) anything containing NUL bytes or an executable
+ * signature.
+ */
+export function verifySubtitleBytes(buf: Buffer, declaredMime: string): string | null {
+  if (matchesExecutableSignature(buf)) return null;
+  if (buf.includes(0x00)) return null;
+  const text = buf.toString("utf8");
+  if (text.length === 0) return null;
+  const looksVtt = /^\uFEFF?WEBVTT(\s|$)/.test(text);
+  const looksSrt = /\d{2}:\d{2}:\d{2},\d{3}\s*-->\s*\d{2}:\d{2}:\d{2},\d{3}/.test(text);
+  if (declaredMime === "text/vtt" && looksVtt) return "text/vtt";
+  if (declaredMime === "application/x-subrip" && looksSrt) return "application/x-subrip";
+  return null;
+}
 
 /**
  * Resolves a sniff result against the declared assetType, handling the

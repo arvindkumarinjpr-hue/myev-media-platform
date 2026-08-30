@@ -1,5 +1,13 @@
 import { Global, Module } from "@nestjs/common";
-import { AI_EXECUTE_V1_MANIFEST, QueueRegistryBuilder, SYSTEM_PING_V1_MANIFEST, type QueueRegistry } from "@myev/shared";
+import {
+  AI_EXECUTE_V1_MANIFEST,
+  MEDIA_IMAGE_GENERATE_V1_MANIFEST,
+  MEDIA_SUBTITLE_GENERATE_V1_MANIFEST,
+  MEDIA_TTS_V1_MANIFEST,
+  QueueRegistryBuilder,
+  SYSTEM_PING_V1_MANIFEST,
+  type QueueRegistry,
+} from "@myev/shared";
 
 export const QUEUE_REGISTRY = Symbol("QUEUE_REGISTRY");
 
@@ -25,6 +33,11 @@ export const QUEUE_REGISTRY = Symbol("QUEUE_REGISTRY");
         // executes a job, only enqueues one — see this module's own doc
         // comment above).
         builder.registerManifest(AI_EXECUTE_V1_MANIFEST);
+        // Module 7 Phase 7.4 — manifest-only here (this process enqueues
+        // media.* jobs; the worker binds their handlers).
+        builder.registerManifest(MEDIA_IMAGE_GENERATE_V1_MANIFEST);
+        builder.registerManifest(MEDIA_TTS_V1_MANIFEST);
+        builder.registerManifest(MEDIA_SUBTITLE_GENERATE_V1_MANIFEST);
         return builder.freeze();
       },
     },

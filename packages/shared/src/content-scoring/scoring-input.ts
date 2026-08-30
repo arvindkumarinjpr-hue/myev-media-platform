@@ -82,4 +82,33 @@ export interface ScoringInput {
    * builder produces.
    */
   readonly targetPlatform?: string;
+
+  /**
+   * Module 7 Phase 7.4 — the current, FRESH Thumbnail Score for this
+   * video, when a real thumbnail image artifact exists. VIDEO_DIMENSION_V1
+   * reads it for its "thumbnail quality" dimension factor
+   * (CONTENT_SCORING_ENGINE_V1.0.md §4 lists "Thumbnail quality" as one
+   * of the five Video Score measures). A derived read of an
+   * already-computed number — never a second scoring pass. Absent / null
+   * (no image, or a stale one) → the factor falls back to its neutral
+   * placeholder, never fabricated. Additive + optional: BLOG_DIMENSION_V1
+   * is byte-for-byte unaffected (Blog's builder never sets it).
+   */
+  readonly currentThumbnailScore?: number | null;
+
+  /**
+   * Module 7 Phase 7.4 — truthful, objectively-measured facts about a
+   * REAL rendered thumbnail image, when one exists. Only present when
+   * THUMBNAIL_DIMENSION_V1 is scoring a video that has an ACTIVE
+   * thumbnail image MediaAsset. Never carries subjective/CV claims
+   * (facial expression, semantic contrast, pixel composition) — only
+   * things an implemented mechanism actually provides.
+   */
+  readonly thumbnailImageEvidence?: {
+    readonly present: boolean;
+    readonly width: number;
+    readonly height: number;
+    /** Whether the image's aspect ratio matches the target platform's expected ratio. */
+    readonly aspectRatioOk: boolean;
+  };
 }

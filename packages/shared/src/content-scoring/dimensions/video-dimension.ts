@@ -284,20 +284,26 @@ export const VIDEO_DIMENSION_V1: ContentDimension = {
       "Derived from segment structure and narration pacing.",
     );
     const dimRetentionPotential = mk("video-retention-potential", null, "Retention potential", engagementRetention.value, 1.5, "Same measurement as the ENGAGEMENT category's retention-pacing factor.");
-    // NEUTRAL, fixed value — deliberately NOT computed from anything: this
-    // dimension's ScoringInput carries no thumbnail-concept evidence at
-    // all (VideoScoringInputBuilder builds a SEPARATE ScoringInput for
-    // THUMBNAIL_DIMENSION_V1, which is the authoritative deep analysis —
-    // see that file). Never fabricated, never silently borrowing another
-    // dimension's number.
-    const dimThumbnailQuality = mk(
-      "video-thumbnail-quality",
-      null,
-      "Thumbnail quality (see separate Thumbnail Score)",
-      50,
-      1,
-      "Not evaluated by the Video dimension — no thumbnail-concept evidence is passed to it. See the separate Thumbnail Score, produced once a Thumbnail Concept artifact exists.",
-    );
+    // Module 7 Phase 7.4 — "Thumbnail quality" is one of the five frozen
+    // Video Score measures (CONTENT_SCORING_ENGINE_V1.0.md §4). When a
+    // REAL thumbnail image exists, its already-computed, FRESH Thumbnail
+    // Score is read here as this factor's value — a derived read of a
+    // number the separate THUMBNAIL_DIMENSION_V1 pass produced, never a
+    // second scoring pass and never CV analysis done here. Absent / stale
+    // → the neutral 50 placeholder (never fabricated), exactly as
+    // Phase 7.3.
+    const freshThumbnailScore = typeof input.currentThumbnailScore === "number" && Number.isFinite(input.currentThumbnailScore) ? input.currentThumbnailScore : null;
+    const dimThumbnailQuality =
+      freshThumbnailScore !== null
+        ? mk("video-thumbnail-quality", null, "Thumbnail quality (from the current Thumbnail Score)", freshThumbnailScore, 1, "Derived from the current, fresh Thumbnail Score for this video's real thumbnail image. See the separate Thumbnail Score for the breakdown.")
+        : mk(
+            "video-thumbnail-quality",
+            null,
+            "Thumbnail quality (see separate Thumbnail Score)",
+            50,
+            1,
+            "Not evaluated by the Video dimension — no fresh Thumbnail Score is available (no real thumbnail image, or it is stale). See the separate Thumbnail Score.",
+          );
     const dimCtaEffectiveness = mk("video-cta-effectiveness", null, "CTA effectiveness", businessCtaObjective.value, 1.5, "Same measurement as the BUSINESS category's CTA-alignment factor.");
     const dimensionFactors = [dimHookStrength, dimScriptQuality, dimRetentionPotential, dimThumbnailQuality, dimCtaEffectiveness];
     const dimensionScore = roundScore(weightedFactorMean(dimensionFactors));

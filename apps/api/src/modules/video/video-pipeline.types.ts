@@ -85,16 +85,26 @@ export interface ScenePlanStageState {
   failureReason: string | null;
 }
 
+/** How a scene's required asset was resolved (checkpoint §10 / Gate #2). */
+export type SceneAssetSource = "uploaded" | "brand" | "ai_generated";
+
 export interface AssetSceneRef {
-  sceneRef: string;
+  /** The ScenePlan scene's own id — obsolete ids (from a superseded ScenePlan version) never satisfy the gate. */
+  sceneId: string;
+  /** The RESOLVED asset's assetGroupId (the version chain root) + the current version's publicId. Null while unresolved. */
+  mediaAssetGroupId: string | null;
   mediaAssetPublicId: string | null;
-  source: "uploaded" | "ai_generated" | "unresolved";
+  source: SceneAssetSource | null;
+  /** A pending AI generation job for this scene, if any. */
+  mediaJobPublicId: string | null;
+  failureReason: string | null;
 }
 
 export interface AssetStageState {
   status: MediaStageStatus;
+  /** Per-scene resolution — computed against the CURRENT ScenePlan every evaluation. Never a single global flag. */
   scenes: AssetSceneRef[];
-  /** FR-VID-005: Quality Gate #2 blocks with an itemized list of scenes still missing an asset. */
+  /** FR-VID-005: Quality Gate #2 blocks with an itemized list of scenes still missing a resolved asset. */
   missingScenes: string[];
   completedAt: string | null;
   failureReason: string | null;
@@ -102,15 +112,40 @@ export interface AssetStageState {
 
 export interface VoiceStageState {
   status: MediaStageStatus;
-  /** media_assets (audio_assets extension) publicId — Phase 7.4. */
+  /** The current AUDIO media_assets publicId (Gate #3 authority). */
   audioAssetPublicId: string | null;
+  /** Object key of the word-timing sidecar JSON in storage. */
+  wordTimingObjectKey: string | null;
+  /** Hash of the Script version the audio was generated from — Gate #3 fails on mismatch. */
+  scriptVersionHash: string | null;
+  /** The opaque, provider-neutral catalog id the audio was generated with. */
+  voiceProfileId: string | null;
+  audioDurationMs: number | null;
   mediaJobPublicId: string | null;
   failureReason: string | null;
 }
 
 export interface SubtitleStageState {
   status: MediaStageStatus;
-  subtitleAssetPublicId: string | null;
+  /** SRT + VTT are two SUBTITLE media_assets. */
+  srtAssetPublicId: string | null;
+  vttAssetPublicId: string | null;
+  /** The audio assetGroupId these subtitles were built against — a new voice version marks them stale. */
+  sourceAudioAssetPublicId: string | null;
+  cueCount: number | null;
+  mediaJobPublicId: string | null;
+  failureReason: string | null;
+}
+
+/** Module 7 Phase 7.4 — the selected Thumbnail Concept turned into a real image artifact. */
+export interface ThumbnailImageStageState {
+  status: MediaStageStatus;
+  /** Index into the current ThumbnailConceptAgentOutput.concepts[] the user selected. */
+  selectedConceptIndex: number | null;
+  imageAssetPublicId: string | null;
+  imageAssetGroupId: string | null;
+  imageWidth: number | null;
+  imageHeight: number | null;
   mediaJobPublicId: string | null;
   failureReason: string | null;
 }
@@ -205,6 +240,8 @@ export interface VideoPipelineState {
   qa: QaStageState;
   seo: SeoStageState;
   thumbnailConcepts: ThumbnailConceptsStageState;
+  /** Module 7 Phase 7.4 — the real thumbnail image derived from a selected concept. Advisory-adjacent: never gates review. */
+  thumbnailImage: ThumbnailImageStageState;
   recommendations: RecommendationsStageState;
   score: ScoreStageState;
 }

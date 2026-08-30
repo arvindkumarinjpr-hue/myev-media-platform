@@ -10,8 +10,10 @@ import { PermissionGuard } from "../../common/guards/permission.guard";
 import { PERMISSIONS } from "../rbac/permissions.constants";
 import { VideoService, type VideoActor } from "./video.service";
 import { VideoPipelineService } from "./video-pipeline.service";
+import { VideoMediaService } from "./video-media.service";
 import { CreateVideoDto } from "./dto/create-video.dto";
 import { VideoApproveDto, VideoRejectDto, VideoSubmitForReviewDto } from "./dto/video-review.dto";
+import { VideoAttachSceneAssetDto, VideoGenerateVoiceDto, VideoSelectThumbnailConceptDto } from "./dto/video-media.dto";
 
 /**
  * Module 7 Phase 7.1–7.3 — Video Pipeline API
@@ -40,6 +42,7 @@ export class VideoController {
   constructor(
     private readonly video: VideoService,
     private readonly pipeline: VideoPipelineService,
+    private readonly media: VideoMediaService,
   ) {}
 
   private actor(user: AuthenticatedRequest["user"], workspace: WorkspaceContext): VideoActor {
@@ -143,6 +146,104 @@ export class VideoController {
   @HttpCode(HttpStatus.CREATED)
   async score(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Req() req: Request) {
     await this.pipeline.runScore(w.id, this.actor(u, w), id, this.ctx(req));
+    return { data: await this.pipeline.projectReadModel(w.id, id) };
+  }
+
+  // ---- Phase 7.4: Asset stage — per-scene resolution + Gate #2 ----
+  @Get(":itemId/assets")
+  @RequirePermission(PERMISSIONS.VIDEO_VIEW)
+  async assets(@CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string) {
+    return { data: await this.media.listAssets(w.id, id) };
+  }
+
+  @Post(":itemId/assets/scenes/:sceneId/generate-image")
+  @RequirePermission(PERMISSIONS.VIDEO_EDIT)
+  @HttpCode(HttpStatus.ACCEPTED)
+  async generateSceneImage(
+    @CurrentUser() u: AuthenticatedRequest["user"],
+    @CurrentWorkspace() w: WorkspaceContext,
+    @Param("itemId") id: string,
+    @Param("sceneId") sceneId: string,
+    @Req() req: Request,
+  ) {
+    await this.pipeline.ensureAiStagesFinalized(w.id, id, this.actor(u, w), this.ctx(req));
+    await this.media.generateSceneImage(w.id, this.actor(u, w), id, sceneId, this.ctx(req));
+    return { data: await this.pipeline.projectReadModel(w.id, id) };
+  }
+
+  @Post(":itemId/assets/scenes/:sceneId/attach")
+  @RequirePermission(PERMISSIONS.VIDEO_EDIT)
+  @HttpCode(HttpStatus.OK)
+  async attachSceneAsset(
+    @CurrentUser() u: AuthenticatedRequest["user"],
+    @CurrentWorkspace() w: WorkspaceContext,
+    @Param("itemId") id: string,
+    @Param("sceneId") sceneId: string,
+    @Body() dto: VideoAttachSceneAssetDto,
+    @Req() req: Request,
+  ) {
+    await this.pipeline.ensureAiStagesFinalized(w.id, id, this.actor(u, w), this.ctx(req));
+    await this.media.attachSceneAsset(w.id, this.actor(u, w), id, sceneId, dto.mediaAssetPublicId, this.ctx(req));
+    return { data: await this.pipeline.projectReadModel(w.id, id) };
+  }
+
+  // ---- Phase 7.4: Voice stage + Gate #3 ----
+  @Get(":itemId/voice")
+  @RequirePermission(PERMISSIONS.VIDEO_VIEW)
+  async voice(@CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string) {
+    const rm = await this.pipeline.projectReadModel(w.id, id);
+    return { data: { voice: rm.voice, voiceCatalog: this.media.listVoices() } };
+  }
+
+  @Post(":itemId/voice/generate")
+  @RequirePermission(PERMISSIONS.VIDEO_EDIT)
+  @HttpCode(HttpStatus.ACCEPTED)
+  async generateVoice(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Body() dto: VideoGenerateVoiceDto, @Req() req: Request) {
+    await this.pipeline.ensureAiStagesFinalized(w.id, id, this.actor(u, w), this.ctx(req));
+    await this.media.generateVoice(w.id, this.actor(u, w), id, dto.voiceProfileId, dto.style, this.ctx(req));
+    return { data: await this.pipeline.projectReadModel(w.id, id) };
+  }
+
+  // ---- Phase 7.4: Subtitle stage (deterministic) ----
+  @Get(":itemId/subtitles")
+  @RequirePermission(PERMISSIONS.VIDEO_VIEW)
+  async subtitles(@CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string) {
+    const rm = await this.pipeline.projectReadModel(w.id, id);
+    return { data: rm.subtitles };
+  }
+
+  @Post(":itemId/subtitles/generate")
+  @RequirePermission(PERMISSIONS.VIDEO_EDIT)
+  @HttpCode(HttpStatus.ACCEPTED)
+  async generateSubtitles(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Req() req: Request) {
+    await this.pipeline.ensureAiStagesFinalized(w.id, id, this.actor(u, w), this.ctx(req));
+    await this.media.generateSubtitles(w.id, this.actor(u, w), id, this.ctx(req));
+    return { data: await this.pipeline.projectReadModel(w.id, id) };
+  }
+
+  // ---- Phase 7.4: Thumbnail concept selection + real image ----
+  @Get(":itemId/thumbnail")
+  @RequirePermission(PERMISSIONS.VIDEO_VIEW)
+  async thumbnail(@CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string) {
+    const rm = await this.pipeline.projectReadModel(w.id, id);
+    return { data: { thumbnailConcepts: rm.thumbnailConcepts, thumbnailImage: rm.thumbnailImage } };
+  }
+
+  @Post(":itemId/thumbnail-concepts/select")
+  @RequirePermission(PERMISSIONS.VIDEO_EDIT)
+  @HttpCode(HttpStatus.OK)
+  async selectThumbnailConcept(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Body() dto: VideoSelectThumbnailConceptDto, @Req() req: Request) {
+    await this.pipeline.ensureAiStagesFinalized(w.id, id, this.actor(u, w), this.ctx(req));
+    await this.media.selectThumbnailConcept(w.id, this.actor(u, w), id, dto.conceptIndex, this.ctx(req));
+    return { data: await this.pipeline.projectReadModel(w.id, id) };
+  }
+
+  @Post(":itemId/thumbnail-image")
+  @RequirePermission(PERMISSIONS.VIDEO_EDIT)
+  @HttpCode(HttpStatus.ACCEPTED)
+  async generateThumbnailImage(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Req() req: Request) {
+    await this.pipeline.ensureAiStagesFinalized(w.id, id, this.actor(u, w), this.ctx(req));
+    await this.media.generateThumbnailImage(w.id, this.actor(u, w), id, this.ctx(req));
     return { data: await this.pipeline.projectReadModel(w.id, id) };
   }
 

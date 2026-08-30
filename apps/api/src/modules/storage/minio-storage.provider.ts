@@ -1,7 +1,7 @@
 import { createHash } from "crypto";
 import { Injectable, Logger, type OnModuleInit } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { CreateBucketCommand, DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { CreateBucketCommand, DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type { Readable } from "stream";
@@ -96,6 +96,13 @@ export class MinioStorageProvider implements StorageProvider, OnModuleInit {
       fields,
       expiresAt: new Date(Date.now() + input.expiresInSeconds * 1000),
     };
+  }
+
+  async putObject(input: { key: string; body: Buffer; contentType: string }, options?: StorageOperationOptions): Promise<void> {
+    await this.client.send(
+      new PutObjectCommand({ Bucket: this.bucket, Key: input.key, Body: input.body, ContentType: input.contentType }),
+      { abortSignal: options?.signal },
+    );
   }
 
   async headObject(key: string, options?: StorageOperationOptions): Promise<HeadObjectResult> {

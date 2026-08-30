@@ -22,6 +22,7 @@ import { AuditService } from "../audit/audit.service";
 import { AiJobSubmissionService } from "../ai-jobs/ai-job-submission.service";
 import { VIDEO_ERRORS } from "./video.errors";
 import { VideoScoringService } from "./video-scoring.service";
+import { VideoMediaService } from "./video-media.service";
 import { deriveStage, emptyPipelineState, isPublishReady, readPipelineState, unmetReviewGates, writePipelineState } from "./video-pipeline-state";
 import type {
   AdvisoryStageKey,
@@ -105,6 +106,7 @@ export class VideoPipelineService {
     private readonly audit: AuditService,
     private readonly aiJobs: AiJobSubmissionService,
     private readonly videoScoring: VideoScoringService,
+    private readonly videoMedia: VideoMediaService,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -270,7 +272,13 @@ export class VideoPipelineService {
       }
       changed = true;
     }
-    return { state, changed };
+    // Module 7 Phase 7.4 — reconcile the media stages (assets / voice /
+    // subtitles / thumbnail image) from live media_jobs + media_assets,
+    // so Gate #2 / #3 in unmetReviewGates see real persisted truth, never
+    // a COMPLETED media job alone.
+    const media = await this.videoMedia.reconcile(item.workspaceId, { id: item.id }, state);
+    if (media.changed) changed = true;
+    return { state: media.state, changed };
   }
 
   /**
@@ -310,7 +318,11 @@ export class VideoPipelineService {
           continue;
         }
       }
-      const patch = { status: "READY" as const, failureReason: null };
+      // Also project the validated ARTIFACT (not just the status) into
+      // `derived` — the read-only media reconcile (assets/voice/subtitle
+      // freshness) needs the CURRENT scene ids / script text even on a
+      // pure GET, before any mutating finalize has persisted them.
+      const patch = { status: "READY" as const, failureReason: null, artifact: parsed.value as never };
       if (key === "brief") derived.brief = { ...derived.brief, ...patch };
       else if (key === "script") derived.script = { ...derived.script, ...patch };
       else if (key === "scenePlan") derived.scenePlan = { ...derived.scenePlan, ...patch };
@@ -360,6 +372,8 @@ export class VideoPipelineService {
       state.script = { ...fresh.script, status: "GENERATING" };
       state.scenePlan = fresh.scenePlan;
       state.assets = fresh.assets;
+      // A new script means the old narration timing/subtitles/voice no
+      // longer apply — Phase 7.4 media stages are transitively stale.
       state.voice = fresh.voice;
       state.subtitles = fresh.subtitles;
       state.render = fresh.render;
@@ -368,9 +382,13 @@ export class VideoPipelineService {
       state.score = fresh.score;
     } else if (key === "scenePlan") {
       state.scenePlan = { ...fresh.scenePlan, status: "GENERATING" };
-      state.assets = fresh.assets;
-      state.voice = fresh.voice;
-      state.subtitles = fresh.subtitles;
+      // Scene assets are NOT wiped here — `VideoMediaService.reconcile`
+      // rebuilds `assets.scenes` against the NEW ScenePlan's scene ids on
+      // the next evaluation: an asset whose sceneId survived stays
+      // resolved, one whose sceneId is gone drops out (and so can never
+      // satisfy Gate #2 — §17). Voice / subtitles are script-derived, not
+      // scene-derived, so a scene-plan change does not touch them. Render
+      // assumptions ARE stale for Phase 7.5.
       state.render = fresh.render;
       state.qa = fresh.qa;
       state.score = fresh.score; // scene coverage feeds the Video Score's QUALITY factors
@@ -379,7 +397,10 @@ export class VideoPipelineService {
       state.score = fresh.score; // SEO metadata feeds the Video Score's SEO factors
     } else if (key === "thumbnailConcepts") {
       state.thumbnailConcepts = { ...fresh.thumbnailConcepts, status: "GENERATING" };
-      state.score = fresh.score; // the persisted Thumbnail Score would otherwise reflect the OLD concept
+      // A new set of concepts invalidates the selection + any real image
+      // generated from the old concept, and the persisted Thumbnail Score.
+      state.thumbnailImage = fresh.thumbnailImage;
+      state.score = fresh.score;
     } else {
       // recommendations: advisory, never scored — never invalidates freshness.
       state.recommendations = { ...fresh.recommendations, status: "GENERATING" };
@@ -690,6 +711,31 @@ export class VideoPipelineService {
     throw new UnprocessableEntityException({ code: map[first] ?? VIDEO_ERRORS.VIDEO_QA_NOT_PASSED, message: `Cannot submit for review — unmet Quality Gates: ${gates.join(", ")}.` });
   }
 
+  /**
+   * Module 7 Phase 7.4 — persist any AI text stage that has silently
+   * reached COMPLETED (brief / script / scenePlan / seo /
+   * thumbnailConcepts) into the pipeline bag + video_scripts, so a
+   * subsequent media-stage mutation (which reads the PERSISTED artifacts,
+   * not live ai_jobs) sees the freshest truth. The controller calls this
+   * before delegating to `VideoMediaService` — the media service cannot
+   * call it itself (that would be a module cycle). No-op when nothing
+   * changed. Same finalize+persist step `runScore` / `assertReadyForReview`
+   * already run.
+   */
+  async ensureAiStagesFinalized(workspaceId: string, itemPublicId: string, actor: VideoActor, ctx: RequestContext): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      const { item, state } = await this.loadLockedPipeline(tx, workspaceId, itemPublicId);
+      const { state: finalized, changed } = await this.finalizeStages(tx, item, state);
+      if (changed) {
+        await this.persistState(tx, item, finalized, {
+          afterState: { "videoPipeline.finalizedForMedia": true },
+          actorInternalId: actor.userInternalId,
+          ipAddress: ctx.ipAddress,
+        });
+      }
+    });
+  }
+
   // ---------------------------------------------------------------------
   // Read model — READ-ONLY. Never locks, never opens a write transaction,
   // never persists. Safe under VIDEO_VIEW.
@@ -714,13 +760,16 @@ export class VideoPipelineService {
       : [];
     const jobsByPublicId = new Map(jobs.map((j) => [j.publicId, j]));
     const derived = await this.projectStages(state, jobsByPublicId);
+    // Media-stage truth (assets / voice / subtitles / thumbnail image) —
+    // READ-ONLY reconcile against live media_jobs + media_assets.
+    const { state: mediaDerived } = await this.videoMedia.reconcile(workspaceId, { id: item.id }, derived);
 
     const script = await this.prisma.videoScript.findFirst({
       where: { workspaceId, contentItemId: item.id, deletedAt: null },
       select: { publicId: true, targetPlatform: true, exportProfile: true, durationSecondsTarget: true },
     });
 
-    return this.serializeReadModel(item, state, derived, script);
+    return this.serializeReadModel(item, state, mediaDerived, script);
   }
 
   private serializeReadModel(
@@ -753,9 +802,12 @@ export class VideoPipelineService {
       brief,
       script: script_,
       scenePlan,
-      assets: persisted.assets,
-      voice: persisted.voice,
-      subtitles: persisted.subtitles,
+      // Media stages reflect the READ-ONLY reconcile against live
+      // media_jobs + media_assets (Phase 7.4).
+      assets: derived.assets,
+      voice: derived.voice,
+      subtitles: derived.subtitles,
+      thumbnailImage: derived.thumbnailImage,
       render: persisted.render,
       qa: persisted.qa,
       seo,

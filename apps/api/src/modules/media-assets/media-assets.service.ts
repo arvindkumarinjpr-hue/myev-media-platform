@@ -35,11 +35,12 @@ export type MediaAssetWithProjectPublicId = Prisma.MediaAssetGetPayload<{ includ
 
 const UNIQUE_CONSTRAINT_VIOLATION = "P2002";
 
-const ASSET_TYPE_MAX_SIZE_CONFIG_KEY: Record<MediaAssetType, "image" | "audio" | "video" | "document"> = {
+const ASSET_TYPE_MAX_SIZE_CONFIG_KEY: Record<MediaAssetType, "image" | "audio" | "video" | "document" | "subtitle"> = {
   IMAGE: "image",
   AUDIO: "audio",
   VIDEO: "video",
   DOCUMENT: "document",
+  SUBTITLE: "subtitle",
 };
 
 /**

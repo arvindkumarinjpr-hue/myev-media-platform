@@ -49,6 +49,17 @@ export interface StorageProvider {
     expiresInSeconds: number;
   }): Promise<PresignedUploadInstruction>;
 
+  /**
+   * Module 7 Phase 7.4 — server-side direct write for WORKER-ORIGINATED
+   * bytes (a generated image, synthesized audio, a rendered subtitle
+   * file). Distinct from the presigned browser-upload flow: the caller
+   * already holds trusted, provider-produced bytes in memory — no
+   * untrusted client upload, no presigned round-trip. The caller is
+   * responsible for having computed the checksum and verified the MIME
+   * via magic bytes BEFORE calling this; this method just writes.
+   */
+  putObject(input: { key: string; body: Buffer; contentType: string }, options?: StorageOperationOptions): Promise<void>;
+
   headObject(key: string, options?: StorageOperationOptions): Promise<HeadObjectResult>;
 
   /**

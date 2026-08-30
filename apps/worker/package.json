@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
+    "@aws-sdk/client-s3": "^3.1103.0",
     "@google/genai": "^0.15.0",
     "@myev/shared": "workspace:*",
     "@nestjs/common": "^10.4.15",

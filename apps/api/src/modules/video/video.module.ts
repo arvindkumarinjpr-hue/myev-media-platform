@@ -3,9 +3,11 @@ import { AuthModule } from "../auth/auth.module";
 import { KnowledgePacksModule } from "../knowledge-packs/knowledge-packs.module";
 import { ContentModule } from "../content/content.module";
 import { AiJobsModule } from "../ai-jobs/ai-jobs.module";
+import { MediaGenerationModule } from "../media-generation/media-generation.module";
 import { VideoController } from "./video.controller";
 import { VideoService } from "./video.service";
 import { VideoPipelineService } from "./video-pipeline.service";
+import { VideoMediaService } from "./video-media.service";
 import { VideoScoringService } from "./video-scoring.service";
 import { VideoScoringInputBuilder } from "./video-scoring-input-builder";
 
@@ -38,9 +40,9 @@ import { VideoScoringInputBuilder } from "./video-scoring-input-builder";
  *  - MediaAssetsModule → Phase 7.4 (asset collection).
  */
 @Module({
-  imports: [AuthModule, KnowledgePacksModule, ContentModule, AiJobsModule],
+  imports: [AuthModule, KnowledgePacksModule, ContentModule, AiJobsModule, MediaGenerationModule],
   controllers: [VideoController],
-  providers: [VideoService, VideoPipelineService, VideoScoringService, VideoScoringInputBuilder],
-  exports: [VideoService, VideoPipelineService, VideoScoringService],
+  providers: [VideoService, VideoPipelineService, VideoMediaService, VideoScoringService, VideoScoringInputBuilder],
+  exports: [VideoService, VideoPipelineService, VideoMediaService, VideoScoringService],
 })
 export class VideoModule {}

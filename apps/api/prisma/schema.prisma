@@ -101,6 +101,29 @@ enum MediaAssetType {
   AUDIO
   VIDEO
   DOCUMENT
+  // Module 7 Phase 7.4 — generated caption/subtitle documents (SRT/VTT).
+  SUBTITLE
+}
+
+// Module 7 Phase 7.4 — Media Generation. The image/voice/subtitle
+// analogue of MediaJobOperation's text sibling. One polymorphic
+// media_jobs table discriminated by this enum (mirrors how a single
+// ai_jobs table serves every agent identifier) rather than one table per
+// family.
+enum MediaJobOperation {
+  IMAGE_GENERATE
+  TTS
+  SUBTITLE_GENERATE
+}
+
+// Module 7 Phase 7.4 — identical vocabulary to AiJobStatus / the frozen
+// FRD §24 Job Status enum. Reused, not re-invented.
+enum MediaJobStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  TIMED_OUT
 }
 
 // Independent of MediaAssetStatus by design — see MODULE 1D ENGINEERING
@@ -379,6 +402,7 @@ model User {
   createdKnowledgePacks  KnowledgePack[]       @relation("KnowledgePackCreatedBy")
   updatedKnowledgePacks  KnowledgePack[]       @relation("KnowledgePackUpdatedBy")
   createdAiJobs          AiJob[]               @relation("AiJobCreatedBy")
+  createdMediaJobs       MediaJob[]            @relation("MediaJobCreatedBy")
   createdKeywordClusters KeywordCluster[]      @relation("KeywordClusterCreatedBy")
   createdTopicClusters   TopicCluster[]        @relation("TopicClusterCreatedBy")
   createdContentScores   ContentScore[]        @relation("ContentScoreCreatedBy")
@@ -598,6 +622,7 @@ model Workspace {
   scheduledJobs           ScheduledJob[]
   knowledgePacks          KnowledgePack[]
   aiJobs                  AiJob[]
+  mediaJobs               MediaJob[]
   keywords                Keyword[]
   keywordClusters         KeywordCluster[]
   topicClusters           TopicCluster[]
@@ -969,6 +994,7 @@ model ContentItem {
   versions      ContentVersion[]     @relation("ContentItemVersions")
   reviewEvents  ContentReviewEvent[]
   mediaAssets   MediaAsset[]         @relation("MediaAssetContentItem")
+  mediaJobs     MediaJob[]           @relation("MediaJobContentItem")
   contentScores ContentScore[]
   seoReports    SeoReport[]
   blogArticle   BlogArticle?
@@ -1209,6 +1235,9 @@ model BackgroundJob {
   // Module 3 Phase 3.3 — present only when this row is dispatching an
   // "ai.execute.v1" job; see AiJob.backgroundJobId's own comment.
   aiJob   AiJob?
+  // Module 7 Phase 7.4 — present only when this row is dispatching a
+  // media.* job; see MediaJob.backgroundJobId's own comment.
+  mediaJob MediaJob?
 
   // DEFECT-1F-003: idempotency uniqueness is enforced by two migration-only
   // PARTIAL unique indexes, not representable in Prisma's schema DSL (no
@@ -1813,6 +1842,79 @@ model AiJobStep {
 
   @@index([aiJobId])
   @@map("ai_job_steps")
+}
+
+// Module 7 Phase 7.4 — Media Generation domain record. The image/voice/
+// subtitle analogue of ai_jobs: the authoritative business record for one
+// media-generation unit of work, linked 1:1 to a generic background_jobs
+// row (background_job_id) that drives its dispatch on QueueName.MEDIA.
+// The BullMQ payload only ever carries this row's public_id — never the
+// prompt, provider output bytes, or credentials.
+//
+// operation discriminates the three families; provider/model/usage/cost
+// mirror the ai_jobs field list exactly. output_payload holds only small
+// operational pointers (the produced MediaAsset public_ids, the
+// word-timing sidecar object key) — never binary media.
+model MediaJob {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  // Workspace-safe composite FK (same pattern as MediaAsset/ContentScore).
+  contentItemId String?      @map("content_item_id") @db.Uuid
+  contentItem   ContentItem? @relation("MediaJobContentItem", fields: [contentItemId, workspaceId], references: [id, workspaceId])
+
+  operation MediaJobOperation @map("operation")
+
+  // The dispatch/runtime record. Nullable only for the brief window
+  // between media_jobs create and background_jobs enqueue+link (mirrors
+  // AiJob.backgroundJobId). @unique — one BackgroundJob drives exactly
+  // one MediaJob. Also the fencing token: the worker processor only
+  // advances this row past QUEUED when it equals the BackgroundJob id
+  // driving the attempt.
+  backgroundJobId String?        @unique @map("background_job_id") @db.Uuid
+  backgroundJob   BackgroundJob? @relation(fields: [backgroundJobId], references: [id])
+
+  inputPayload  Json  @map("input_payload")
+  outputPayload Json? @map("output_payload")
+
+  providerUsed String? @map("provider_used")
+  modelUsed    String? @map("model_used")
+  // Provider-neutral units, e.g. { imageCount, size } or
+  // { characterCount, audioSeconds }. Nullable — mirrors
+  // AiJob.tokenUsage.
+  usageMetadata Json? @map("usage_metadata")
+  // Same precision/nullability discipline as AiJob.costEstimate: no fake
+  // pricing — null until a real per-unit price is configured.
+  costEstimate Decimal? @map("cost_estimate") @db.Decimal(10, 6)
+
+  status MediaJobStatus @default(QUEUED)
+
+  // Curated text only — never a raw SDK error, stack trace, or anything
+  // that could carry a credential (same discipline as
+  // AiJob.errorMessageSafe).
+  errorCode        String? @map("error_code")
+  errorMessageSafe String? @map("error_message_safe")
+
+  correlationId String @map("correlation_id")
+
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+
+  createdById String? @map("created_by") @db.Uuid
+  createdBy   User?   @relation("MediaJobCreatedBy", fields: [createdById], references: [id])
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  @@index([workspaceId])
+  @@index([status])
+  @@index([correlationId])
+  @@index([contentItemId])
+  @@map("media_jobs")
 }
 
 // Module 5 Phase 5.1 — Content Planner: Topic Cluster Planning

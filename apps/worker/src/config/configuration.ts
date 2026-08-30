@@ -68,6 +68,40 @@ export interface WorkerConfig {
     anthropic: { apiKey: string; model: string };
     gemini: { apiKey: string; model: string };
   };
+  // Module 7 Phase 7.4 — Media generation. `mediaProviders` selects which
+  // image/TTS adapter the MEDIA processors resolve. Default is "fake"
+  // (deterministic, zero spend) — a real provider is used only when its
+  // id is set AND its credentials are present. `storage` is the
+  // worker-side object-write target (@aws-sdk/client-s3); it mirrors
+  // apps/api's AppConfig.storage shape.
+  storage: {
+    endpoint: string;
+    port: number;
+    useSsl: boolean;
+    region: string;
+    bucket: string;
+    accessKey: string;
+    secretKey: string;
+    forcePathStyle: boolean;
+    providerIdentity: string;
+    // Whether the media worker may CREATE its bucket when HeadBucket
+    // reports it missing. Default true (local dev + CI MinIO); a
+    // production deploy against AWS S3 / R2 sets it false so a permission
+    // failure never triggers an infrastructure-creation attempt.
+    autoCreateBucket: boolean;
+  };
+  mediaProviders: {
+    imageProviderId: string; // "fake" | "openai"
+    openaiImageModel: string;
+    ttsProviderId: string; // "fake" | "azure"
+    azureSpeechKey: string;
+    azureSpeechRegion: string;
+  };
+  media: {
+    maxImageBytes: number;
+    maxAudioBytes: number;
+    maxSubtitleBytes: number;
+  };
 }
 
 export class WorkerConfigError extends Error {
@@ -153,6 +187,30 @@ export default function configuration(): WorkerConfig {
       openai: { apiKey: process.env.OPENAI_API_KEY ?? "", model: process.env.OPENAI_MODEL ?? "gpt-4o" },
       anthropic: { apiKey: process.env.ANTHROPIC_API_KEY ?? "", model: process.env.ANTHROPIC_MODEL ?? "claude-3-5-sonnet-20241022" },
       gemini: { apiKey: process.env.GEMINI_API_KEY ?? "", model: process.env.GEMINI_MODEL ?? "gemini-1.5-pro" },
+    },
+    storage: {
+      endpoint: process.env.STORAGE_ENDPOINT ?? "localhost",
+      port: parseInt(process.env.STORAGE_PORT ?? "9000", 10),
+      useSsl: (process.env.STORAGE_USE_SSL ?? "false") === "true",
+      region: process.env.STORAGE_REGION ?? "us-east-1",
+      bucket: process.env.STORAGE_BUCKET ?? "myev-media",
+      accessKey: process.env.STORAGE_ACCESS_KEY ?? "",
+      secretKey: process.env.STORAGE_SECRET_KEY ?? "",
+      forcePathStyle: (process.env.STORAGE_FORCE_PATH_STYLE ?? "true") === "true",
+      providerIdentity: process.env.STORAGE_PROVIDER_IDENTITY ?? "MINIO",
+      autoCreateBucket: (process.env.MEDIA_STORAGE_AUTO_CREATE_BUCKET ?? "true") === "true",
+    },
+    mediaProviders: {
+      imageProviderId: process.env.MEDIA_IMAGE_PROVIDER ?? "fake",
+      openaiImageModel: process.env.OPENAI_IMAGE_MODEL ?? "gpt-image-1",
+      ttsProviderId: process.env.MEDIA_TTS_PROVIDER ?? "fake",
+      azureSpeechKey: process.env.AZURE_SPEECH_KEY ?? "",
+      azureSpeechRegion: process.env.AZURE_SPEECH_REGION ?? "",
+    },
+    media: {
+      maxImageBytes: parseInt(process.env.MEDIA_MAX_SIZE_IMAGE_BYTES ?? "26214400", 10),
+      maxAudioBytes: parseInt(process.env.MEDIA_MAX_SIZE_AUDIO_BYTES ?? "104857600", 10),
+      maxSubtitleBytes: parseInt(process.env.MEDIA_MAX_SIZE_SUBTITLE_BYTES ?? "1048576", 10),
     },
   };
 }
