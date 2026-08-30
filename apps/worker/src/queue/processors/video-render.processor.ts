@@ -89,11 +89,18 @@ export class VideoRenderProcessor {
         try {
           bytes = await this.storage.getBytes(objectKey, maxBytes, controller.signal);
         } catch (err) {
-          const msg = (err as Error).message;
-          if (/no body|NoSuchKey|NotFound|404/.test(msg)) {
+          const e = err as { message?: string; name?: string; Code?: string; $metadata?: { httpStatusCode?: number } };
+          const status = e.$metadata?.httpStatusCode;
+          const notFound =
+            status === 404 ||
+            e.name === "NoSuchKey" ||
+            e.name === "NotFound" ||
+            e.Code === "NoSuchKey" ||
+            /no body|NoSuchKey|NotFound|not exist|404/i.test(e.message ?? "");
+          if (notFound) {
             throw new PermanentProcessorError("VIDEO_RENDER_ASSET_MISSING", `A required render asset is missing from storage (${slot}).`);
           }
-          throw new Error(`failed to materialize render asset (${slot}): ${msg}`);
+          throw new Error(`failed to materialize render asset (${slot}): ${e.message ?? "unknown"}`);
         }
         const localPath = temp.file(`${slot}-${objectKey.split("/").pop() ?? "asset"}`);
         await fs.writeFile(localPath, bytes);
