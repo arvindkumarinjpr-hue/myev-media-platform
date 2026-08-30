@@ -150,13 +150,46 @@ export interface ThumbnailImageStageState {
   failureReason: string | null;
 }
 
+/** A per-scene asset-resolution fact frozen into the render input snapshot (checkpoint §10/§16). */
+export interface RenderSnapshotSceneRef {
+  sceneId: string;
+  assetResolved: boolean;
+  /** True once the render worker successfully materialized the private asset for the render. */
+  materialized: boolean;
+}
+
 export interface RenderStageState {
   status: MediaStageStatus;
-  /** background_jobs publicId for the VideoRenderJob (checkpoint D5) — Phase 7.5. */
+  /** VideoRenderJob publicId for the CURRENT submitted render (checkpoint D5) — Phase 7.5. */
   renderJobPublicId: string | null;
+  /** The produced VIDEO MediaAsset — Gate #4 authority is this ACTIVE asset, never job status alone. */
   renderedVideoPublicId: string | null;
+  renderedVideoAssetGroupId: string | null;
+  exportProfileId: string | null;
   /** FR-VID-007: rendering resumes rather than restarts — the attempt counter is retry-limited. */
   attempt: number;
+  /** Deterministic timeline total the render targeted (from deriveSceneTimeline). */
+  expectedDurationMs: number | null;
+  /** Inspected output metadata (ffprobe-equivalent) — populated on success. */
+  outputWidth: number | null;
+  outputHeight: number | null;
+  outputDurationMs: number | null;
+  outputChecksumSha256: string | null;
+  outputByteSize: number | null;
+  /** Freshness fences frozen at submit — Gate #4 currentness (checkpoint §14/§24). */
+  scriptVersionHash: string | null;
+  sceneAssetFingerprint: string | null;
+  voiceAudioAssetPublicId: string | null;
+  subtitleVttAssetPublicId: string | null;
+  /** Snapshot evidence for QA Missing Assets + Branding. */
+  snapshotScenes: RenderSnapshotSceneRef[];
+  brandingLayerConfigured: boolean;
+  brandingLogoInSnapshot: boolean;
+  brandingIntroRequired: boolean;
+  brandingIntroRendered: boolean;
+  brandingOutroRequired: boolean;
+  brandingOutroRendered: boolean;
+  completedAt: string | null;
   failureReason: string | null;
 }
 
@@ -166,12 +199,19 @@ export interface QaCheckResult {
   passed: boolean;
   explanation: string;
   evidence: string[];
+  measured?: number | string | null;
+  expected?: number | string | null;
 }
 
 export interface QaStageState {
   status: DeterministicStageStatus;
   /** The frozen 6 QA Engine checks (FR-VID-008). */
   checks: QaCheckResult[];
+  /** All six PASS — Gate #5. */
+  passed: boolean | null;
+  /** The render this QA report is bound to — a newer render makes this QA stale (checkpoint §23). */
+  renderJobPublicId: string | null;
+  renderedVideoPublicId: string | null;
   completedAt: string | null;
 }
 

@@ -73,7 +73,8 @@ export interface VideoQaInput {
   /** Deterministic branding evidence the renderer recorded (checkpoint §21). */
   readonly branding: {
     readonly layerConfigured: boolean;
-    readonly logoAssetInSnapshot: boolean;
+    readonly logoRequired: boolean;
+    readonly logoRendered: boolean;
     readonly introRequired: boolean;
     readonly introRendered: boolean;
     readonly outroRequired: boolean;
@@ -222,13 +223,13 @@ function qaBranding(input: VideoQaInput): QaCheckResult {
   const b = input.branding;
   const evidence = [
     `branding layer configured: ${b.layerConfigured}`,
-    `logo/brand asset in render snapshot: ${b.logoAssetInSnapshot}`,
+    `logo required/rendered: ${b.logoRequired}/${b.logoRendered}`,
     `intro required/rendered: ${b.introRequired}/${b.introRendered}`,
     `outro required/rendered: ${b.outroRequired}/${b.outroRendered}`,
   ];
   const problems: string[] = [];
   if (!b.layerConfigured) problems.push("no branding layer was configured for the render");
-  if (b.layerConfigured && !b.logoAssetInSnapshot) problems.push("branding layer is configured but no brand asset was in the render snapshot");
+  if (b.logoRequired && !b.logoRendered) problems.push("a brand logo is required by config but was not in the render snapshot/composition");
   if (b.introRequired && !b.introRendered) problems.push("an intro is required by brand config but was not rendered");
   if (b.outroRequired && !b.outroRendered) problems.push("an outro is required by brand config but was not rendered");
   const passed = problems.length === 0;

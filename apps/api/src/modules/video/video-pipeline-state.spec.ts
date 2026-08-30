@@ -47,7 +47,7 @@ function fullyReady(): VideoPipelineState {
   s.voice = { ...s.voice, status: "READY", audioAssetPublicId: "a1" };
   s.subtitles = { ...s.subtitles, status: "READY", srtAssetPublicId: "srt1", vttAssetPublicId: "vtt1" };
   s.render = { ...s.render, status: "READY", renderJobPublicId: "rj1", renderedVideoPublicId: "rv1", attempt: 1 };
-  s.qa = { status: "COMPLETED", checks: [], completedAt: new Date().toISOString() };
+  s.qa = { status: "COMPLETED", checks: [], passed: true, renderJobPublicId: "rj1", renderedVideoPublicId: "rv1", completedAt: new Date().toISOString() };
   s.seo = {
     ...s.seo,
     status: "READY",

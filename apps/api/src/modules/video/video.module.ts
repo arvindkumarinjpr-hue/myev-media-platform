@@ -4,12 +4,18 @@ import { KnowledgePacksModule } from "../knowledge-packs/knowledge-packs.module"
 import { ContentModule } from "../content/content.module";
 import { AiJobsModule } from "../ai-jobs/ai-jobs.module";
 import { MediaGenerationModule } from "../media-generation/media-generation.module";
+import { BackgroundJobsModule } from "../background-jobs/background-jobs.module";
+import { StorageModule } from "../storage/storage.module";
 import { VideoController } from "./video.controller";
 import { VideoService } from "./video.service";
 import { VideoPipelineService } from "./video-pipeline.service";
 import { VideoMediaService } from "./video-media.service";
 import { VideoScoringService } from "./video-scoring.service";
 import { VideoScoringInputBuilder } from "./video-scoring-input-builder";
+import { VideoRenderService } from "./video-render.service";
+import { VideoRenderJobSubmissionService } from "./video-render-job-submission.service";
+import { VideoRenderInputBuilder } from "./video-render-input-builder";
+import { VideoQaService } from "./video-qa.service";
 
 /**
  * Module 7 Phase 7.1–7.3 — Video Pipeline orchestration.
@@ -40,9 +46,19 @@ import { VideoScoringInputBuilder } from "./video-scoring-input-builder";
  *  - MediaAssetsModule → Phase 7.4 (asset collection).
  */
 @Module({
-  imports: [AuthModule, KnowledgePacksModule, ContentModule, AiJobsModule, MediaGenerationModule],
+  imports: [AuthModule, KnowledgePacksModule, ContentModule, AiJobsModule, MediaGenerationModule, BackgroundJobsModule, StorageModule],
   controllers: [VideoController],
-  providers: [VideoService, VideoPipelineService, VideoMediaService, VideoScoringService, VideoScoringInputBuilder],
-  exports: [VideoService, VideoPipelineService, VideoMediaService, VideoScoringService],
+  providers: [
+    VideoService,
+    VideoPipelineService,
+    VideoMediaService,
+    VideoScoringService,
+    VideoScoringInputBuilder,
+    VideoRenderService,
+    VideoRenderJobSubmissionService,
+    VideoRenderInputBuilder,
+    VideoQaService,
+  ],
+  exports: [VideoService, VideoPipelineService, VideoMediaService, VideoScoringService, VideoRenderService, VideoQaService],
 })
 export class VideoModule {}

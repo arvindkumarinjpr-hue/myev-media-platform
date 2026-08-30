@@ -4,6 +4,7 @@ import {
   MEDIA_IMAGE_GENERATE_V1_MANIFEST,
   MEDIA_SUBTITLE_GENERATE_V1_MANIFEST,
   MEDIA_TTS_V1_MANIFEST,
+  MEDIA_VIDEO_RENDER_V1_MANIFEST,
   QueueRegistryBuilder,
   SYSTEM_PING_V1_MANIFEST,
   type QueueRegistry,
@@ -38,6 +39,9 @@ export const QUEUE_REGISTRY = Symbol("QUEUE_REGISTRY");
         builder.registerManifest(MEDIA_IMAGE_GENERATE_V1_MANIFEST);
         builder.registerManifest(MEDIA_TTS_V1_MANIFEST);
         builder.registerManifest(MEDIA_SUBTITLE_GENERATE_V1_MANIFEST);
+        // Module 7 Phase 7.5 — manifest-only here (the isolated render
+        // worker binds the handler).
+        builder.registerManifest(MEDIA_VIDEO_RENDER_V1_MANIFEST);
         return builder.freeze();
       },
     },

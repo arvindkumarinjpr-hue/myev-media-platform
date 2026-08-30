@@ -11,6 +11,8 @@ import { PERMISSIONS } from "../rbac/permissions.constants";
 import { VideoService, type VideoActor } from "./video.service";
 import { VideoPipelineService } from "./video-pipeline.service";
 import { VideoMediaService } from "./video-media.service";
+import { VideoRenderService } from "./video-render.service";
+import { VideoQaService } from "./video-qa.service";
 import { CreateVideoDto } from "./dto/create-video.dto";
 import { VideoApproveDto, VideoRejectDto, VideoSubmitForReviewDto } from "./dto/video-review.dto";
 import { VideoAttachSceneAssetDto, VideoGenerateVoiceDto, VideoSelectThumbnailConceptDto } from "./dto/video-media.dto";
@@ -43,6 +45,8 @@ export class VideoController {
     private readonly video: VideoService,
     private readonly pipeline: VideoPipelineService,
     private readonly media: VideoMediaService,
+    private readonly render: VideoRenderService,
+    private readonly qa: VideoQaService,
   ) {}
 
   private actor(user: AuthenticatedRequest["user"], workspace: WorkspaceContext): VideoActor {
@@ -244,6 +248,38 @@ export class VideoController {
   async generateThumbnailImage(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Req() req: Request) {
     await this.pipeline.ensureAiStagesFinalized(w.id, id, this.actor(u, w), this.ctx(req));
     await this.media.generateThumbnailImage(w.id, this.actor(u, w), id, this.ctx(req));
+    return { data: await this.pipeline.projectReadModel(w.id, id) };
+  }
+
+  // ---- Phase 7.5: Render stage + Quality Gate #4 ----
+  @Get(":itemId/render")
+  @RequirePermission(PERMISSIONS.VIDEO_VIEW)
+  async getRender(@CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string) {
+    return { data: await this.render.getRender(w.id, id) };
+  }
+
+  @Post(":itemId/render")
+  @RequirePermission(PERMISSIONS.VIDEO_EDIT)
+  @HttpCode(HttpStatus.ACCEPTED)
+  async submitRender(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Req() req: Request) {
+    await this.pipeline.ensureAiStagesFinalized(w.id, id, this.actor(u, w), this.ctx(req));
+    await this.render.submitRender(w.id, this.actor(u, w), id, this.ctx(req));
+    return { data: await this.pipeline.projectReadModel(w.id, id) };
+  }
+
+  // ---- Phase 7.5: QA Engine + Quality Gate #5 ----
+  @Get(":itemId/qa")
+  @RequirePermission(PERMISSIONS.VIDEO_VIEW)
+  async getQa(@CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string) {
+    return { data: await this.qa.getQa(w.id, id) };
+  }
+
+  @Post(":itemId/qa")
+  @RequirePermission(PERMISSIONS.VIDEO_EDIT)
+  @HttpCode(HttpStatus.CREATED)
+  async runQa(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Req() req: Request) {
+    await this.pipeline.ensureAiStagesFinalized(w.id, id, this.actor(u, w), this.ctx(req));
+    await this.qa.runQa(w.id, this.actor(u, w), id, this.ctx(req));
     return { data: await this.pipeline.projectReadModel(w.id, id) };
   }
 

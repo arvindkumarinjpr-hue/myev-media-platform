@@ -150,7 +150,7 @@ describe("runVideoQa", () => {
       ],
       voice: { durationMs: 10_000, wordTimingCount: 40, audioAssetPublicId: U(20) },
       subtitles: { cues: [{ startMs: 0, endMs: 2000 }, { startMs: 2100, endMs: 4000 }], sourceAudioAssetPublicId: U(20) },
-      branding: { layerConfigured: true, logoAssetInSnapshot: true, introRequired: false, introRendered: false, outroRequired: false, outroRendered: false },
+      branding: { layerConfigured: true, logoRequired: false, logoRendered: false, introRequired: false, introRendered: false, outroRequired: false, outroRendered: false },
       ...over,
     };
   }
@@ -178,7 +178,7 @@ describe("runVideoQa", () => {
     expect(r.checks.find((c) => c.id === "subtitle_sync")!.passed).toBe(false);
   });
   it("fails branding when an intro is required but not rendered", () => {
-    const r = runVideoQa(qaInput({ branding: { layerConfigured: true, logoAssetInSnapshot: true, introRequired: true, introRendered: false, outroRequired: false, outroRendered: false } }));
+    const r = runVideoQa(qaInput({ branding: { layerConfigured: true, logoRequired: false, logoRendered: false, introRequired: true, introRendered: false, outroRequired: false, outroRendered: false } }));
     expect(r.checks.find((c) => c.id === "branding")!.passed).toBe(false);
   });
 });

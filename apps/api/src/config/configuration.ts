@@ -88,6 +88,13 @@ export interface AppConfig {
     voiceCatalogJson: string;
     imageAspectByPlatform: string;
   };
+  videoRender: {
+    /** Whether the frozen brand config requires a branded intro/outro frame. */
+    introRequired: boolean;
+    outroRequired: boolean;
+    /** Max acceptable drift between the rendered file and the expected timeline (ms). */
+    durationToleranceMs: number;
+  };
   content: {
     // Module 1E Engineering Plan's Body Validation Contract. No frozen FRD
     // figure exists for these — reasonable, documented ceilings rather
@@ -231,6 +238,14 @@ export default (): AppConfig => ({
   videoMedia: {
     voiceCatalogJson: process.env.VIDEO_VOICE_CATALOG_JSON ?? "",
     imageAspectByPlatform: process.env.VIDEO_THUMBNAIL_ASPECT_JSON ?? "",
+  },
+  // Module 7 Phase 7.5 — Video rendering + QA. The API builds the frozen
+  // VideoRenderInputV1 snapshot and evaluates Gates #4/#5 from persisted
+  // truth; the render worker holds the render engine.
+  videoRender: {
+    introRequired: (process.env.VIDEO_RENDER_INTRO_REQUIRED ?? "false") === "true",
+    outroRequired: (process.env.VIDEO_RENDER_OUTRO_REQUIRED ?? "false") === "true",
+    durationToleranceMs: parseInt(process.env.VIDEO_RENDER_DURATION_TOLERANCE_MS ?? "750", 10),
   },
   content: {
     maxBodySizeBytes: parseInt(process.env.CONTENT_MAX_BODY_SIZE_BYTES ?? "2000000", 10), // 2MB
