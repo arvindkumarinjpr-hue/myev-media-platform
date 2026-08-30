@@ -86,6 +86,18 @@ COPY --from=deploy /deploy-out/dist ./dist
 COPY --from=build /repo/apps/render-worker/src/render/remotion ./src/render/remotion
 # The generated Prisma client lives in the sibling apps/api/generated.
 COPY --from=build /repo/apps/api/generated /repo/apps/api/generated
+# Module 7 Phase 7.7 staging deployment discovered this the hard way (see
+# apps/worker/Dockerfile's identical fix for the full explanation):
+# `pnpm deploy --legacy` isolates @myev/worker-core into a real directory
+# nested under node_modules/.pnpm/@myev+worker-core@<hash>/node_modules/,
+# from which its compiled prisma.service.js's source-tree-relative
+# `require("../../../../apps/api/generated/prisma")` no longer reaches
+# the repo root — MODULE_NOT_FOUND at boot. Bridge that exact nested
+# node_modules back to the real apps/api/generated copied in above.
+RUN nested_nm="$(find ./node_modules/.pnpm -maxdepth 2 -type d -name node_modules -path '*/@myev+worker-core@*' | head -1)" && \
+    test -n "$nested_nm" && \
+    mkdir -p "$nested_nm/apps/api" && \
+    ln -s /repo/apps/api/generated "$nested_nm/apps/api/generated"
 
 ENV NODE_ENV=production
 ENV RENDER_ENGINE=remotion

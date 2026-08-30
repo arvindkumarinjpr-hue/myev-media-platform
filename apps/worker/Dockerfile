@@ -74,5 +74,24 @@ COPY --from=deploy /deploy-out/dist ./dist
 # explicitly, preserving the same relative sibling layout the compiled
 # dist's relative import expects.
 COPY --from=build /repo/apps/api/generated /repo/apps/api/generated
+# Module 7 Phase 7.7 staging deployment discovered this the hard way:
+# `pnpm deploy --legacy` (required above — this workspace's workspace:*
+# deps have no inject-workspace-packages=true) does NOT symlink
+# @myev/worker-core the way a plain `pnpm install` does; it isolates it
+# into a REAL directory nested under
+# node_modules/.pnpm/@myev+worker-core@<hash>/node_modules/@myev/worker-core/.
+# @myev/worker-core's compiled prisma.service.js still does a
+# SOURCE-TREE-relative `require("../../../../apps/api/generated/prisma")`
+# — correct 4 levels up from packages/worker-core/src/prisma/ (or from a
+# plain symlink, which Node resolves via the symlink's real target), but
+# from this isolated deploy location 4 levels up lands at
+# .../node_modules/.pnpm/@myev+worker-core@<hash>/node_modules/ instead of
+# the repo root, which doesn't have apps/api/generated — MODULE_NOT_FOUND
+# at boot. Bridge exactly that nested node_modules back to the real
+# apps/api/generated this stage already copied in above.
+RUN nested_nm="$(find ./node_modules/.pnpm -maxdepth 2 -type d -name node_modules -path '*/@myev+worker-core@*' | head -1)" && \
+    test -n "$nested_nm" && \
+    mkdir -p "$nested_nm/apps/api" && \
+    ln -s /repo/apps/api/generated "$nested_nm/apps/api/generated"
 ENV NODE_ENV=production
 CMD ["node", "dist/main.js"]
