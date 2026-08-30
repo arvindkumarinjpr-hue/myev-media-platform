@@ -72,8 +72,8 @@ export interface WorkerConfig {
   // image/TTS adapter the MEDIA processors resolve. Default is "fake"
   // (deterministic, zero spend) — a real provider is used only when its
   // id is set AND its credentials are present. `storage` is the
-  // worker-side object-write target (S3PutClient); it mirrors apps/api's
-  // AppConfig.storage shape.
+  // worker-side object-write target (@aws-sdk/client-s3); it mirrors
+  // apps/api's AppConfig.storage shape.
   storage: {
     endpoint: string;
     port: number;
@@ -83,6 +83,12 @@ export interface WorkerConfig {
     accessKey: string;
     secretKey: string;
     forcePathStyle: boolean;
+    providerIdentity: string;
+    // Whether the media worker may CREATE its bucket when HeadBucket
+    // reports it missing. Default true (local dev + CI MinIO); a
+    // production deploy against AWS S3 / R2 sets it false so a permission
+    // failure never triggers an infrastructure-creation attempt.
+    autoCreateBucket: boolean;
   };
   mediaProviders: {
     imageProviderId: string; // "fake" | "openai"
@@ -191,6 +197,8 @@ export default function configuration(): WorkerConfig {
       accessKey: process.env.STORAGE_ACCESS_KEY ?? "",
       secretKey: process.env.STORAGE_SECRET_KEY ?? "",
       forcePathStyle: (process.env.STORAGE_FORCE_PATH_STYLE ?? "true") === "true",
+      providerIdentity: process.env.STORAGE_PROVIDER_IDENTITY ?? "MINIO",
+      autoCreateBucket: (process.env.MEDIA_STORAGE_AUTO_CREATE_BUCKET ?? "true") === "true",
     },
     mediaProviders: {
       imageProviderId: process.env.MEDIA_IMAGE_PROVIDER ?? "fake",

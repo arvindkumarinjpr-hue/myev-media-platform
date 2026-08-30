@@ -63,7 +63,6 @@ export * from "./media-provider/image-generation-provider-registry";
 export * from "./media-provider/tts.contract";
 export * from "./media-provider/tts-provider-registry";
 export * from "./media-provider/subtitle-builder";
-export * from "./media-provider/s3-put-client";
 export * from "./media-provider/media-bytes-verify";
 export * from "./media-provider/providers/fake-image-provider";
 export * from "./media-provider/providers/fake-tts-provider";

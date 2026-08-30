@@ -1,3 +1,4 @@
+import type * as SpeechSdk from "microsoft-cognitiveservices-speech-sdk";
 import { MediaProviderError, MediaProviderErrorCode } from "../media-provider-error";
 import type { TtsProvider, TtsRequest, TtsResult, TtsVoiceDescriptor } from "../tts.contract";
 import type { WordTiming } from "../word-timing";
@@ -13,63 +14,20 @@ import type { WordTiming } from "../word-timing";
  * punctuation and sentence boundary events are dropped, so a comma or a
  * full stop is never emitted as a spoken word.
  *
- * The `microsoft-cognitiveservices-speech-sdk` package is loaded via a
- * runtime dynamic import (the same technique `ai-provider-client-
- * factory.ts` uses for `@google/genai`) so this file compiles and this
- * package builds without the SDK present. Phase 7.4 does not bundle the
- * SDK or configure credentials (per the task's "no package installs / no
- * provider keys" constraint) — every automated test uses
- * `FakeTtsProvider`. Enabling the real provider is: install the SDK, set
- * `AZURE_SPEECH_KEY` + `AZURE_SPEECH_REGION`, register this adapter in
- * the worker's media-provider client factory.
+ * `microsoft-cognitiveservices-speech-sdk` is a declared dependency of
+ * this package (packages/shared). It is loaded via `await import(...)`
+ * purely for LAZY loading — the SDK is heavy and only ever needed when a
+ * deployment has actually selected + credentialed the Azure provider;
+ * `import type` above keeps full compile-time typing. Missing
+ * credentials fail safe with `AUTH_CONFIG` and never touch the SDK.
  */
 
 const TICKS_PER_MS = 10_000;
 
-/** Minimal shape of the bits of the Azure Speech SDK this adapter uses. */
-interface AzureSpeechSdk {
-  SpeechConfig: {
-    fromSubscription(key: string, region: string): AzureSpeechConfig;
-  };
-  SpeechSynthesizer: new (config: AzureSpeechConfig, audioConfig: null) => AzureSpeechSynthesizer;
-  SpeechSynthesisOutputFormat: Record<string, number>;
-  ResultReason: { SynthesizingAudioCompleted: number; Canceled: number };
-  SpeechSynthesisBoundaryType: { Word: number; Punctuation: number; Sentence: number };
-}
-interface AzureSpeechConfig {
-  speechSynthesisVoiceName: string;
-  speechSynthesisLanguage: string;
-  speechSynthesisOutputFormat: number;
-}
-interface AzureWordBoundaryEvent {
-  text: string;
-  audioOffset: number; // 100-ns ticks
-  duration?: number | { ticks?: number };
-  boundaryType: number;
-}
-interface AzureSynthesisResult {
-  reason: number;
-  audioData: ArrayBuffer;
-  errorDetails?: string;
-  audioDuration?: number | { ticks?: number };
-}
-interface AzureSpeechSynthesizer {
-  wordBoundary: (sender: unknown, event: AzureWordBoundaryEvent) => void;
-  speakTextAsync(text: string, onResult: (result: AzureSynthesisResult) => void, onError: (err: string) => void): void;
-  close(): void;
-}
-
-async function loadAzureSdk(): Promise<AzureSpeechSdk> {
-  try {
-    const dynamicImport = new Function("s", "return import(s)") as (s: string) => Promise<unknown>;
-    return (await dynamicImport("microsoft-cognitiveservices-speech-sdk")) as AzureSpeechSdk;
-  } catch {
-    throw new MediaProviderError(
-      MediaProviderErrorCode.AUTH_CONFIG,
-      "Azure Speech SDK is not available in this deployment — install microsoft-cognitiveservices-speech-sdk to enable the Azure TTS provider.",
-      "azure",
-    );
-  }
+let sdkPromise: Promise<typeof SpeechSdk> | undefined;
+function loadSdk(): Promise<typeof SpeechSdk> {
+  sdkPromise ??= import("microsoft-cognitiveservices-speech-sdk");
+  return sdkPromise;
 }
 
 export interface AzureSpeechTtsProviderConfig {
@@ -81,7 +39,7 @@ export interface AzureSpeechTtsProviderConfig {
   readonly voices: readonly TtsVoiceDescriptor[];
 }
 
-const OUTPUT_FORMAT_KEY: Record<TtsRequest["outputFormat"], string> = {
+const OUTPUT_FORMAT_KEY: Record<TtsRequest["outputFormat"], keyof typeof SpeechSdk.SpeechSynthesisOutputFormat> = {
   mp3: "Audio24Khz96KBitRateMonoMp3",
   wav: "Riff24Khz16BitMonoPcm",
   ogg_opus: "Ogg24Khz16BitMonoOpus",
@@ -109,14 +67,11 @@ export class AzureSpeechTtsProvider implements TtsProvider {
       throw new MediaProviderError(MediaProviderErrorCode.AUTH_CONFIG, "Azure Speech credentials are not configured.", this.id);
     }
 
-    const sdk = await loadAzureSdk();
+    const sdk = await loadSdk();
     const speechConfig = sdk.SpeechConfig.fromSubscription(this.config.subscriptionKey, this.config.region);
     speechConfig.speechSynthesisVoiceName = request.providerVoiceId;
     speechConfig.speechSynthesisLanguage = request.language;
-    const formatKey = OUTPUT_FORMAT_KEY[request.outputFormat];
-    if (sdk.SpeechSynthesisOutputFormat[formatKey] !== undefined) {
-      speechConfig.speechSynthesisOutputFormat = sdk.SpeechSynthesisOutputFormat[formatKey];
-    }
+    speechConfig.speechSynthesisOutputFormat = sdk.SpeechSynthesisOutputFormat[OUTPUT_FORMAT_KEY[request.outputFormat]];
 
     const synthesizer = new sdk.SpeechSynthesizer(speechConfig, null);
     const wordTimings: WordTiming[] = [];
@@ -127,17 +82,16 @@ export class AzureSpeechTtsProvider implements TtsProvider {
       const text = (event.text ?? "").trim();
       if (!text) return;
       const startMs = Math.round(event.audioOffset / TICKS_PER_MS);
-      const durTicks = typeof event.duration === "number" ? event.duration : (event.duration?.ticks ?? 0);
-      const endMs = startMs + Math.max(1, Math.round(durTicks / TICKS_PER_MS));
+      const endMs = startMs + Math.max(1, Math.round((event.duration ?? 0) / TICKS_PER_MS));
       wordTimings.push({ word: text, startMs: Math.max(0, startMs), endMs });
     };
 
     const onAbort = () => synthesizer.close();
     signal?.addEventListener("abort", onAbort, { once: true });
 
-    let result: AzureSynthesisResult;
+    let result: SpeechSdk.SpeechSynthesisResult;
     try {
-      result = await new Promise<AzureSynthesisResult>((resolve, reject) => {
+      result = await new Promise<SpeechSdk.SpeechSynthesisResult>((resolve, reject) => {
         synthesizer.speakTextAsync(
           request.text,
           (r) => resolve(r),
@@ -156,16 +110,15 @@ export class AzureSpeechTtsProvider implements TtsProvider {
     }
 
     if (result.reason === sdk.ResultReason.Canceled) {
-      throw this.normalize(new Error(result.errorDetails ?? "synthesis canceled"), signal);
+      throw this.normalize(new Error(result.errorDetails || "synthesis canceled"), signal);
     }
     const audioBytes = Buffer.from(result.audioData);
     if (audioBytes.length === 0) {
       throw new MediaProviderError(MediaProviderErrorCode.MALFORMED_RESPONSE, "Azure returned empty audio.", this.id);
     }
 
-    const durTicks = typeof result.audioDuration === "number" ? result.audioDuration : (result.audioDuration?.ticks ?? 0);
     const durationMs =
-      durTicks > 0 ? Math.round(durTicks / TICKS_PER_MS) : wordTimings.length > 0 ? wordTimings[wordTimings.length - 1].endMs : 0;
+      result.audioDuration > 0 ? Math.round(result.audioDuration / TICKS_PER_MS) : wordTimings.length > 0 ? wordTimings[wordTimings.length - 1].endMs : 0;
 
     if (durationMs <= 0) {
       throw new MediaProviderError(MediaProviderErrorCode.MALFORMED_RESPONSE, "Azure synthesis produced audio with no measurable duration.", this.id);

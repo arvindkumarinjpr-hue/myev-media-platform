@@ -6,7 +6,7 @@ import { MediaAssetWriterService } from "./media-asset-writer.service";
 
 /**
  * Module 7 Phase 7.4 — worker-side media infrastructure: the object
- * write path (`MediaStorageService` → `@myev/shared` S3PutClient) and the
+ * write path (`MediaStorageService` (@aws-sdk/client-s3)) and the
  * worker-originated MediaAsset persistence + verification
  * (`MediaAssetWriterService`). Consumed by the three MEDIA processors.
  */
