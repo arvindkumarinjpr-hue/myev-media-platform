@@ -61,6 +61,50 @@ jobs:
       - name: Build all service images
         run: docker compose -f docker/docker-compose.yml build
 
+      # Module 7 Phase 7.7 staging deployment discovered that neither the
+      # general worker's nor the render-worker's RUNTIME image had ever
+      # actually been booted end-to-end in CI: the E2E job runs both via
+      # `ts-node` against source, and the Remotion smoke below runs the
+      # render engine directly, not through NestJS/dist/main.js. The
+      # runtime image's `pnpm deploy --legacy` output turned out to break
+      # @myev/worker-core's PrismaService at boot (MODULE_NOT_FOUND) —
+      # invisible until a real `docker run` of the compiled image, which
+      # staging deployment is the first thing to do. Catch that class of
+      # regression here: actually start both runtime images against the
+      # compose stack's real Postgres/Redis and require a live heartbeat
+      # row for each — not just "the container didn't exit immediately".
+      - name: Boot worker + render-worker runtime images against a real migrated DB (catches image-only startup regressions)
+        run: |
+          docker compose -f docker/docker-compose.yml up -d postgres redis minio
+          # Migrate with the api image's own `build` stage (has the prisma
+          # CLI; the runtime image deliberately doesn't) — same technique
+          # verified against the real Module 7 Phase 7.7 staging DB.
+          docker build --target build -f apps/api/Dockerfile -t ci-migrate:tmp .
+          docker run --rm --network myev-media_myev-internal \
+            -e DATABASE_URL=postgresql://myev:myev_dev_password@postgres:5432/myev_media?schema=public \
+            ci-migrate:tmp npx prisma migrate deploy
+          docker compose -f docker/docker-compose.yml up -d worker render-worker
+          for svc in worker render-worker; do
+            for i in $(seq 1 60); do
+              cid=$(docker compose -f docker/docker-compose.yml ps -q "$svc")
+              status=$(docker inspect -f '{{.State.Status}}' "$cid" 2>/dev/null || echo "unknown")
+              if [ "$status" != "running" ]; then
+                echo "$svc is not running (status=$status) at ${i}s — startup failed" >&2
+                docker logs "$cid" 2>&1 | tail -60
+                exit 1
+              fi
+              restarts=$(docker inspect -f '{{.RestartCount}}' "$cid" 2>/dev/null || echo 0)
+              if [ "$restarts" -gt 0 ]; then
+                echo "$svc has restarted $restarts time(s) at ${i}s — crash loop" >&2
+                docker logs "$cid" 2>&1 | tail -60
+                exit 1
+              fi
+              sleep 1
+            done
+            echo "$svc: running, no restarts after 60s — OK"
+          done
+          docker compose -f docker/docker-compose.yml down
+
       # Section §F/§G — the REAL production render path, proven inside the
       # dedicated render-worker image (Chromium + fonts + bundled FFmpeg).
       # Reuses the `build` layers cached by the compose build above; only

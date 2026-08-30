@@ -11,8 +11,22 @@
 // adds them after Prisma's generated CREATE TABLE statements).
 
 generator client {
-  provider = "prisma-client-js"
-  output   = "../generated/prisma"
+  provider      = "prisma-client-js"
+  output        = "../generated/prisma"
+  // Module 7 Phase 7.7 staging deployment: the render-worker's runtime
+  // stage (node:24-bookworm-slim) crashed at boot —
+  // PrismaClientInitializationError, "Query Engine for runtime
+  // debian-openssl-3.0.x" not found, because `prisma generate` inside
+  // the render-worker Dockerfile's OWN bookworm-slim `build` stage
+  // resolved the implicit "native" target to debian-openssl-1.1.x (a
+  // generate-time detection quirk, not a real base-image mismatch — the
+  // build and runtime stages use the identical node:24-bookworm-slim
+  // tag). api/worker never hit this (node:24-alpine -> "native"
+  // correctly resolves to the musl target both at generate- and
+  // run-time). Bundling debian-openssl-3.0.x explicitly, alongside
+  // whatever "native" resolves to, makes this correct regardless of the
+  // generating platform's detection.
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
 }
 
 datasource db {
