@@ -260,6 +260,14 @@ jobs:
           # already more than enough to distinguish this attempt's own
           # heartbeat row from any earlier step's leftover rows.
           START_TIME_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          # Module 7 Phase 7.5 — the standalone background worker doubles
+          # as the dedicated render/media worker for the API E2E suite
+          # (the golden-path render test drives a real HTTP -> BullMQ ->
+          # render-worker -> VIDEO MediaAsset flow). RENDER_ENGINE stays
+          # the deterministic test engine so no Chromium/FFmpeg is needed.
+          # The Worker E2E suite above still runs with the job-level
+          # WORKER_QUEUES=SYSTEM,AI and is unaffected.
+          WORKER_QUEUES=SYSTEM,AI,MEDIA RENDER_ENGINE=deterministic-test \
           nohup pnpm exec ts-node --transpile-only src/main.ts > /tmp/worker.log 2>&1 &
           WORKER_PID=$!
           disown
