@@ -258,8 +258,14 @@ export class VideoController {
     return { data: await this.render.getRender(w.id, id) };
   }
 
+  // Triggering a render is VIDEO_RENDER, not VIDEO_EDIT — the frozen
+  // ROLE_PERMISSION_MATRIX grants "Render Videos" to Video Editor +
+  // Administrator (+ Owner) only, NOT Content Manager. VIDEO_RENDER was
+  // already defined + seeded (permissions.constants.ts); this is the one
+  // route that consumes it. Every other render/QA route stays VIDEO_VIEW
+  // (reads) / VIDEO_EDIT (qa run).
   @Post(":itemId/render")
-  @RequirePermission(PERMISSIONS.VIDEO_EDIT)
+  @RequirePermission(PERMISSIONS.VIDEO_RENDER)
   @HttpCode(HttpStatus.ACCEPTED)
   async submitRender(@CurrentUser() u: AuthenticatedRequest["user"], @CurrentWorkspace() w: WorkspaceContext, @Param("itemId") id: string, @Req() req: Request) {
     await this.pipeline.ensureAiStagesFinalized(w.id, id, this.actor(u, w), this.ctx(req));
