@@ -1,6 +1,6 @@
 import { Injectable } from "@nestjs/common";
 import type { AdvisoryLockAcquirer, ProcessedEventReaderWriter, ProcessedEventStore, TransactionRunner } from "@myev/shared";
-import { PrismaService } from "../prisma/prisma.service";
+import { PrismaService } from "@myev/worker-core";
 import { Prisma } from "../../../api/generated/prisma";
 
 /**

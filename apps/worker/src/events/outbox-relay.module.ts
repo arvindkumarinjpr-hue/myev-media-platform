@@ -1,5 +1,5 @@
 import { Module } from "@nestjs/common";
-import { HeartbeatModule } from "../heartbeat/heartbeat.module";
+import { HeartbeatModule } from "@myev/worker-core";
 import { OutboxRelayManager } from "./outbox-relay.manager";
 
 /**

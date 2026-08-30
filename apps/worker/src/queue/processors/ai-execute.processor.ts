@@ -22,7 +22,7 @@ import { plainToInstance } from "class-transformer";
 import type { AiJobStatus, Prisma } from "../../../../api/generated/prisma";
 import { AGENT_REGISTRY } from "../../ai-provider/agent-registry.module";
 import { AI_PROVIDER_REGISTRY } from "../../ai-provider/ai-provider-registry.module";
-import { PrismaService } from "../../prisma/prisma.service";
+import { PrismaService } from "@myev/worker-core";
 
 const KNOWLEDGE_PACK_INCLUDE = {
   knowledgeSources: true,
