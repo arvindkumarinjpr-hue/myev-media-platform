@@ -57,20 +57,32 @@ describe("buildAiProviderRegistry", () => {
   });
 
   // Module 7 Phase 7.7 closure — the Video UAT fixture provider.
-  it("NEVER registers the Video UAT fixture under 'openai' in production, even with no OPENAI_API_KEY", async () => {
-    const registry = await buildAiProviderRegistry(ai(), "production");
-    expect(registry.has("openai")).toBe(false);
-    expect(() => registry.resolve("openai")).toThrow(/unknown provider/i);
-  });
+  describe("Video UAT fixture provider", () => {
+    const original = process.env.VIDEO_UAT_FIXTURE_PROVIDER;
+    afterEach(() => {
+      if (original === undefined) delete process.env.VIDEO_UAT_FIXTURE_PROVIDER;
+      else process.env.VIDEO_UAT_FIXTURE_PROVIDER = original;
+    });
 
-  it("registers the Video UAT fixture under 'openai' only outside production AND only when no real OPENAI_API_KEY", async () => {
-    const uat = await buildAiProviderRegistry(ai(), "staging");
-    expect(uat.has("openai")).toBe(true);
-    expect(uat.resolve("openai").getCapabilities()[0].model).toBe("video-uat-fixture-1");
-  });
+    it("is NOT registered by default (flag unset), even outside production — existing provider-not-configured behaviour is unchanged", async () => {
+      delete process.env.VIDEO_UAT_FIXTURE_PROVIDER;
+      const registry = await buildAiProviderRegistry(ai(), "staging");
+      expect(registry.has("video-uat-fixture")).toBe(false);
+      expect(registry.has("openai")).toBe(false);
+    });
 
-  it("a real OPENAI_API_KEY always wins — the fixture never shadows a configured provider, even outside production", async () => {
-    const registry = await buildAiProviderRegistry(ai({ openai: { apiKey: "sk-real-key", model: "gpt-4o" } }), "staging");
-    expect(registry.resolve("openai").getCapabilities()[0].model).not.toBe("video-uat-fixture-1");
+    it("is NEVER registered in production, even with the flag set", async () => {
+      process.env.VIDEO_UAT_FIXTURE_PROVIDER = "true";
+      const registry = await buildAiProviderRegistry(ai(), "production");
+      expect(registry.has("video-uat-fixture")).toBe(false);
+    });
+
+    it("is registered under its OWN id (never 'openai') only when env !== production AND the explicit flag is set", async () => {
+      process.env.VIDEO_UAT_FIXTURE_PROVIDER = "true";
+      const registry = await buildAiProviderRegistry(ai(), "staging");
+      expect(registry.has("video-uat-fixture")).toBe(true);
+      expect(registry.has("openai")).toBe(false);
+      expect(registry.resolve("video-uat-fixture").getCapabilities()[0].model).toBe("video-uat-fixture-1");
+    });
   });
 });

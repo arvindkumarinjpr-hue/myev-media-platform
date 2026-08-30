@@ -80,15 +80,19 @@ export async function buildAiProviderRegistry(ai: WorkerConfig["ai"], env: strin
     builder.register(new FakeProvider("permanent_error", {}, 1, "fake-permanent"));
     builder.register(new FakeProvider("timeout", {}, 1, "fake-timeout"));
     // Module 7 Phase 7.7 closure — the deterministic Video-agent fixture,
-    // registered under the "openai" id every Video agent prefers, so a
-    // full Video pipeline can run on a staging/UAT env with no external
-    // AI keys (for the mandatory real-Remotion-render staging UAT). Doubly
-    // gated: this `env !== "production"` block AND no real OPENAI_API_KEY,
-    // so it can never shadow a configured provider and cannot exist in
-    // production.
-    if (!ai.openai.apiKey) {
-      builder.register(new VideoUatFixtureProvider("openai"));
-      logger.warn('Video UAT fixture provider registered under "openai" (env !== production, no OPENAI_API_KEY) — Video agents will return deterministic fixture output');
+    // registered under its OWN id (never shadowing "openai"). It only
+    // does anything if `ai-execute.processor` also routes a Video agent
+    // to it, which it only does when this id is present in the registry —
+    // i.e. here, under BOTH `env !== "production"` AND an EXPLICIT
+    // VIDEO_UAT_FIXTURE_PROVIDER=true opt-in that is set nowhere in
+    // CI/dev/prod. Blog/Research/every other agent is completely
+    // untouched (they still resolve their own preference and still fail
+    // PROVIDER_NOT_CONFIGURED when unconfigured). Used only to bring a
+    // staging Video pipeline to a valid pre-render state for the
+    // mandatory real-Remotion-render staging UAT.
+    if (process.env.VIDEO_UAT_FIXTURE_PROVIDER === "true") {
+      builder.register(new VideoUatFixtureProvider("video-uat-fixture"));
+      logger.warn("Video UAT fixture provider registered (env !== production, VIDEO_UAT_FIXTURE_PROVIDER=true) — the six Video agents will return deterministic fixture output; every other agent is unaffected");
     }
   }
   return builder.freeze();
