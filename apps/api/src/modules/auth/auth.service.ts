@@ -37,7 +37,7 @@ type RefreshOutcome =
 // and must survive even though the request still ends in a 410 — throwing
 // inside the transaction that made that write would roll it back.
 type ResetPasswordOutcome =
-  | { kind: "success"; activatedMemberships: { workspaceId: string }[]; userId: string }
+  | { kind: "success"; activatedMemberships: { workspaceId: string }[]; userId: string; email: string; isActivation: boolean }
   | { kind: "invalid" }
   | { kind: "already_used" }
   | { kind: "expired" }
@@ -266,7 +266,7 @@ export class AuthService {
     // commit normally; the corresponding exception is only thrown after
     // $transaction resolves.
     const outcome = await this.prisma.$transaction(async (tx): Promise<ResetPasswordOutcome> => {
-      const token = await tx.userActionToken.findUnique({ where: { tokenHash } });
+      const token = await tx.userActionToken.findUnique({ where: { tokenHash }, include: { user: { select: { email: true } } } });
       if (!token) {
         return { kind: "invalid" };
       }
@@ -331,7 +331,7 @@ export class AuthService {
         afterState: isActivation ? { status: "ACTIVE" } : undefined,
       });
 
-      return { kind: "success", activatedMemberships, userId: token.userId };
+      return { kind: "success", activatedMemberships, userId: token.userId, email: token.user.email, isActivation };
     });
 
     switch (outcome.kind) {
@@ -347,6 +347,17 @@ export class AuthService {
         await Promise.all(
           outcome.activatedMemberships.map((m) => this.workspaceCache.invalidateForMembershipChange(m.workspaceId, outcome.userId)),
         );
+        // A successful reset is the same proof-of-ownership a correct
+        // password gives login()'s own clearAttempts() call — without this,
+        // login()'s isLocked() check (which runs BEFORE password
+        // verification) would keep rejecting the account until the Redis
+        // TTL expires, even with the just-set password. Scoped to the
+        // reset branch only, matching the session-revocation branch above:
+        // an activation has no prior login history to protect. Runs after
+        // the transaction commits — Redis has no rollback tied to Postgres.
+        if (!outcome.isActivation) {
+          await this.protection.clearAttempts(outcome.email.toLowerCase());
+        }
         return;
     }
   }

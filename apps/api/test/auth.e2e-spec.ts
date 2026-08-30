@@ -388,6 +388,120 @@ describe("Auth (e2e)", () => {
     });
   });
 
+  describe(
+    "password reset clears the login lockout " +
+      "(regression: resetPassword() never cleared the Redis brute-force counter, " +
+      "so a legitimate reset could not unlock a locked account until its TTL expired)",
+    () => {
+      async function lockAccount(email: string): Promise<void> {
+        for (let i = 0; i < 5; i++) {
+          // eslint-disable-next-line no-await-in-loop
+          await request(app.getHttpServer()).post("/api/v1/auth/login").send({ email, password: "wrong" });
+        }
+      }
+
+      it("keeps the CORRECT password rejected while locked (the lock check runs before password verification)", async () => {
+        const { email, password } = await createActiveUser("lockout-correct-pw-still-locked");
+        await lockAccount(email);
+
+        const res = await request(app.getHttpServer()).post("/api/v1/auth/login").send({ email, password });
+        expect(res.status).toBe(403);
+        expect(res.body.code).toBe("AUTH_ACCOUNT_LOCKED");
+      });
+
+      it("a successful reset clears the lock — the new password logs in immediately, with no Redis TTL wait", async () => {
+        const { email } = await createActiveUser("lockout-reset-clears");
+        await lockAccount(email);
+
+        await request(app.getHttpServer()).post("/api/v1/auth/forgot-password").send({ email }).expect(200);
+        const resetEmail = await getLatestEmailFor(email);
+        const plaintextToken = extractToken(resetEmail.body);
+        const newPassword = "brand-new-password-after-lock-1";
+
+        await request(app.getHttpServer()).post("/api/v1/auth/reset-password").send({ token: plaintextToken, newPassword }).expect(200);
+
+        const login = await request(app.getHttpServer()).post("/api/v1/auth/login").send({ email, password: newPassword });
+        expect(login.status).toBe(200);
+        expect(login.body.data.access_token).toEqual(expect.any(String));
+      });
+
+      it("the old (pre-reset) password fails after a lock-clearing reset (confirms the lock was actually cleared, not bypassed)", async () => {
+        const { email, password: oldPassword } = await createActiveUser("lockout-old-pw-fails");
+        await lockAccount(email);
+
+        await request(app.getHttpServer()).post("/api/v1/auth/forgot-password").send({ email }).expect(200);
+        const resetEmail = await getLatestEmailFor(email);
+        const plaintextToken = extractToken(resetEmail.body);
+        await request(app.getHttpServer())
+          .post("/api/v1/auth/reset-password")
+          .send({ token: plaintextToken, newPassword: "another-brand-new-password-2" })
+          .expect(200);
+
+        // Exactly one attempt with the stale password — a real
+        // AUTH_INVALID_CREDENTIALS (not AUTH_ACCOUNT_LOCKED) here proves the
+        // lock was genuinely reset to zero, not merely tolerated once.
+        const oldPwLogin = await request(app.getHttpServer()).post("/api/v1/auth/login").send({ email, password: oldPassword });
+        expect(oldPwLogin.status).toBe(401);
+        expect(oldPwLogin.body.code).toBe("AUTH_INVALID_CREDENTIALS");
+      });
+
+      it("an invalid reset token does NOT clear the lock", async () => {
+        const { email, password } = await createActiveUser("lockout-invalid-token-no-clear");
+        await lockAccount(email);
+
+        await request(app.getHttpServer())
+          .post("/api/v1/auth/reset-password")
+          .send({ token: "not-a-real-token", newPassword: "irrelevant-valid-password-1" })
+          .expect(400);
+
+        const stillLocked = await request(app.getHttpServer()).post("/api/v1/auth/login").send({ email, password });
+        expect(stillLocked.status).toBe(403);
+        expect(stillLocked.body.code).toBe("AUTH_ACCOUNT_LOCKED");
+      });
+
+      it("an expired reset token does NOT clear the lock", async () => {
+        const { user, email, password } = await createActiveUser("lockout-expired-token-no-clear");
+        await lockAccount(email);
+
+        await request(app.getHttpServer()).post("/api/v1/auth/forgot-password").send({ email }).expect(200);
+        const issued = await prisma.userActionToken.findFirstOrThrow({
+          where: { userId: user.id, purpose: "PASSWORD_RESET", status: "PENDING" },
+          orderBy: { createdAt: "desc" },
+        });
+        const resetEmail = await getLatestEmailFor(email);
+        const plaintextToken = extractToken(resetEmail.body);
+        await prisma.userActionToken.update({ where: { id: issued.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
+
+        await request(app.getHttpServer())
+          .post("/api/v1/auth/reset-password")
+          .send({ token: plaintextToken, newPassword: "irrelevant-valid-password-2" })
+          .expect(410);
+
+        const stillLocked = await request(app.getHttpServer()).post("/api/v1/auth/login").send({ email, password });
+        expect(stillLocked.status).toBe(403);
+        expect(stillLocked.body.code).toBe("AUTH_ACCOUNT_LOCKED");
+      });
+
+      it("a password-policy failure on reset does NOT clear the lock", async () => {
+        const { email, password } = await createActiveUser("lockout-policy-fail-no-clear");
+        await lockAccount(email);
+
+        await request(app.getHttpServer()).post("/api/v1/auth/forgot-password").send({ email }).expect(200);
+        const resetEmail = await getLatestEmailFor(email);
+        const plaintextToken = extractToken(resetEmail.body);
+
+        await request(app.getHttpServer())
+          .post("/api/v1/auth/reset-password")
+          .send({ token: plaintextToken, newPassword: "short1" })
+          .expect(400);
+
+        const stillLocked = await request(app.getHttpServer()).post("/api/v1/auth/login").send({ email, password });
+        expect(stillLocked.status).toBe(403);
+        expect(stillLocked.body.code).toBe("AUTH_ACCOUNT_LOCKED");
+      });
+    },
+  );
+
   describe("POST /api/v1/auth/change-password", () => {
     it("enforces the same 12-character minimum as reset: 11 characters rejected, exactly 12 accepted", async () => {
       const { email, password } = await createActiveUser("change-min-length");
