@@ -1,7 +1,7 @@
 import { Logger } from "@nestjs/common";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
-import { AIProviderRegistryBuilder, AnthropicProvider, FakeProvider, GeminiProvider, OpenAIProvider, type AIProvider, type AIProviderRegistry } from "@myev/shared";
+import { AIProviderRegistryBuilder, AnthropicProvider, FakeProvider, GeminiProvider, OpenAIProvider, VideoUatFixtureProvider, type AIProvider, type AIProviderRegistry } from "@myev/shared";
 import type { WorkerConfig } from "../config/configuration";
 
 const logger = new Logger("AiProviderClientFactory");
@@ -79,6 +79,17 @@ export async function buildAiProviderRegistry(ai: WorkerConfig["ai"], env: strin
     builder.register(new FakeProvider("flaky_then_success", {}, 1, "fake-flaky"));
     builder.register(new FakeProvider("permanent_error", {}, 1, "fake-permanent"));
     builder.register(new FakeProvider("timeout", {}, 1, "fake-timeout"));
+    // Module 7 Phase 7.7 closure — the deterministic Video-agent fixture,
+    // registered under the "openai" id every Video agent prefers, so a
+    // full Video pipeline can run on a staging/UAT env with no external
+    // AI keys (for the mandatory real-Remotion-render staging UAT). Doubly
+    // gated: this `env !== "production"` block AND no real OPENAI_API_KEY,
+    // so it can never shadow a configured provider and cannot exist in
+    // production.
+    if (!ai.openai.apiKey) {
+      builder.register(new VideoUatFixtureProvider("openai"));
+      logger.warn('Video UAT fixture provider registered under "openai" (env !== production, no OPENAI_API_KEY) — Video agents will return deterministic fixture output');
+    }
   }
   return builder.freeze();
 }

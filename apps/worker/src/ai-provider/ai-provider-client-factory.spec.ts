@@ -55,4 +55,22 @@ describe("buildAiProviderRegistry", () => {
     expect(registry.has("anthropic")).toBe(true);
     expect(() => registry.resolve("openai")).toThrow(/unknown provider/i);
   });
+
+  // Module 7 Phase 7.7 closure — the Video UAT fixture provider.
+  it("NEVER registers the Video UAT fixture under 'openai' in production, even with no OPENAI_API_KEY", async () => {
+    const registry = await buildAiProviderRegistry(ai(), "production");
+    expect(registry.has("openai")).toBe(false);
+    expect(() => registry.resolve("openai")).toThrow(/unknown provider/i);
+  });
+
+  it("registers the Video UAT fixture under 'openai' only outside production AND only when no real OPENAI_API_KEY", async () => {
+    const uat = await buildAiProviderRegistry(ai(), "staging");
+    expect(uat.has("openai")).toBe(true);
+    expect(uat.resolve("openai").getCapabilities()[0].model).toBe("video-uat-fixture-1");
+  });
+
+  it("a real OPENAI_API_KEY always wins — the fixture never shadows a configured provider, even outside production", async () => {
+    const registry = await buildAiProviderRegistry(ai({ openai: { apiKey: "sk-real-key", model: "gpt-4o" } }), "staging");
+    expect(registry.resolve("openai").getCapabilities()[0].model).not.toBe("video-uat-fixture-1");
+  });
 });

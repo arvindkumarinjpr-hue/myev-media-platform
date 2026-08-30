@@ -1,7 +1,7 @@
 import { Logger } from "@nestjs/common";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
-import { AIProviderRegistryBuilder, AnthropicProvider, FakeProvider, GeminiProvider, OpenAIProvider, type AIProvider, type AIProviderRegistry } from "@myev/shared";
+import { AIProviderRegistryBuilder, AnthropicProvider, FakeProvider, GeminiProvider, OpenAIProvider, VideoUatFixtureProvider, type AIProvider, type AIProviderRegistry } from "@myev/shared";
 import type { AppConfig } from "../../config/configuration";
 
 const logger = new Logger("AiProviderClientFactory");
@@ -78,6 +78,14 @@ export async function buildAiProviderRegistry(ai: AppConfig["ai"], env: string):
   }
   if (env !== "production") {
     builder.register(new FakeProvider("structured_success", { echo: "test-echo-agent-default-response" }));
+    // Module 7 Phase 7.7 closure — mirror apps/worker's factory (this
+    // codebase keeps the two identical): the deterministic Video-agent
+    // fixture under the "openai" id, doubly gated (env !== "production"
+    // AND no real OPENAI_API_KEY) so it cannot shadow a configured
+    // provider and cannot exist in production.
+    if (!ai.openai.apiKey) {
+      builder.register(new VideoUatFixtureProvider("openai"));
+    }
   }
   return builder.freeze();
 }
