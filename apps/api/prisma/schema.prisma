@@ -403,6 +403,7 @@ model User {
   updatedKnowledgePacks  KnowledgePack[]       @relation("KnowledgePackUpdatedBy")
   createdAiJobs          AiJob[]               @relation("AiJobCreatedBy")
   createdMediaJobs       MediaJob[]            @relation("MediaJobCreatedBy")
+  createdVideoRenderJobs VideoRenderJob[]     @relation("VideoRenderJobCreatedBy")
   createdKeywordClusters KeywordCluster[]      @relation("KeywordClusterCreatedBy")
   createdTopicClusters   TopicCluster[]        @relation("TopicClusterCreatedBy")
   createdContentScores   ContentScore[]        @relation("ContentScoreCreatedBy")
@@ -623,6 +624,7 @@ model Workspace {
   knowledgePacks          KnowledgePack[]
   aiJobs                  AiJob[]
   mediaJobs               MediaJob[]
+  videoRenderJobs         VideoRenderJob[]
   keywords                Keyword[]
   keywordClusters         KeywordCluster[]
   topicClusters           TopicCluster[]
@@ -995,6 +997,7 @@ model ContentItem {
   reviewEvents  ContentReviewEvent[]
   mediaAssets   MediaAsset[]         @relation("MediaAssetContentItem")
   mediaJobs     MediaJob[]           @relation("MediaJobContentItem")
+  videoRenderJobs VideoRenderJob[]   @relation("VideoRenderJobContentItem")
   contentScores ContentScore[]
   seoReports    SeoReport[]
   blogArticle   BlogArticle?
@@ -1238,6 +1241,9 @@ model BackgroundJob {
   // Module 7 Phase 7.4 — present only when this row is dispatching a
   // media.* job; see MediaJob.backgroundJobId's own comment.
   mediaJob MediaJob?
+  // Module 7 Phase 7.5 — present only when this row is dispatching a
+  // media.video-render.v1 job; see VideoRenderJob.backgroundJobId.
+  videoRenderJob VideoRenderJob?
 
   // DEFECT-1F-003: idempotency uniqueness is enforced by two migration-only
   // PARTIAL unique indexes, not representable in Prisma's schema DSL (no
@@ -1915,6 +1921,115 @@ model MediaJob {
   @@index([correlationId])
   @@index([contentItemId])
   @@map("media_jobs")
+}
+
+// Module 7 Phase 7.5 — identical vocabulary to MediaJobStatus / AiJobStatus
+// / the frozen FRD §24 Job Status enum. Reused, not re-invented — a render
+// job has no "fake business completion" state (checkpoint §2): Gate #4 is
+// satisfied by reconciliation against a persisted ACTIVE VIDEO MediaAsset,
+// never by COMPLETED alone.
+enum VideoRenderJobStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  TIMED_OUT
+}
+
+// Module 7 Phase 7.5 — Video Rendering (VIDEO_AUTOMATION_ENGINE_V1.0.md §7,
+// FR-VID-007, checkpoint D5). The render analogue of MediaJob: a business
+// extension row (the render lifecycle, the frozen VideoRenderInputV1
+// snapshot, the produced-artifact metadata) linked 1:1 to a generic
+// background_jobs dispatch row. Purely additive. The rendered binary is
+// NEVER stored here — it lands in object storage as a VIDEO MediaAsset;
+// this row only records its identity + inspected metadata.
+//
+// History is retained: a regenerated upstream artifact does not delete or
+// mutate a prior render job or its output asset (checkpoint §24) — a new
+// submission creates a new row with a new input snapshot, and only that
+// newest COMPLETED row whose snapshot still matches current dependencies
+// satisfies Gate #4.
+model VideoRenderJob {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  // Workspace-safe composite FK (same pattern as MediaJob / MediaAsset).
+  contentItemId String      @map("content_item_id") @db.Uuid
+  contentItem   ContentItem @relation("VideoRenderJobContentItem", fields: [contentItemId, workspaceId], references: [id, workspaceId])
+
+  // The dispatch/runtime record. Nullable only between video_render_jobs
+  // create and background_jobs enqueue+link (mirrors MediaJob). @unique —
+  // one BackgroundJob drives exactly one VideoRenderJob. Also the fencing
+  // token: the render worker only advances this row past QUEUED when it
+  // equals the BackgroundJob id driving the attempt.
+  backgroundJobId String?        @unique @map("background_job_id") @db.Uuid
+  backgroundJob   BackgroundJob? @relation(fields: [backgroundJobId], references: [id])
+
+  status VideoRenderJobStatus @default(QUEUED)
+
+  targetPlatform  String @map("target_platform")
+  exportProfileId String @map("export_profile_id")
+
+  // The FROZEN VideoRenderInputV1 (checkpoint §4). Persisted verbatim at
+  // submission, never mutated. The renderer + Gate #4 + every QA check
+  // read from this, not from live domain state.
+  renderInputSnapshot  Json @map("render_input_snapshot")
+  renderInputVersion   Int  @default(1) @map("render_input_version")
+
+  // Freshness fences — Gate #4 currentness (checkpoint §14/§24). Each is
+  // recomputed from live dependencies at Gate #4 evaluation and compared
+  // to what the snapshot froze.
+  scriptVersionHash      String  @map("script_version_hash")
+  sceneAssetFingerprint  String  @map("scene_asset_fingerprint")
+  voiceAudioAssetPublicId String @map("voice_audio_asset_public_id") @db.Uuid
+  subtitleVttAssetPublicId String? @map("subtitle_vtt_asset_public_id") @db.Uuid
+
+  // Produced artifact — set on COMPLETED. The VIDEO MediaAsset is the
+  // authority for Gate #4, not this pointer.
+  outputMediaAssetPublicId  String? @map("output_media_asset_public_id") @db.Uuid
+  outputMediaAssetGroupId   String? @map("output_media_asset_group_id") @db.Uuid
+  outputWidth               Int?    @map("output_width")
+  outputHeight              Int?    @map("output_height")
+  outputDurationMs          Int?    @map("output_duration_ms")
+  outputFps                 Int?    @map("output_fps")
+  outputByteSize            BigInt? @map("output_byte_size")
+  outputChecksumSha256      String? @map("output_checksum_sha256")
+  outputContainer           String? @map("output_container")
+  outputVideoCodec          String? @map("output_video_codec")
+  outputAudioCodec          String? @map("output_audio_codec")
+
+  // Which engine actually rendered this (checkpoint §13/§32): "remotion"
+  // in production, "deterministic-test" for automated tests.
+  renderEngine        String? @map("render_engine")
+  renderEngineVersion String? @map("render_engine_version")
+
+  // FR-VID-007: renders resume rather than restart — this counts genuine
+  // attempts against the retry budget.
+  attempt Int @default(0)
+
+  errorCode        String? @map("error_code")
+  errorMessageSafe String? @map("error_message_safe")
+
+  correlationId String @map("correlation_id")
+
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+
+  createdById String? @map("created_by") @db.Uuid
+  createdBy   User?   @relation("VideoRenderJobCreatedBy", fields: [createdById], references: [id])
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  @@index([workspaceId])
+  @@index([status])
+  @@index([correlationId])
+  @@index([contentItemId])
+  @@map("video_render_jobs")
 }
 
 // Module 5 Phase 5.1 — Content Planner: Topic Cluster Planning
