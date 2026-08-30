@@ -3,7 +3,7 @@ import { Test, type TestingModule } from "@nestjs/testing";
 import type OpenAI from "openai";
 import { AI_EXECUTE_V1_MANIFEST, AIProviderRegistryBuilder, OpenAIProvider } from "@myev/shared";
 import { AppModule } from "../src/app.module";
-import { PrismaService } from "../src/prisma/prisma.service";
+import { PrismaService } from "@myev/worker-core";
 import { AiExecuteProcessor } from "../src/queue/processors/ai-execute.processor";
 import { AI_PROVIDER_REGISTRY } from "../src/ai-provider/ai-provider-registry.module";
 import type { AiJob, BackgroundJob } from "../../api/generated/prisma";

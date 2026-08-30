@@ -2,9 +2,9 @@ import { Test, type TestingModule } from "@nestjs/testing";
 import type { ShutdownOutcomeTracker } from "@myev/shared";
 import { UNREACHABLE_REDIS_URL } from "@myev/shared";
 import { AppModule } from "../src/app.module";
-import { PrismaService } from "../src/prisma/prisma.service";
-import { WorkerHeartbeatService } from "../src/heartbeat/worker-heartbeat.service";
-import { SHUTDOWN_TRACKER } from "../src/shutdown/shutdown.module";
+import { PrismaService } from "@myev/worker-core";
+import { WorkerHeartbeatService } from "@myev/worker-core";
+import { SHUTDOWN_TRACKER } from "@myev/worker-core";
 
 // process._getActiveHandles is a real, long-standing Node.js internal
 // diagnostic API (undocumented, not in @types/node) — the same

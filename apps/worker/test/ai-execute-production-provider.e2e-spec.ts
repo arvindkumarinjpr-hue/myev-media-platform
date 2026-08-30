@@ -7,7 +7,7 @@ import type OpenAI from "openai";
 import { IsString } from "class-validator";
 import { AI_EXECUTE_V1_MANIFEST, AgentRegistryBuilder, AIProviderRegistryBuilder, AnthropicProvider, GeminiProvider, OpenAIProvider, type AgentDefinition } from "@myev/shared";
 import { AppModule } from "../src/app.module";
-import { PrismaService } from "../src/prisma/prisma.service";
+import { PrismaService } from "@myev/worker-core";
 import { AiExecuteProcessor } from "../src/queue/processors/ai-execute.processor";
 import { AGENT_REGISTRY } from "../src/ai-provider/agent-registry.module";
 import { AI_PROVIDER_REGISTRY } from "../src/ai-provider/ai-provider-registry.module";

@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import { UNREACHABLE_REDIS_URL } from "@myev/shared";
 import path from "path";
-import { PrismaService } from "../src/prisma/prisma.service";
+import { PrismaService } from "@myev/worker-core";
 
 /**
  * DEFECT-1F-001 — real OS signals to a real, separately-spawned worker

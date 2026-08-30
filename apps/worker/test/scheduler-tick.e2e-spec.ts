@@ -5,12 +5,12 @@ import { ConfigService } from "@nestjs/config";
 import { Queue } from "bullmq";
 import Redis from "ioredis";
 import { AppModule } from "../src/app.module";
-import { PrismaService } from "../src/prisma/prisma.service";
+import { PrismaService } from "@myev/worker-core";
 import { SchedulerTickManager } from "../src/scheduler/scheduler-tick.manager";
-import { BullMqWorkerManager } from "../src/bullmq/bullmq-worker.manager";
+import { BullMqWorkerManager } from "@myev/worker-core";
 import { OutboxRelayManager } from "../src/events/outbox-relay.manager";
-import { BackgroundJobReconciliationManager } from "../src/reconciliation/background-job-reconciliation.manager";
-import { WorkerHeartbeatService } from "../src/heartbeat/worker-heartbeat.service";
+import { BackgroundJobReconciliationManager } from "@myev/worker-core";
+import { WorkerHeartbeatService } from "@myev/worker-core";
 import type { ScheduledJob } from "../../api/generated/prisma";
 
 /** Shape shared by OutboxRelayManager/BackgroundJobReconciliationManager's own registration/tick resources — see cleanupBrokenSchedulerModule's own doc comment. */
