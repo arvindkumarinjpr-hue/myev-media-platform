@@ -321,11 +321,40 @@ describe("Video media — Phase 7.4 (e2e)", () => {
     await completeMediaJob(ws, id, subJob, { srtAssetPublicId: srt.publicId, vttAssetPublicId: vtt.publicId, cueCount: 3, sourceAudioAssetPublicId: audio.publicId });
     expect((await get(ws, id)).subtitles.status).toBe("READY");
 
-    // Regenerate voice → subtitles go stale
-    await request(server()).post(`${base(ws)}/${id}/voice/generate`).set(auth(ws)).send({ voiceProfileId: "hi-in-swara" }).expect(202);
-    const rm = await get(ws, id);
-    expect(rm.voice.status).toBe("RUNNING");
+    // --- Regenerate voice. Subtitle invalidation is a SYNCHRONOUS state
+    // reset inside the generateVoice mutation — asserted off the mutation
+    // response itself, never a re-read that races the new TTS job (the CI
+    // render-worker consumes the MEDIA queue during this suite).
+    const regen = await request(server()).post(`${base(ws)}/${id}/voice/generate`).set(auth(ws)).send({ voiceProfileId: "hi-in-swara" }).expect(202);
+    expect(regen.body.data.subtitles.status).not.toBe("READY");
+    expect(regen.body.data.subtitles.srtAssetPublicId).toBeNull();
+
+    // Drive the regenerated voice job to a NEW audio asset: the pipeline
+    // must adopt it (proving the regen took, not the stale pre-regen
+    // READY state), and the subtitles must stay stale (built on the OLD
+    // audio).
+    const voiceJob2 = await lastMediaJob(ws, "TTS");
+    const audio2 = await createActiveAsset(ws, itemInternalId, createdById, "AUDIO", "audio/mpeg");
+    await completeMediaJob(ws, id, voiceJob2, { audioAssetPublicId: audio2.publicId, wordTimingObjectKey: `t/${audio2.publicId}.timings.json`, durationMs: 8000, scriptVersionHash: hash, voiceProfileId: "hi-in-swara" });
+    let rm = await get(ws, id);
+    expect(rm.voice.status).toBe("READY");
+    expect(rm.voice.audioAssetPublicId).toBe(audio2.publicId);
+    expect(rm.voice.voiceProfileId).toBe("hi-in-swara");
     expect(rm.subtitles.status).not.toBe("READY");
+
+    // --- Regenerate the SCRIPT → voice AND subtitles are transitively
+    // invalidated (claimStage("script") — also a synchronous reset, and
+    // Gate #1 approval is cleared).
+    const scriptRegen = await request(server()).post(`${base(ws)}/${id}/script`).set(auth(ws)).expect(202);
+    expect(scriptRegen.body.data.voice.status).not.toBe("READY");
+    expect(scriptRegen.body.data.voice.audioAssetPublicId).toBeNull();
+    expect(scriptRegen.body.data.subtitles.status).not.toBe("READY");
+    expect(scriptRegen.body.data.script.scriptApproved).toBe(false);
+
+    rm = await get(ws, id);
+    expect(rm.voice.status).not.toBe("READY");
+    expect(rm.subtitles.status).not.toBe("READY");
+    expect(rm.reviewGatesUnmet).toEqual(expect.arrayContaining(["script_approved", "voice_generated"]));
     await cleanup(ws);
   });
 
