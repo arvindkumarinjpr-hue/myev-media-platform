@@ -2,8 +2,15 @@ import { promises as fs } from "fs";
 import { join, extname } from "path";
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { bundle } from "@remotion/bundler";
-import { ensureBrowser, renderMedia, selectComposition } from "@remotion/renderer";
+// Static type imports — a missing dependency fails typecheck / build,
+// never the first production render (correction §D). The heavy runtime
+// machinery (esbuild for the bundler, Chrome Headless Shell for the
+// renderer) is loaded via a literal-specifier dynamic import inside
+// render() so it is not pulled in when RENDER_ENGINE=deterministic-test
+// (tests) — this is deferred loading of a declared dependency, not a
+// hidden import.
+import type * as RemotionBundler from "@remotion/bundler";
+import type * as RemotionRenderer from "@remotion/renderer";
 import { resolveExportProfile, type VideoRenderInputV1 } from "@myev/shared";
 import type { WorkerConfig } from "../config/configuration";
 import type { RenderEngine, RenderEngineContext, RenderEngineResult } from "./render-engine.interface";
@@ -15,11 +22,11 @@ const COMPOSITION_ID = "MyevVideo";
  * ENGINE_V1.0.md §7: "FFmpeg pipeline / Remotion templates").
  * `RENDER_ENGINE=remotion` (the default for this worker).
  *
- * `@remotion/bundler` + `@remotion/renderer` are REAL, statically-
- * imported dependencies of this package — a missing one fails the build,
- * never the first production render. Chromium (Chrome Headless Shell) is
- * ensured lazily via `ensureBrowser()` on the first render; FFmpeg is
- * bundled inside `@remotion/renderer` (no separate install).
+ * `@remotion/bundler` + `@remotion/renderer` are REAL, installed
+ * dependencies of this package. Chromium (Chrome Headless Shell) is
+ * ensured lazily via `ensureBrowser()` on the first render (pre-fetched
+ * into the deployed image); FFmpeg is bundled inside `@remotion/renderer`
+ * (no separate install).
  *
  * Materialized private input assets are copied into a per-job public
  * directory and referenced from the composition via `staticFile()` — no
@@ -51,9 +58,11 @@ export class RemotionRenderEngine implements RenderEngine {
 
   async render(input: VideoRenderInputV1, context: RenderEngineContext): Promise<RenderEngineResult> {
     const profile = resolveExportProfile(input.exportProfileId);
+    const bundler: typeof RemotionBundler = await import("@remotion/bundler");
+    const renderer: typeof RemotionRenderer = await import("@remotion/renderer");
 
     if (!this.browserEnsured) {
-      await ensureBrowser(this.chromiumPath ? { browserExecutable: this.chromiumPath } : undefined);
+      await renderer.ensureBrowser(this.chromiumPath ? { browserExecutable: this.chromiumPath } : undefined);
       this.browserEnsured = true;
     }
 
@@ -73,13 +82,13 @@ export class RemotionRenderEngine implements RenderEngine {
       throw new Error(`RENDER_ENGINE=remotion: composition entry not found at "${entry}" (set REMOTION_ENTRY or ship the composition sources)`);
     });
 
-    const serveUrl = await bundle({ entryPoint: entry, publicDir, onProgress: () => undefined });
+    const serveUrl = await bundler.bundle({ entryPoint: entry, publicDir, onProgress: () => undefined });
 
     const inputProps = { render: input, assetFiles };
-    const composition = await selectComposition({ serveUrl, id: COMPOSITION_ID, inputProps });
+    const composition = await renderer.selectComposition({ serveUrl, id: COMPOSITION_ID, inputProps });
 
     const outPath = join(context.workDir, "out.mp4");
-    await renderMedia({
+    await renderer.renderMedia({
       composition,
       serveUrl,
       codec: "h264",
