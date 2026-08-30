@@ -168,6 +168,65 @@ services:
       - myev-internal
     # No `ports:` — the worker has no HTTP surface.
 
+  # Module 7 Phase 7.5 — the DEDICATED render / media worker. Same image
+  # as `worker` but a distinct process (independently scalable — run N
+  # replicas) whose WORKER_QUEUES is MEDIA. It is the ONLY consumer of the
+  # MEDIA queue: image / voice / subtitle generation AND video rendering
+  # (media.video-render.v1). The general `worker` above never binds a
+  # MEDIA handler, so a render crash can never affect SYSTEM/AI work
+  # (checkpoint §27).
+  #
+  # RENDER_ENGINE=deterministic-test here (no FFmpeg/Chromium in this
+  # image). A PRODUCTION render worker sets RENDER_ENGINE=remotion and
+  # MUST additionally provide, in its own image:
+  #   - @remotion/renderer, @remotion/bundler, remotion, react, react-dom
+  #     (installed at build time — deliberately not in this repo's
+  #     lockfile so the general worker + CI never pull a browser)
+  #   - a system Chromium (RENDER_CHROMIUM_PATH) or Remotion's bundled one
+  #   - FFmpeg / ffprobe on PATH
+  #   - the fonts referenced by the composition
+  #   - the composition sources + REMOTION_ENTRY pointing at them
+  # See apps/worker/src/render/remotion-render-engine.ts and the Phase 7.5
+  # completion report's Deployment/Runtime section.
+  render-worker:
+    build:
+      context: ..
+      dockerfile: apps/worker/Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: info
+      DATABASE_URL: postgresql://myev:myev_dev_password@postgres:5432/myev_media?schema=public
+      REDIS_URL: redis://redis:6379
+      WORKER_QUEUES: MEDIA
+      WORKER_APPLICATION_VERSION: "0.1.0"
+      RENDER_ENGINE: deterministic-test
+      # Frozen: 2 concurrent renders global (FRD §21.1). Scale renders by
+      # adding replicas of this service, not by raising this number.
+      RENDER_CONCURRENCY: "2"
+      # Object storage for the produced VIDEO MediaAsset + input asset reads.
+      STORAGE_ENDPOINT: minio
+      STORAGE_PORT: "9000"
+      STORAGE_USE_SSL: "false"
+      STORAGE_ACCESS_KEY: myev_minio_admin
+      STORAGE_SECRET_KEY: myev_minio_dev_password
+      STORAGE_BUCKET: myev-media
+      # Local MinIO may auto-create its bucket; a production S3/R2 deploy
+      # MUST set this false (carried from Phase 7.4).
+      MEDIA_STORAGE_AUTO_CREATE_BUCKET: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    networks:
+      - myev-internal
+    # No `ports:` — no HTTP surface. Temp render files live on the
+    # container's ephemeral disk, job-scoped + workspace-tagged, hard-
+    # deleted after every job (checkpoint §28) — never a named volume.
+
 networks:
   myev-internal:
     driver: bridge
