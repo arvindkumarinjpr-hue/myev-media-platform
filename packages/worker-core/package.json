@@ -9,8 +9,7 @@
     "lint": "eslint src",
     "typecheck": "tsc --noEmit",
     "test": "jest",
-    "prisma:generate": "cd ../../apps/api && prisma generate",
-    "postinstall": "cd ../../apps/api && prisma generate"
+    "prisma:generate": "cd ../../apps/api && prisma generate"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1103.0",
