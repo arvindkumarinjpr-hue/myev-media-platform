@@ -13,7 +13,26 @@ function capturingLogger() {
   const lines: unknown[] = [];
   const stream = { write: (s: string) => lines.push(JSON.parse(s)) };
   const logger = pino({ redact: logRedactOptions() }, stream as unknown as import("pino").DestinationStream);
-  return { logger, lines, text: () => JSON.stringify(lines) };
+  // `text()` serialises ONLY the fields under test (req/res/msg/reqId/
+  // correlationId/responseTime), never pino's auto-added `time`/`pid`/
+  // `hostname`. Those are wall-clock/PID-derived and would otherwise
+  // make substring assertions like `not.toContain("22")` non-
+  // deterministic — a 13-digit epoch-ms frequently contains any given
+  // 2-digit run by chance (this was a real, time-correlated CI flake).
+  const UNDER_TEST = ["req", "res", "msg", "reqId", "correlationId", "responseTime"] as const;
+  return {
+    logger,
+    lines,
+    text: () =>
+      JSON.stringify(
+        lines.map((l) => {
+          const entry = l as Record<string, unknown>;
+          const picked: Record<string, unknown> = {};
+          for (const k of UNDER_TEST) if (k in entry) picked[k] = entry[k];
+          return picked;
+        }),
+      ),
+  };
 }
 
 describe("API log redaction", () => {

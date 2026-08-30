@@ -10,5 +10,6 @@
     "baseUrl": "./",
     "incremental": true
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/render/remotion/**"]
 }

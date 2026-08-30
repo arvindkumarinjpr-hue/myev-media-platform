@@ -1,6 +1,6 @@
 import { Inject, Injectable, Module, type OnApplicationShutdown } from "@nestjs/common";
 import type { ShutdownOutcomeTracker } from "@myev/shared";
-import { SHUTDOWN_TRACKER } from "../shutdown/shutdown.module";
+import { SHUTDOWN_TRACKER } from "@myev/worker-core";
 
 /**
  * DEFECT-1F-001 FINAL SIGNAL ERROR-HANDLING FIX — test fixture only.

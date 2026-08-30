@@ -23,6 +23,8 @@ import { AiJobSubmissionService } from "../ai-jobs/ai-job-submission.service";
 import { VIDEO_ERRORS } from "./video.errors";
 import { VideoScoringService } from "./video-scoring.service";
 import { VideoMediaService } from "./video-media.service";
+import { VideoRenderService } from "./video-render.service";
+import { VideoQaService } from "./video-qa.service";
 import { deriveStage, emptyPipelineState, isPublishReady, readPipelineState, unmetReviewGates, writePipelineState } from "./video-pipeline-state";
 import type {
   AdvisoryStageKey,
@@ -107,6 +109,8 @@ export class VideoPipelineService {
     private readonly aiJobs: AiJobSubmissionService,
     private readonly videoScoring: VideoScoringService,
     private readonly videoMedia: VideoMediaService,
+    private readonly videoRender: VideoRenderService,
+    private readonly videoQa: VideoQaService,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -278,7 +282,14 @@ export class VideoPipelineService {
     // a COMPLETED media job alone.
     const media = await this.videoMedia.reconcile(item.workspaceId, { id: item.id }, state);
     if (media.changed) changed = true;
-    return { state: media.state, changed };
+    // Module 7 Phase 7.5 — Gate #4 (render) then Gate #5 (QA staleness),
+    // both recomputed from live truth, same "COMPLETED job never satisfies
+    // a gate alone" discipline as the media stages above.
+    const render = await this.videoRender.reconcile(item.workspaceId, { id: item.id }, media.state, { skipMedia: true });
+    if (render.changed) changed = true;
+    const qa = this.videoQa.reconcile(render.state);
+    if (qa.changed) changed = true;
+    return { state: qa.state, changed };
   }
 
   /**
@@ -763,13 +774,17 @@ export class VideoPipelineService {
     // Media-stage truth (assets / voice / subtitles / thumbnail image) —
     // READ-ONLY reconcile against live media_jobs + media_assets.
     const { state: mediaDerived } = await this.videoMedia.reconcile(workspaceId, { id: item.id }, derived);
+    // Render (Gate #4) + QA (Gate #5) truth — READ-ONLY reconcile against
+    // live video_render_jobs + the produced VIDEO MediaAsset.
+    const { state: renderDerived } = await this.videoRender.reconcile(workspaceId, { id: item.id }, mediaDerived, { skipMedia: true });
+    this.videoQa.reconcile(renderDerived);
 
     const script = await this.prisma.videoScript.findFirst({
       where: { workspaceId, contentItemId: item.id, deletedAt: null },
       select: { publicId: true, targetPlatform: true, exportProfile: true, durationSecondsTarget: true },
     });
 
-    return this.serializeReadModel(item, state, mediaDerived, script);
+    return this.serializeReadModel(item, state, renderDerived, script);
   }
 
   private serializeReadModel(
@@ -808,8 +823,8 @@ export class VideoPipelineService {
       voice: derived.voice,
       subtitles: derived.subtitles,
       thumbnailImage: derived.thumbnailImage,
-      render: persisted.render,
-      qa: persisted.qa,
+      render: derived.render,
+      qa: derived.qa,
       seo,
       thumbnailConcepts,
       recommendations,

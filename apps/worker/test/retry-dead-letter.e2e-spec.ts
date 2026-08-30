@@ -4,11 +4,11 @@ import { Queue, QueueEvents } from "bullmq";
 import Redis from "ioredis";
 import { SYSTEM_PING_V1_MANIFEST, UNREACHABLE_REDIS_URL } from "@myev/shared";
 import { AppModule } from "../src/app.module";
-import { PrismaService } from "../src/prisma/prisma.service";
-import { WorkerHeartbeatService } from "../src/heartbeat/worker-heartbeat.service";
-import { BullMqWorkerManager } from "../src/bullmq/bullmq-worker.manager";
+import { PrismaService } from "@myev/worker-core";
+import { WorkerHeartbeatService } from "@myev/worker-core";
+import { BullMqWorkerManager } from "@myev/worker-core";
 import { SchedulerTickManager } from "../src/scheduler/scheduler-tick.manager";
-import { BackgroundJobReconciliationManager } from "../src/reconciliation/background-job-reconciliation.manager";
+import { BackgroundJobReconciliationManager } from "@myev/worker-core";
 import { OutboxRelayManager } from "../src/events/outbox-relay.manager";
 import type { BackgroundJob, BackgroundJobHistory } from "../../api/generated/prisma";
 

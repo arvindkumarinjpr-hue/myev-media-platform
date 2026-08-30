@@ -1,8 +1,8 @@
 import { Test, type TestingModule } from "@nestjs/testing";
 import type { EventRegistry } from "@myev/shared";
 import { AppModule } from "../src/app.module";
-import { PrismaService } from "../src/prisma/prisma.service";
-import { WorkerHeartbeatService } from "../src/heartbeat/worker-heartbeat.service";
+import { PrismaService } from "@myev/worker-core";
+import { WorkerHeartbeatService } from "@myev/worker-core";
 import { EVENT_REGISTRY } from "../src/events/events.module";
 
 /**

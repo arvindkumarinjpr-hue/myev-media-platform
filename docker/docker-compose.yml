@@ -153,11 +153,12 @@ services:
       LOG_LEVEL: info
       DATABASE_URL: postgresql://myev:myev_dev_password@postgres:5432/myev_media?schema=public
       REDIS_URL: redis://redis:6379
-      # This worker instance's own queue selection — Module 1F Engineering
-      # Plan's bijective bootstrap validation is scoped to exactly this
-      # set. SYSTEM only for now: the sole job type Module 1F itself owns
-      # (system.ping.v1) lives on the SYSTEM queue.
-      WORKER_QUEUES: SYSTEM
+      # This worker instance's own queue selection. SYSTEM + AI only — it
+      # has NO media/render code path (no Remotion, no Chromium in the
+      # apps/worker image). The MEDIA queue is owned exclusively by the
+      # render-worker service below; putting MEDIA here would dead-letter
+      # every media/render job (no handler is bound).
+      WORKER_QUEUES: SYSTEM,AI
       WORKER_APPLICATION_VERSION: "0.1.0"
     depends_on:
       postgres:
@@ -167,6 +168,57 @@ services:
     networks:
       - myev-internal
     # No `ports:` — the worker has no HTTP surface.
+
+  # Module 7 Phase 7.5 — the DEDICATED render / media worker
+  # (apps/render-worker, its OWN package + Debian image with Remotion +
+  # Chrome Headless Shell + fonts). A distinct process, independently
+  # scalable (run N replicas). It is the ONLY consumer of the MEDIA
+  # queue: image / voice / subtitle generation AND video rendering
+  # (media.video-render.v1). The general `worker` above has zero
+  # media/render dependency, never opens a MEDIA worker, and can never be
+  # touched by a render crash (checkpoint §27).
+  render-worker:
+    build:
+      context: ..
+      dockerfile: apps/render-worker/Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: info
+      DATABASE_URL: postgresql://myev:myev_dev_password@postgres:5432/myev_media?schema=public
+      REDIS_URL: redis://redis:6379
+      WORKER_QUEUES: MEDIA
+      WORKER_APPLICATION_VERSION: "0.1.0"
+      # Production default = the real Remotion engine (baked into this
+      # image). deterministic-test is TEST-ONLY. FFmpeg is bundled inside
+      # @remotion/renderer; Chrome Headless Shell is pre-fetched in the
+      # image (see apps/render-worker/Dockerfile).
+      RENDER_ENGINE: remotion
+      # Frozen: 2 concurrent renders global (FRD §21.1). Scale renders by
+      # adding replicas of this service, not by raising this number.
+      RENDER_CONCURRENCY: "2"
+      # Object storage for the produced VIDEO MediaAsset + input asset reads.
+      STORAGE_ENDPOINT: minio
+      STORAGE_PORT: "9000"
+      STORAGE_USE_SSL: "false"
+      STORAGE_ACCESS_KEY: myev_minio_admin
+      STORAGE_SECRET_KEY: myev_minio_dev_password
+      STORAGE_BUCKET: myev-media
+      # Local MinIO may auto-create its bucket; a production S3/R2 deploy
+      # MUST set this false (carried from Phase 7.4).
+      MEDIA_STORAGE_AUTO_CREATE_BUCKET: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    networks:
+      - myev-internal
+    # No `ports:` — no HTTP surface. Temp render files live on the
+    # container's ephemeral disk, job-scoped + workspace-tagged, hard-
+    # deleted after every job (checkpoint §28) — never a named volume.
 
 networks:
   myev-internal:

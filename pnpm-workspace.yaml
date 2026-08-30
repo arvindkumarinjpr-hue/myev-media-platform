@@ -22,6 +22,14 @@ overrides:
   # other package's test script.
   jest-util: ^29.7.0
   "@jest/types": ^29.6.3
+  # Module 7 Phase 7.5: apps/render-worker adds Remotion, which pulls
+  # zod@4 transitively; `openai` (a peer-optional zod consumer, used by
+  # both @myev/shared and apps/render-worker) then resolves to two
+  # different instances (zod@3 vs zod@4) whose OpenAI classes have
+  # incompatible private fields. Force a single zod@3 line — satisfies
+  # Remotion (`@remotion/zod-types` peer is >=3.22.3) and collapses the
+  # duplicate openai resolution.
+  zod: ^3.25.76
 allowBuilds:
   argon2: true
   '@nestjs/core': true
@@ -34,3 +42,9 @@ allowBuilds:
   # same category as the other native addons above (prebuilt binary via
   # node-gyp-build, no arbitrary postinstall network/script behavior).
   msgpackr-extract: true
+  # Module 7 Phase 7.5 hardening: esbuild (transitive via @remotion/bundler
+  # in apps/render-worker). Its postinstall only verifies/links the
+  # prebuilt platform binary shipped in the matching @esbuild/<platform>
+  # package — no network fetch, no compilation, same category as the
+  # native addons above.
+  esbuild: true

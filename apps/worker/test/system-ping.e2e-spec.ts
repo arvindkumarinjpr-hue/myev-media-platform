@@ -4,8 +4,8 @@ import { Queue, QueueEvents } from "bullmq";
 import Redis from "ioredis";
 import { SYSTEM_PING_V1_MANIFEST, type SystemPingResult } from "@myev/shared";
 import { AppModule } from "../src/app.module";
-import { PrismaService } from "../src/prisma/prisma.service";
-import { WorkerHeartbeatService } from "../src/heartbeat/worker-heartbeat.service";
+import { PrismaService } from "@myev/worker-core";
+import { WorkerHeartbeatService } from "@myev/worker-core";
 import type { BackgroundJob } from "../../api/generated/prisma";
 
 /**

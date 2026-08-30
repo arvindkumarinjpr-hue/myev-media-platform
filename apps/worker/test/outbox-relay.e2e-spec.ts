@@ -15,12 +15,12 @@ import {
   type ShutdownOutcomeTracker,
 } from "@myev/shared";
 import { AppModule } from "../src/app.module";
-import { PrismaService } from "../src/prisma/prisma.service";
-import { WorkerHeartbeatService } from "../src/heartbeat/worker-heartbeat.service";
+import { PrismaService } from "@myev/worker-core";
+import { WorkerHeartbeatService } from "@myev/worker-core";
 import { OutboxRelayManager } from "../src/events/outbox-relay.manager";
-import { BullMqWorkerManager } from "../src/bullmq/bullmq-worker.manager";
+import { BullMqWorkerManager } from "@myev/worker-core";
 import { EVENT_REGISTRY } from "../src/events/events.module";
-import { SHUTDOWN_TRACKER } from "../src/shutdown/shutdown.module";
+import { SHUTDOWN_TRACKER } from "@myev/worker-core";
 import { Prisma, type DomainEvent } from "../../api/generated/prisma";
 
 /**

@@ -36,8 +36,34 @@ export function emptyPipelineState(knowledgePackVersionId: string, videoScriptPu
       mediaJobPublicId: null,
       failureReason: null,
     },
-    render: { status: "PENDING", renderJobPublicId: null, renderedVideoPublicId: null, attempt: 0, failureReason: null },
-    qa: { status: "PENDING", checks: [], completedAt: null },
+    render: {
+      status: "PENDING",
+      renderJobPublicId: null,
+      renderedVideoPublicId: null,
+      renderedVideoAssetGroupId: null,
+      exportProfileId: null,
+      attempt: 0,
+      expectedDurationMs: null,
+      outputWidth: null,
+      outputHeight: null,
+      outputDurationMs: null,
+      outputChecksumSha256: null,
+      outputByteSize: null,
+      scriptVersionHash: null,
+      sceneAssetFingerprint: null,
+      voiceAudioAssetPublicId: null,
+      subtitleVttAssetPublicId: null,
+      snapshotScenes: [],
+      brandingLayerConfigured: false,
+      brandingLogoInSnapshot: false,
+      brandingIntroRequired: false,
+      brandingIntroRendered: false,
+      brandingOutroRequired: false,
+      brandingOutroRendered: false,
+      completedAt: null,
+      failureReason: null,
+    },
+    qa: { status: "PENDING", checks: [], passed: null, renderJobPublicId: null, renderedVideoPublicId: null, completedAt: null },
     seo: { status: "PENDING", aiJobPublicId: null, videoScriptPublicId: null, artifact: null, failureReason: null },
     thumbnailConcepts: { status: "PENDING", aiJobPublicId: null, artifact: null, failureReason: null },
     thumbnailImage: {
@@ -134,7 +160,7 @@ export function unmetReviewGates(state: VideoPipelineState): string[] {
   if (state.assets.status !== "READY") gates.push("assets_available");
   if (state.voice.status !== "READY") gates.push("voice_generated");
   if (state.render.status !== "READY") gates.push("rendering_successful");
-  if (state.qa.status !== "COMPLETED") gates.push("qa_passed");
+  if (state.qa.status !== "COMPLETED" || state.qa.passed !== true) gates.push("qa_passed");
   if (state.seo.status !== "READY") gates.push("seo_complete");
   if (state.score.status !== "COMPLETED") gates.push("content_score_run");
   else if (state.score.passed !== true) gates.push("content_score_passed");

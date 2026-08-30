@@ -5,7 +5,7 @@
  * need before an asset is persisted ACTIVE. Fail-closed: an unrecognized
  * or contradictory signature returns null (rejection), never a guess.
  */
-export type VerifiableAssetType = "IMAGE" | "AUDIO" | "SUBTITLE";
+export type VerifiableAssetType = "IMAGE" | "AUDIO" | "SUBTITLE" | "VIDEO";
 
 function bytesAt(buf: Buffer, offset: number, expected: number[]): boolean {
   if (buf.length < offset + expected.length) return false;
@@ -42,6 +42,14 @@ function sniffAudio(buf: Buffer): string | null {
   return null;
 }
 
+function sniffVideo(buf: Buffer): string | null {
+  // ISO base media file format: bytes 4..8 are the 'ftyp' box type.
+  if (asciiAt(buf, 4, "ftyp")) return "video/mp4";
+  // WebM / Matroska EBML header.
+  if (bytesAt(buf, 0, [0x1a, 0x45, 0xdf, 0xa3])) return "video/webm";
+  return null;
+}
+
 function verifySubtitle(buf: Buffer, declaredMime: string): string | null {
   if (buf.includes(0x00)) return null;
   const text = buf.toString("utf8");
@@ -58,5 +66,6 @@ export function verifyMediaBytes(buf: Buffer, assetType: VerifiableAssetType, de
   if (looksExecutable(buf)) return null;
   if (assetType === "IMAGE") return sniffImage(buf);
   if (assetType === "AUDIO") return sniffAudio(buf);
+  if (assetType === "VIDEO") return sniffVideo(buf);
   return verifySubtitle(buf, declaredMime);
 }

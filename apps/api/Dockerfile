@@ -31,6 +31,8 @@ FROM fetch AS deps
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY apps/worker/package.json apps/worker/package.json
+COPY apps/render-worker/package.json apps/render-worker/package.json
+COPY packages/worker-core/package.json packages/worker-core/package.json
 COPY packages/shared/package.json packages/shared/package.json
 # schema.prisma is needed here too: our own `postinstall: prisma generate`
 # script (apps/api/package.json) runs during `pnpm install` below, before

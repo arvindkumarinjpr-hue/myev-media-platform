@@ -4,10 +4,10 @@ import { Queue } from "bullmq";
 import Redis from "ioredis";
 import { SYSTEM_PING_V1_MANIFEST, UNREACHABLE_REDIS_URL } from "@myev/shared";
 import { AppModule } from "../src/app.module";
-import { PrismaService } from "../src/prisma/prisma.service";
-import { WorkerHeartbeatService } from "../src/heartbeat/worker-heartbeat.service";
-import { BackgroundJobReconciliationManager } from "../src/reconciliation/background-job-reconciliation.manager";
-import { BullMqWorkerManager, JobLifecycleConflictError } from "../src/bullmq/bullmq-worker.manager";
+import { PrismaService } from "@myev/worker-core";
+import { WorkerHeartbeatService } from "@myev/worker-core";
+import { BackgroundJobReconciliationManager } from "@myev/worker-core";
+import { BullMqWorkerManager, JobLifecycleConflictError } from "@myev/worker-core";
 import { OUTBOX_RELAY_QUEUE_NAME, OUTBOX_RELAY_SCHEDULER_ID } from "../src/events/outbox-relay.manager";
 import type { BackgroundJob, BackgroundJobHistory } from "../../api/generated/prisma";
 

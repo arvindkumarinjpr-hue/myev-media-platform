@@ -33,3 +33,19 @@ export function currentSceneIds(plan: VideoScenePlannerAgentOutput | null): stri
   if (!plan) return [];
   return [...(plan.scenes ?? [])].sort((a, b) => a.order - b.order).map((s) => s.sceneId);
 }
+
+/**
+ * Module 7 Phase 7.5 — freshness fence over the exact resolved scene
+ * assets a render was built from. `pairs` is `[sceneId, mediaAssetPublicId]`
+ * for every current scene, in order. Gate #4 recomputes this from live
+ * state and compares it to what the render job froze — a regenerated or
+ * re-attached scene asset changes the fingerprint and invalidates the
+ * render's currentness (checkpoint §10/§24).
+ */
+export function sceneAssetFingerprint(pairs: Array<[string, string | null]>): string {
+  const canonical = [...pairs]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([sceneId, assetPublicId]) => `${sceneId}=${assetPublicId ?? ""}`)
+    .join("|");
+  return createHash("sha256").update(canonical).digest("hex").slice(0, 32);
+}

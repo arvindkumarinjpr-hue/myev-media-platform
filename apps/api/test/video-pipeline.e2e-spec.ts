@@ -10,7 +10,7 @@ import {
   teardownE2eApp,
   type E2eApp,
 } from "./helpers/e2e-app";
-import { scriptVersionHash } from "../src/modules/video/video-media-hash";
+import { scriptVersionHash, sceneAssetFingerprint } from "../src/modules/video/video-media-hash";
 
 /**
  * Module 7 Phase 7.1 — Video Automation domain + pipeline foundation
@@ -130,6 +130,8 @@ function helpers(getCtx: () => E2eApp, getToken: () => string) {
     }
     await ctx().prisma.aiJobStep.deleteMany({ where: { aiJob: { workspaceId: ws.id } } });
     await ctx().prisma.aiJob.deleteMany({ where: { workspaceId: ws.id } });
+    await ctx().prisma.videoRenderJob.deleteMany({ where: { workspaceId: ws.id } }).catch(() => undefined);
+    await ctx().prisma.mediaJob.deleteMany({ where: { workspaceId: ws.id } }).catch(() => undefined);
   }
 
   /** create → brief → script → script/approve (Gate #1). Returns itemId + the post-approve read model. */
@@ -256,8 +258,81 @@ function helpers(getCtx: () => E2eApp, getToken: () => string) {
     const vtt = await createActiveMediaAsset(ws, item.id, item.createdById, "SUBTITLE", "text/vtt");
     md.videoPipeline.subtitles = { status: "READY", srtAssetPublicId: srt.publicId, vttAssetPublicId: vtt.publicId, sourceAudioAssetPublicId: audio.publicId, cueCount: 4, mediaJobPublicId: null, failureReason: null };
 
-    md.videoPipeline.render = { status: "READY", renderJobPublicId: randomUUID(), renderedVideoPublicId: randomUUID(), attempt: 1, failureReason: null };
-    md.videoPipeline.qa = { status: "COMPLETED", checks: [], completedAt: new Date().toISOString() };
+    // Module 7 Phase 7.5 — Gate #4 (render) + Gate #5 (QA) are now
+    // reconciled from live truth, so this must build a REAL COMPLETED
+    // video_render_jobs row + a REAL ACTIVE VIDEO MediaAsset whose
+    // checksum + geometry + frozen snapshot fences all line up with the
+    // current script / scene assets / voice / subtitles. (The full
+    // HTTP -> BullMQ -> render-worker path is covered by
+    // video-render-qa.e2e-spec.ts + apps/worker's video-render.e2e.)
+    const video = await createActiveMediaAsset(ws, item.id, item.createdById, "VIDEO", "video/mp4");
+    const checksum = randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
+    await ctx().prisma.mediaAsset.update({ where: { publicId: video.publicId }, data: { verifiedChecksumSha256: checksum } });
+    const fp = sceneAssetFingerprint(scenes.map((s) => [s.sceneId, s.mediaAssetPublicId] as [string, string | null]));
+    const renderJob = await ctx().prisma.videoRenderJob.create({
+      data: {
+        workspaceId: item.workspaceId,
+        contentItemId: item.id,
+        targetPlatform: "YOUTUBE_LONG",
+        exportProfileId: "YOUTUBE_LONG",
+        renderInputSnapshot: {} as object,
+        renderInputVersion: 1,
+        scriptVersionHash: hash,
+        sceneAssetFingerprint: fp,
+        voiceAudioAssetPublicId: audio.publicId,
+        subtitleVttAssetPublicId: vtt.publicId,
+        status: "COMPLETED",
+        outputMediaAssetPublicId: video.publicId,
+        outputMediaAssetGroupId: video.assetGroupId,
+        outputWidth: 1920,
+        outputHeight: 1080,
+        outputDurationMs: 8000,
+        outputFps: 30,
+        outputByteSize: BigInt(4096),
+        outputChecksumSha256: checksum,
+        outputContainer: "mp4",
+        renderEngine: "deterministic-test",
+        correlationId: randomUUID(),
+        createdById: item.createdById,
+        completedAt: new Date(),
+      },
+    });
+    const snapshotScenes = scenes.map((s) => ({ sceneId: s.sceneId, assetResolved: true, materialized: true }));
+    md.videoPipeline.render = {
+      status: "READY",
+      renderJobPublicId: renderJob.publicId,
+      renderedVideoPublicId: video.publicId,
+      renderedVideoAssetGroupId: video.assetGroupId,
+      exportProfileId: "YOUTUBE_LONG",
+      attempt: 1,
+      expectedDurationMs: 8000,
+      outputWidth: 1920,
+      outputHeight: 1080,
+      outputDurationMs: 8000,
+      outputChecksumSha256: checksum,
+      outputByteSize: 4096,
+      scriptVersionHash: hash,
+      sceneAssetFingerprint: fp,
+      voiceAudioAssetPublicId: audio.publicId,
+      subtitleVttAssetPublicId: vtt.publicId,
+      snapshotScenes,
+      brandingLayerConfigured: true,
+      brandingLogoInSnapshot: false,
+      brandingIntroRequired: false,
+      brandingIntroRendered: false,
+      brandingOutroRequired: false,
+      brandingOutroRendered: false,
+      completedAt: new Date().toISOString(),
+      failureReason: null,
+    };
+    md.videoPipeline.qa = {
+      status: "COMPLETED",
+      passed: true,
+      renderJobPublicId: renderJob.publicId,
+      renderedVideoPublicId: video.publicId,
+      checks: ["missing_assets", "audio_sync", "subtitle_sync", "resolution", "duration", "branding"].map((id) => ({ id, label: id, passed: true, explanation: "ok", evidence: [] })),
+      completedAt: new Date().toISOString(),
+    };
     await ctx().prisma.contentItem.update({ where: { id: item.id }, data: { metadata: md as object } });
   }
 

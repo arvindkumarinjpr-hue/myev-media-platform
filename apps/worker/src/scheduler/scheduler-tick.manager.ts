@@ -9,9 +9,9 @@ import { InjectPinoLogger, PinoLogger } from "nestjs-pino";
 import { computeNextOccurrence, boundedShutdown, type QueueRegistry, type ShutdownOutcomeTracker } from "@myev/shared";
 import type { WorkerConfig } from "../config/configuration";
 import { QUEUE_REGISTRY } from "../queue/queue-registry.module";
-import { WorkerHeartbeatService } from "../heartbeat/worker-heartbeat.service";
-import { PrismaService } from "../prisma/prisma.service";
-import { SHUTDOWN_TRACKER } from "../shutdown/shutdown.module";
+import { WorkerHeartbeatService } from "@myev/worker-core";
+import { PrismaService } from "@myev/worker-core";
+import { SHUTDOWN_TRACKER } from "@myev/worker-core";
 import { Prisma, type ScheduledJob } from "../../../api/generated/prisma";
 import { isExpectedIdempotencyViolation } from "./idempotency-violation";
 

@@ -15,7 +15,7 @@ import {
   type ProcessorContext,
   type ProcessorHandler,
 } from "@myev/shared";
-import { PrismaService } from "../prisma/prisma.service";
+import { PrismaService } from "@myev/worker-core";
 
 /**
  * Milestone 8.3 Phase 4 — the one place an EventConsumerManifest's

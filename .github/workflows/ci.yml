@@ -14,7 +14,7 @@ jobs:
     # slow tests — the observed healthy baseline for this job is ~1.5
     # minutes; this gives ~6x margin before treating it as genuinely hung
     # rather than merely slow.
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -46,11 +46,12 @@ jobs:
         run: pnpm verify:packages
 
   docker-validate:
-    name: Docker Compose Config & Build
+    name: Docker Compose Config, Build & Remotion Smoke
     runs-on: ubuntu-latest
-    # Module 1F Phase A hardening: fast-fail backstop only. Healthy
-    # baseline is ~2.5 minutes; ~6x margin before treating as hung.
-    timeout-minutes: 15
+    # Module 7 Phase 7.5: the render-worker image (Debian + Chrome
+    # Headless Shell) + the real Remotion smoke render add ~8-10 minutes
+    # over the prior ~2.5-minute baseline.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -59,6 +60,14 @@ jobs:
 
       - name: Build all service images
         run: docker compose -f docker/docker-compose.yml build
+
+      # Section §F/§G — the REAL production render path, proven inside the
+      # dedicated render-worker image (Chromium + fonts + bundled FFmpeg).
+      # Reuses the `build` layers cached by the compose build above; only
+      # the apt libs + Chrome download + the render itself are new work.
+      # A production rendering path that has never run cannot be approved.
+      - name: Remotion production render smoke (in render-worker image)
+        run: docker build --target smoke -f apps/render-worker/Dockerfile -t myev-render-smoke .
 
   e2e:
     name: E2E Tests (Postgres + Redis + Mailpit + MinIO)
@@ -70,7 +79,7 @@ jobs:
     # treating the job as genuinely hung rather than merely slow — chosen
     # deliberately looser than the other two jobs' margin, since this one's
     # own step durations are the least deterministic of the three.
-    timeout-minutes: 25
+    timeout-minutes: 32
     # GitHub-hosted service containers — ephemeral, per-job, torn down when
     # the job ends. Exposing their ports to the runner's localhost here is
     # not a departure from the "zero host-port exposure" rule in
@@ -175,8 +184,10 @@ jobs:
       # exactly this reason. The "Lint, Typecheck, Test, Build" job
       # above runs a full `pnpm build`, but that happens on a separate,
       # ephemeral runner whose artifacts don't carry over to this job.
-      - name: Build packages/shared
-        run: pnpm --filter @myev/shared build
+      - name: Build shared packages (@myev/shared, @myev/worker-core)
+        run: |
+          pnpm --filter @myev/shared build
+          pnpm --filter @myev/worker-core build
 
       - name: Start MinIO
         run: |
@@ -211,8 +222,17 @@ jobs:
       # exactly the race that made this suite flaky in local verification
       # (whichever instance BullMQ dispatches a given job to "wins",
       # non-deterministically, and the loser's assertions fail).
-      - name: Run Worker E2E suite
+      - name: Run Worker E2E suite (general SYSTEM/AI worker)
         working-directory: apps/worker
+        run: pnpm test:e2e
+
+      # The dedicated render/media worker's own e2e — the four MEDIA
+      # processors (image/tts/subtitle/video-render) against real
+      # Postgres + MinIO with the deterministic render engine. Runs here,
+      # before the standalone background workers start, for the same
+      # two-consumer-race reason.
+      - name: Run Render-Worker E2E suite (dedicated MEDIA worker)
+        working-directory: apps/render-worker
         run: pnpm test:e2e
 
       # apps/api's own e2e suite (background-jobs.e2e-spec.ts, Module 1F)
@@ -260,6 +280,11 @@ jobs:
           # already more than enough to distinguish this attempt's own
           # heartbeat row from any earlier step's leftover rows.
           START_TIME_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          # The general worker — SYSTEM + AI only. The MEDIA queue (media
+          # generation + video render, incl. the golden-path render job)
+          # is handled by the separate render-worker started in the next
+          # step; this process has no media/render code path at all.
+          WORKER_QUEUES=SYSTEM,AI \
           nohup pnpm exec ts-node --transpile-only src/main.ts > /tmp/worker.log 2>&1 &
           WORKER_PID=$!
           disown
@@ -300,10 +325,42 @@ jobs:
             "SELECT worker_id, hostname, process_id, application_version, queue_assignments, started_at, last_heartbeat_at FROM worker_heartbeats WHERE started_at >= '${START_TIME_ISO}'::timestamptz ORDER BY started_at DESC;" >&2 2>&1 || true
           exit 1
 
+      # Module 7 Phase 7.5 — the dedicated render/media worker, consuming
+      # the MEDIA queue, so the API E2E golden path exercises a real
+      # HTTP -> BullMQ -> render-worker -> VIDEO MediaAsset flow.
+      # RENDER_ENGINE=deterministic-test (no Chromium in this CI job — the
+      # REAL Remotion render is proven by the render-worker-smoke job).
+      - name: Start Render Worker (background)
+        working-directory: apps/render-worker
+        run: |
+          START_TIME_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          WORKER_QUEUES=MEDIA RENDER_ENGINE=deterministic-test \
+          nohup pnpm exec ts-node --transpile-only src/main.ts > /tmp/render-worker.log 2>&1 &
+          RW_PID=$!
+          disown
+          for i in $(seq 1 90); do
+            if ! kill -0 "$RW_PID" 2>/dev/null; then
+              echo "Render-worker process (pid $RW_PID) exited before becoming ready." >&2
+              break
+            fi
+            HB=$(PGPASSWORD=myev_ci_password psql -h localhost -U myev -d myev_media_test -tAc \
+              "SELECT count(*) FROM worker_heartbeats WHERE started_at >= '${START_TIME_ISO}'::timestamptz AND queue_assignments::text LIKE '%MEDIA%';" 2>/dev/null)
+            if [ "${HB:-0}" -gt 0 ] 2>/dev/null; then
+              echo "Render-worker heartbeat confirmed after ${i}s."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Render-worker heartbeat not observed within the deadline." >&2
+          cat /tmp/render-worker.log
+          exit 1
+
       - name: Run E2E suite
         working-directory: apps/api
         run: pnpm test:e2e
 
-      - name: Show backgrounded Worker log (always, for debugging)
+      - name: Show backgrounded worker logs (always, for debugging)
         if: always()
-        run: cat /tmp/worker.log || true
+        run: |
+          echo "=== /tmp/worker.log ==="; cat /tmp/worker.log || true
+          echo "=== /tmp/render-worker.log ==="; cat /tmp/render-worker.log || true

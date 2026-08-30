@@ -2,30 +2,36 @@ import { Module } from "@nestjs/common";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 import { LoggerModule } from "nestjs-pino";
 import { randomUUID } from "crypto";
+import {
+  BackgroundJobReconciliationModule,
+  BullMqModule,
+  HeartbeatModule,
+  PrismaModule,
+  ShutdownModule,
+} from "@myev/worker-core";
 import configuration from "./config/configuration";
 import type { WorkerConfig } from "./config/configuration";
-import { PrismaModule } from "./prisma/prisma.module";
-import { MediaProviderRegistryModule } from "./media-provider/media-provider-registry.module";
-import { MediaModule } from "./media/media.module";
+import { AiProviderRegistryModule } from "./ai-provider/ai-provider-registry.module";
+import { AgentRegistryModule } from "./ai-provider/agent-registry.module";
 import { QueueRegistryModule } from "./queue/queue-registry.module";
-import { HeartbeatModule } from "./heartbeat/heartbeat.module";
-import { BullMqModule } from "./bullmq/bullmq.module";
 import { SchedulerModule } from "./scheduler/scheduler.module";
 import { EventsModule } from "./events/events.module";
 import { OutboxRelayModule } from "./events/outbox-relay.module";
-import { BackgroundJobReconciliationModule } from "./reconciliation/background-job-reconciliation.module";
-import { ShutdownModule } from "./shutdown/shutdown.module";
 import { SimulatedShutdownFailureModule } from "./testing/simulated-shutdown-failure.module";
 
+/**
+ * The general worker: SYSTEM (system.ping.v1) + AI (ai.execute.v1) work,
+ * the scheduler tick, and the outbox relay. Framework infrastructure
+ * (Prisma, heartbeat, BullMQ job lifecycle, the reconciliation sweep,
+ * bounded shutdown) is imported from `@myev/worker-core`.
+ *
+ * This process has NO media, storage, or render dependency — the
+ * dedicated render/media worker (`apps/render-worker`) owns the MEDIA
+ * queue, every media processor, and Remotion.
+ */
 @Module({
   imports: [
-    ConfigModule.forRoot({
-      isGlobal: true,
-      load: [configuration],
-    }),
-    // Structured logging kept schema-consistent with apps/api's own
-    // LoggerModule config (Observability & Monitoring Specification §3),
-    // minus the HTTP-only fields — this process never serves requests.
+    ConfigModule.forRoot({ isGlobal: true, load: [configuration] }),
     LoggerModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService<WorkerConfig, true>) => ({
@@ -37,8 +43,8 @@ import { SimulatedShutdownFailureModule } from "./testing/simulated-shutdown-fai
       }),
     }),
     PrismaModule,
-    MediaProviderRegistryModule,
-    MediaModule,
+    AiProviderRegistryModule,
+    AgentRegistryModule,
     QueueRegistryModule,
     HeartbeatModule,
     BullMqModule,
@@ -47,9 +53,6 @@ import { SimulatedShutdownFailureModule } from "./testing/simulated-shutdown-fai
     OutboxRelayModule,
     BackgroundJobReconciliationModule,
     ShutdownModule,
-    // DEFECT-1F-001 FINAL SIGNAL ERROR-HANDLING FIX — test fixture only,
-    // inert unless SIMULATE_SHUTDOWN_FAILURE=true is explicitly set. See
-    // testing/simulated-shutdown-failure.module.ts's own doc comment.
     ...(process.env.SIMULATE_SHUTDOWN_FAILURE === "true" || process.env.SIMULATE_TRACKER_FAILURE === "true" ? [SimulatedShutdownFailureModule] : []),
   ],
 })

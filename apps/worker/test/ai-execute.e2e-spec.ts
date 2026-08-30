@@ -4,7 +4,7 @@ import { Queue, QueueEvents } from "bullmq";
 import Redis from "ioredis";
 import { AI_EXECUTE_V1_MANIFEST } from "@myev/shared";
 import { AppModule } from "../src/app.module";
-import { PrismaService } from "../src/prisma/prisma.service";
+import { PrismaService } from "@myev/worker-core";
 import { AiExecuteProcessor } from "../src/queue/processors/ai-execute.processor";
 import type { AiJob, BackgroundJob } from "../../api/generated/prisma";
 

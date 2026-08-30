@@ -16,9 +16,9 @@ import {
 } from "@myev/shared";
 import type { WorkerConfig } from "../config/configuration";
 import { EVENT_REGISTRY } from "./events.module";
-import { WorkerHeartbeatService } from "../heartbeat/worker-heartbeat.service";
-import { PrismaService } from "../prisma/prisma.service";
-import { SHUTDOWN_TRACKER } from "../shutdown/shutdown.module";
+import { WorkerHeartbeatService } from "@myev/worker-core";
+import { PrismaService } from "@myev/worker-core";
+import { SHUTDOWN_TRACKER } from "@myev/worker-core";
 import { Prisma } from "../../../api/generated/prisma";
 import { isExpectedIdempotencyViolation } from "../scheduler/idempotency-violation";
 
