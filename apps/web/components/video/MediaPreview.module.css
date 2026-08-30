@@ -1,0 +1,59 @@
+.frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 3rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+  overflow: hidden;
+  max-width: 100%;
+}
+
+.image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  max-height: 18rem;
+}
+
+.audio {
+  width: 100%;
+  min-width: 14rem;
+  padding: var(--space-2);
+}
+
+.video {
+  display: block;
+  width: 100%;
+  max-width: 32rem;
+  max-height: 20rem;
+  background: #000;
+}
+
+.error {
+  font-size: var(--text-sm);
+  color: var(--color-text-subtle);
+}
+
+.spinner {
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--color-border-strong);
+  border-top-color: var(--color-primary);
+  animation: mp-spin 0.8s linear infinite;
+  margin: var(--space-3);
+}
+
+@keyframes mp-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 2s;
+  }
+}

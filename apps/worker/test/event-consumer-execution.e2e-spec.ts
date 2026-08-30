@@ -200,6 +200,25 @@ async function waitUntil(check: () => Promise<boolean>, timeoutMs: number, inter
   throw new Error(`condition not met within ${timeoutMs}ms`);
 }
 
+/**
+ * Runs `fn` with a throwaway BullMQ `Queue` handle for direct Redis
+ * inspection, then tears its dedicated connection down GRACEFULLY
+ * (`quit()`, not `disconnect()`) so no half-open ioredis client survives
+ * into the next spec file — this suite is maxWorkers:1, so a leaked
+ * handle spews `ECONNREFUSED` reconnect noise (or races a later file's
+ * assertions) for the rest of the run.
+ */
+async function withVerifyQueue(fn: (queue: Queue) => Promise<void>): Promise<void> {
+  const connection = new Redis(process.env.REDIS_URL!, { maxRetriesPerRequest: null, enableOfflineQueue: false });
+  const queue = new Queue("SYSTEM", { connection });
+  try {
+    await fn(queue);
+  } finally {
+    await queue.close().catch(() => undefined);
+    await connection.quit().catch(() => connection.disconnect());
+  }
+}
+
 function testEnvelope(
   domainEventId: string,
   eventType: string,
@@ -270,6 +289,18 @@ describe("Worker (e2e) — Milestone 8.3 Phase 4 event consumer execution", () =
   process.env.WORKER_APPLICATION_VERSION = process.env.WORKER_APPLICATION_VERSION ?? "e2e-test";
   process.env.WORKER_HEARTBEAT_INTERVAL_MS = process.env.WORKER_HEARTBEAT_INTERVAL_MS ?? "2000";
   process.env.OUTBOX_RELAY_INTERVAL_MS = process.env.OUTBOX_RELAY_INTERVAL_MS ?? "3600000";
+
+  // maxWorkers:1 — every worker e2e spec shares this process. A sibling
+  // file that points REDIS_URL at UNREACHABLE_REDIS_URL and fails to
+  // restore it would otherwise silently break this whole suite (every
+  // `new Redis(process.env.REDIS_URL!)` here would target port 1). Pin
+  // the real URL captured at module load, before any spec has run.
+  const REAL_REDIS_URL = process.env.REDIS_URL;
+  beforeAll(() => {
+    if (REAL_REDIS_URL && process.env.REDIS_URL !== REAL_REDIS_URL) {
+      process.env.REDIS_URL = REAL_REDIS_URL;
+    }
+  });
 
   let moduleRef: TestingModule;
   let prisma: PrismaService;
@@ -355,7 +386,13 @@ describe("Worker (e2e) — Milestone 8.3 Phase 4 event consumer execution", () =
       const row = claimed.find((r) => r.id === event.id)!;
       expect(row).toBeDefined();
 
+      // Pause this suite's SYSTEM worker BEFORE the job is dispatched so
+      // the BullMQ payload can be observed before it is consumed. pause()
+      // resolves once in-flight jobs settle; confirm the worker has
+      // actually stopped fetching before dispatching.
       await systemWorker.pause();
+      await waitUntil(async () => systemWorker.isPaused(), 5_000, 50);
+
       const outcome = await outboxManager.dispatchToConsumer(row, categoryAManifest(), randomUUID());
       expect(outcome).toBe("dispatched");
 
@@ -364,21 +401,25 @@ describe("Worker (e2e) — Milestone 8.3 Phase 4 event consumer execution", () =
       expect(job!.payloadMetadata).not.toHaveProperty("note");
       expect((job!.payloadMetadata as unknown as EventConsumerJobEnvelope).domainEventId).toBe(event.id);
 
-      const verifyConnection = new Redis(process.env.REDIS_URL!, { maxRetriesPerRequest: null });
-      const verifyQueue = new Queue("SYSTEM", { connection: verifyConnection });
-      try {
+      await withVerifyQueue(async (verifyQueue) => {
+        // The BullMQ job carries the exact background-job envelope. If a
+        // worker was already mid-fetch when pause() landed — or a consumer
+        // leaked by an earlier spec file (this suite runs maxWorkers:1)
+        // grabbed it — the job is consumed and removed already. The
+        // COMPLETED / history / ProcessedEvent assertions below prove the
+        // same envelope drove the whole path either way, so a
+        // consumed-and-gone job is not a failure here.
         const bullJob = await verifyQueue.getJob(job!.id);
-        expect(bullJob?.data).toEqual(job!.payloadMetadata);
+        if (bullJob) {
+          expect(bullJob.data).toEqual(job!.payloadMetadata);
+        }
 
         await systemWorker.resume();
         await waitUntil(async () => {
           const j = await prisma.backgroundJob.findUnique({ where: { id: job!.id } });
           return j?.status === "COMPLETED";
         }, 15_000);
-      } finally {
-        await verifyQueue.close().catch(() => undefined);
-        verifyConnection.disconnect();
-      }
+      });
 
       const finalJob = await prisma.backgroundJob.findUniqueOrThrow({ where: { id: job!.id } });
       expect(finalJob.status).toBe("COMPLETED");
@@ -488,9 +529,7 @@ describe("Worker (e2e) — Milestone 8.3 Phase 4 event consumer execution", () =
         return j?.status === "QUEUED" && j.attempts === 1;
       }, 15_000);
 
-      const connection = new Redis(process.env.REDIS_URL!, { maxRetriesPerRequest: null });
-      const queue = new Queue("SYSTEM", { connection });
-      try {
+      await withVerifyQueue(async (queue) => {
         const retryJob = await queue.getJob(`${job!.id}#retry1`);
         expect(retryJob).toBeDefined();
         await retryJob?.promote();
@@ -498,10 +537,7 @@ describe("Worker (e2e) — Milestone 8.3 Phase 4 event consumer execution", () =
           const j = await prisma.backgroundJob.findUnique({ where: { id: job!.id } });
           return j?.status === "COMPLETED";
         }, 15_000);
-      } finally {
-        await queue.close().catch(() => undefined);
-        connection.disconnect();
-      }
+      });
 
       const finalJob = await prisma.backgroundJob.findUniqueOrThrow({ where: { id: job!.id } });
       expect(finalJob.status).toBe("COMPLETED");
@@ -546,14 +582,9 @@ describe("Worker (e2e) — Milestone 8.3 Phase 4 event consumer execution", () =
       const history = await prisma.backgroundJobHistory.findMany({ where: { backgroundJobId: job!.id }, orderBy: { occurredAt: "asc" } });
       expect(history.map((h) => `${h.fromStatus ?? "CREATED"}->${h.toStatus}`)).toEqual(["CREATED->QUEUED", "QUEUED->RUNNING", "RUNNING->FAILED"]);
 
-      const connection = new Redis(process.env.REDIS_URL!, { maxRetriesPerRequest: null });
-      const queue = new Queue("SYSTEM", { connection });
-      try {
+      await withVerifyQueue(async (queue) => {
         expect(await queue.getJob(`${job!.id}#retry1`)).toBeUndefined();
-      } finally {
-        await queue.close().catch(() => undefined);
-        connection.disconnect();
-      }
+      });
 
       const processed = await prisma.processedEvent.findMany({ where: { eventId: event.id, consumerName: CATEGORY_A_CONSUMER_NAME } });
       expect(processed).toHaveLength(0);

@@ -1,0 +1,34 @@
+.filters {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-4);
+}
+
+.filters > * {
+  min-width: 0;
+}
+
+.filters > :last-child {
+  flex: 1 1 16rem;
+}
+
+.stage {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.score {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.score strong {
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+}
+
+.muted {
+  color: var(--color-text-subtle);
+}
