@@ -32,22 +32,25 @@ COPY apps/api/package.json apps/api/package.json
 COPY apps/api/prisma apps/api/prisma
 COPY apps/web/package.json apps/web/package.json
 COPY apps/worker/package.json apps/worker/package.json
+COPY apps/render-worker/package.json apps/render-worker/package.json
 COPY packages/shared/package.json packages/shared/package.json
+COPY packages/worker-core/package.json packages/worker-core/package.json
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm-store,sharing=locked \
     pnpm install --offline --frozen-lockfile --filter @myev/worker... --filter @myev/api...
 
-# ---- build: compile TS, (re)generate the shared Prisma client ----
-# packages/shared must be compiled BEFORE apps/worker — its package.json
-# `main`/`types` point at ./dist (not raw .ts source: Node's native TS
-# type-stripping refuses to run on files under node_modules, so a
-# workspace dependency consumed at the VALUE level, not just as types,
-# must already be plain JS by the time anything requires() it).
+# ---- build: compile @myev/shared -> @myev/worker-core -> apps/worker ----
+# Both packages' package.json main/types point at ./dist, so a workspace
+# dependency consumed at the VALUE level (not just types) must already be
+# plain JS by the time apps/worker's tsc resolves it.
 FROM base AS build
 COPY --from=deps /repo /repo
 COPY tsconfig.base.json ./
 COPY packages/shared packages/shared
 WORKDIR /repo/packages/shared
 RUN pnpm build
+COPY packages/worker-core /repo/packages/worker-core
+WORKDIR /repo/packages/worker-core
+RUN pnpm prisma:generate && pnpm build
 COPY apps/worker /repo/apps/worker
 WORKDIR /repo/apps/worker
 RUN pnpm prisma:generate
