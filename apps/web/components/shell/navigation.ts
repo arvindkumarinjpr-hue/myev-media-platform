@@ -6,6 +6,7 @@ import {
   ProjectIcon,
   ResearchIcon,
   TopicClusterIcon,
+  VideoIcon,
 } from "../ui/icons";
 
 export interface NavItem {
@@ -49,6 +50,11 @@ export const NAV_SECTIONS: NavSection[] = [
       // Administrator, Owner). The backend re-checks BLOG_VIEW on every
       // Blog route regardless of what this hides.
       { label: "Blog", segment: "blog", icon: BlogIcon, permission: "BLOG_VIEW" },
+      // Module 7 Phase 7.6 — visible to any role holding VIDEO_VIEW
+      // (Content Manager, SEO Specialist, Video Editor, Publisher,
+      // Administrator, Owner). The backend re-checks VIDEO_VIEW on every
+      // Video route regardless of what this hides.
+      { label: "Video", segment: "video", icon: VideoIcon, permission: "VIDEO_VIEW" },
     ],
   },
   {

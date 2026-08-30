@@ -277,6 +277,15 @@ export function BlogIcon(props: IconProps) {
   );
 }
 
+export function VideoIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <rect x="3" y="6" width="12" height="12" rx="1.5" />
+      <path d="m15 10 5-2.5v9L15 14" />
+    </Base>
+  );
+}
+
 export function CheckCircleIcon(props: IconProps) {
   return (
     <Base {...props}>
