@@ -22,9 +22,6 @@ import {
 async function handle(request: NextRequest, path: string[]): Promise<Response> {
   const cookieStore = await cookies();
   const accessToken = cookieStore.get(ACCESS_TOKEN_COOKIE)?.value;
-  if (!accessToken) {
-    return NextResponse.json({ code: "AUTH_TOKEN_INVALID", message: "Not signed in." }, { status: 401 });
-  }
 
   // Every segment here becomes a literal path component forwarded
   // verbatim to the backend — reject anything that isn't (`..` could
@@ -52,9 +49,19 @@ async function handle(request: NextRequest, path: string[]): Promise<Response> {
       body,
     });
 
-  let backendRes = await doFetch(accessToken);
+  // The access-token cookie's own Max-Age is set to match the backend
+  // JWT's TTL exactly (both 900s) — so once it elapses, the BROWSER
+  // itself stops sending the cookie at all; it isn't merely rejected by
+  // the backend, it's simply absent here. That must still attempt a
+  // refresh via the refresh_token cookie, exactly like a present-but-401
+  // access token does below — otherwise an actively used session with a
+  // perfectly valid, unexpired refresh_token gets thrown to /login every
+  // ~15 minutes (regression: this early-returned 401 before ever
+  // consulting refresh_token, silently defeating the refresh mechanism
+  // this route otherwise fully implements).
+  let backendRes = accessToken ? await doFetch(accessToken) : null;
 
-  if (backendRes.status === 401) {
+  if (!backendRes || backendRes.status === 401) {
     const refreshed = await tryRefresh(cookieStore.get(REFRESH_TOKEN_COOKIE)?.value);
     if (refreshed) {
       backendRes = await doFetch(refreshed.accessToken);
@@ -65,6 +72,9 @@ async function handle(request: NextRequest, path: string[]): Promise<Response> {
         response.cookies.set(REFRESH_TOKEN_COOKIE, refreshed.refreshTokenValue, authCookieOptions(REFRESH_TOKEN_COOKIE_MAX_AGE_SECONDS));
       }
       return response;
+    }
+    if (!backendRes) {
+      return NextResponse.json({ code: "AUTH_TOKEN_INVALID", message: "Not signed in." }, { status: 401 });
     }
   }
 
