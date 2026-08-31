@@ -98,6 +98,11 @@ export async function teardownE2eApp({ app, redis, prisma }: E2eApp): Promise<vo
     // users(created_by), exactly like blog_articles above, so it has the
     // same teardown ordering requirement.
     await tx.videoScript.deleteMany({ where: { OR: [{ workspaceId: { in: testWorkspaceIds } }, { createdById: { in: testUserIds } }] } });
+    // Module 8 Phase 8.1: internal_links has RESTRICT composite FKs to
+    // content_items (both source AND target) + workspaces + a nullable
+    // SET NULL FK to users(reviewed_by) — must go before content_items
+    // below for the same reason as blog_articles/video_scripts above.
+    await tx.internalLink.deleteMany({ where: { OR: [{ workspaceId: { in: testWorkspaceIds } }, { reviewedById: { in: testUserIds } }] } });
 
     // Module 1E: content_items <-> content_versions and content_items <->
     // media_assets are both mutual RESTRICT cycles (current_version_id /
