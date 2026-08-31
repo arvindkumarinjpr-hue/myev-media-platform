@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { PasswordResetForm } from "./PasswordResetForm";
 import { mockResponse } from "../lib/test-mock-response";
@@ -46,27 +46,53 @@ describe("PasswordResetForm", () => {
       expect(screen.getByRole("button", { name: "Reset password" })).toBeDisabled();
     });
 
-    it("flags an 11-character password client-side and blocks submission", async () => {
+    it("flags a 7-character password client-side and blocks submission", async () => {
       render(<PasswordResetForm mode="reset" />);
-      await userEvent.type(screen.getByLabelText("New password"), "12345678901");
+      await userEvent.type(screen.getByLabelText("New password"), "1234567");
 
-      expect(await screen.findByText("Must be at least 12 characters.")).toBeInTheDocument();
+      expect(await screen.findByText("Must be between 8 and 64 characters.")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Reset password" })).toBeDisabled();
     });
 
-    it("accepts exactly 12 characters — the policy's own boundary — and enables submit", async () => {
+    it("accepts exactly 8 characters — the policy's minimum boundary — and enables submit", async () => {
       render(<PasswordResetForm mode="reset" />);
-      await userEvent.type(screen.getByLabelText("New password"), "123456789012");
-      await userEvent.type(screen.getByLabelText("Confirm password"), "123456789012");
+      await userEvent.type(screen.getByLabelText("New password"), "12345678");
+      await userEvent.type(screen.getByLabelText("Confirm password"), "12345678");
 
-      expect(screen.queryByText("Must be at least 12 characters.")).not.toBeInTheDocument();
+      expect(screen.queryByText("Must be between 8 and 64 characters.")).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Reset password" })).not.toBeDisabled();
     });
 
-    it("shows no 8-character guidance anywhere — the hint reflects the 12-character policy", () => {
+    it("accepts exactly 64 characters — the policy's maximum boundary — and enables submit", async () => {
       render(<PasswordResetForm mode="reset" />);
-      expect(screen.getByText("At least 12 characters.")).toBeInTheDocument();
-      expect(screen.queryByText(/\b8 characters?\b/)).not.toBeInTheDocument();
+      const sixtyFour = "a".repeat(64);
+      // Programmatic value assignment, not keystrokes: the input's own
+      // maxLength=64 attribute (asserted below) already stops a real user
+      // from typing past the boundary — this proves the component's OWN
+      // outOfRange logic doesn't independently misfire at exactly 64.
+      fireEvent.change(screen.getByLabelText("New password"), { target: { value: sixtyFour } });
+      fireEvent.change(screen.getByLabelText("Confirm password"), { target: { value: sixtyFour } });
+
+      expect(screen.queryByText("Must be between 8 and 64 characters.")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Reset password" })).not.toBeDisabled();
+    });
+
+    it("flags a 65-character password (set programmatically, past the native maxLength) and blocks submission", () => {
+      render(<PasswordResetForm mode="reset" />);
+      const sixtyFive = "a".repeat(65);
+      fireEvent.change(screen.getByLabelText("New password"), { target: { value: sixtyFive } });
+
+      expect(screen.getByText("Must be between 8 and 64 characters.")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Reset password" })).toBeDisabled();
+    });
+
+    it("sets minLength=8 and maxLength=64 on the password input, and the hint reflects the 8-64 policy", () => {
+      render(<PasswordResetForm mode="reset" />);
+      const input = screen.getByLabelText("New password") as HTMLInputElement;
+      expect(input.minLength).toBe(8);
+      expect(input.maxLength).toBe(64);
+      expect(screen.getByText("8–64 characters.")).toBeInTheDocument();
+      expect(screen.queryByText(/\b12 characters?\b/)).not.toBeInTheDocument();
     });
 
     it("submits the token and new password, then shows success without auto-login", async () => {

@@ -12,7 +12,9 @@ import { Input } from "./ui/Input";
 import { CheckCircleIcon, EyeIcon, EyeOffIcon, LockIcon, XCircleIcon } from "./ui/icons";
 import styles from "./AuthForm.module.css";
 
-const MIN_PASSWORD_LENGTH = 12;
+const MIN_PASSWORD_LENGTH = 8;
+const MAX_PASSWORD_LENGTH = 64;
+const PASSWORD_LENGTH_MESSAGE = `Must be between ${MIN_PASSWORD_LENGTH} and ${MAX_PASSWORD_LENGTH} characters.`;
 // Both codes mean "this specific link no longer works" — the backend's
 // own message text (already safe/specific: "Link is invalid.", "Link has
 // already been used.", "Link has expired.") is what actually
@@ -62,12 +64,12 @@ export function PasswordResetForm({ mode }: PasswordResetFormProps) {
   const [linkInvalidReason, setLinkInvalidReason] = useState<string | null>(token ? null : copy.linkInvalidFallback);
 
   const mismatch = confirmPassword.length > 0 && newPassword !== confirmPassword;
-  const tooShort = newPassword.length > 0 && newPassword.length < MIN_PASSWORD_LENGTH;
+  const outOfRange = newPassword.length > 0 && (newPassword.length < MIN_PASSWORD_LENGTH || newPassword.length > MAX_PASSWORD_LENGTH);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     if (pending || !token) return;
-    if (newPassword !== confirmPassword || newPassword.length < MIN_PASSWORD_LENGTH) return;
+    if (newPassword !== confirmPassword || newPassword.length < MIN_PASSWORD_LENGTH || newPassword.length > MAX_PASSWORD_LENGTH) return;
 
     setPending(true);
     setError(null);
@@ -139,13 +141,18 @@ export function PasswordResetForm({ mode }: PasswordResetFormProps) {
         </Alert>
       )}
 
-      <FormField label="New password" hint={`At least ${MIN_PASSWORD_LENGTH} characters.`} error={tooShort ? `Must be at least ${MIN_PASSWORD_LENGTH} characters.` : undefined}>
+      <FormField
+        label="New password"
+        hint={`${MIN_PASSWORD_LENGTH}–${MAX_PASSWORD_LENGTH} characters.`}
+        error={outOfRange ? PASSWORD_LENGTH_MESSAGE : undefined}
+      >
         {(field) => (
           <Input
             {...field}
             type={showPassword ? "text" : "password"}
             required
             minLength={MIN_PASSWORD_LENGTH}
+            maxLength={MAX_PASSWORD_LENGTH}
             autoComplete="new-password"
             iconLeft={<LockIcon />}
             endAdornment={
@@ -182,7 +189,7 @@ export function PasswordResetForm({ mode }: PasswordResetFormProps) {
         type="submit"
         fullWidth
         loading={pending}
-        disabled={!newPassword || !confirmPassword || mismatch || tooShort}
+        disabled={!newPassword || !confirmPassword || mismatch || outOfRange}
         className={styles.submit}
       >
         {pending ? copy.submitLabelPending : copy.submitLabel}
