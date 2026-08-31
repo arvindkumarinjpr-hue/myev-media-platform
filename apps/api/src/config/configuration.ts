@@ -16,6 +16,16 @@ export interface AppConfig {
     accessKey: string;
     secretKey: string;
     bucket: string;
+    // Optional, distinct from `endpoint` above: a full base URL
+    // (protocol + host + optional path prefix) that a real BROWSER can
+    // actually reach, used ONLY to sign presigned download/upload URLs —
+    // `endpoint` above stays the fast internal address the API server
+    // itself connects through for every other S3 operation. Unset in
+    // every environment where `endpoint` is already browser-reachable
+    // (local dev, CI); staging/production behind a reverse proxy in
+    // front of a non-public object store set this to the public path the
+    // proxy forwards through to it.
+    publicEndpoint?: string;
   };
   smtp: {
     host: string;
@@ -165,6 +175,7 @@ export default (): AppConfig => ({
     accessKey: process.env.STORAGE_ACCESS_KEY ?? "",
     secretKey: process.env.STORAGE_SECRET_KEY ?? "",
     bucket: process.env.STORAGE_BUCKET ?? "myev-media-dev",
+    publicEndpoint: process.env.STORAGE_PUBLIC_ENDPOINT || undefined,
   },
   smtp: {
     host: process.env.SMTP_HOST ?? "mailpit",

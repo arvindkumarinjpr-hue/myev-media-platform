@@ -544,6 +544,63 @@ describe("Media assets (e2e)", () => {
         .expect(409);
       expect(res.body.code).toBe("MEDIA_ASSET_NOT_ACTIVE");
     });
+
+    it(
+      "a user with no membership in this workspace cannot obtain a download URL for its assets (RBAC/workspace isolation unaffected by the presigned-host fix — every named role in this system carries baseline MEDIA_VIEW, so workspace membership itself, not a permission gap, is the real authorization boundary here)",
+      async () => {
+        const owner = await loginAsPlatformOwner(ctx);
+        const ws = await createWorkspaceAsOwner(ctx, owner.accessToken);
+        const { assetPublicId } = await uploadAndConfirm(
+          ctx,
+          owner.accessToken,
+          ws.publicId,
+          { assetType: "IMAGE", originalFilename: "photo.png", declaredMimeType: "image/png", declaredSizeBytes: PNG_BYTES.length },
+          PNG_BYTES,
+        );
+
+        // A member invited into a completely separate, unrelated
+        // workspace — never a member of `ws` at all.
+        const otherWs = await createWorkspaceAsOwner(ctx, owner.accessToken);
+        const outsider = await inviteAndActivate(ctx, owner.accessToken, otherWs.publicId, "Content Manager");
+
+        const res = await request(ctx.app.getHttpServer())
+          .get(`/api/v1/workspaces/${ws.publicId}/assets/${assetPublicId}/download-url`)
+          .set("Authorization", `Bearer ${outsider.accessToken}`)
+          .set("X-Workspace-Id", ws.publicId);
+        expect([403, 404]).toContain(res.status);
+      },
+      20_000,
+    );
+
+    it(
+      "the presigned URL supports Range requests — required for real browser <audio>/<video> playback (seek, partial load)",
+      async () => {
+        const owner = await loginAsPlatformOwner(ctx);
+        const ws = await createWorkspaceAsOwner(ctx, owner.accessToken);
+        const { assetPublicId } = await uploadAndConfirm(
+          ctx,
+          owner.accessToken,
+          ws.publicId,
+          { assetType: "IMAGE", originalFilename: "photo.png", declaredMimeType: "image/png", declaredSizeBytes: PNG_BYTES.length },
+          PNG_BYTES,
+        );
+        const downloadRes = await request(ctx.app.getHttpServer())
+          .get(`/api/v1/workspaces/${ws.publicId}/assets/${assetPublicId}/download-url`)
+          .set("Authorization", `Bearer ${owner.accessToken}`)
+          .set("X-Workspace-Id", ws.publicId)
+          .expect(200);
+        const { downloadUrl } = downloadRes.body.data;
+
+        const rangeRes = await fetch(downloadUrl, { headers: { Range: `bytes=0-${PNG_BYTES.length - 2}` } });
+        expect(rangeRes.status).toBe(206);
+        expect(rangeRes.headers.get("accept-ranges")).toBe("bytes");
+        expect(rangeRes.headers.get("content-range")).toBe(`bytes 0-${PNG_BYTES.length - 2}/${PNG_BYTES.length}`);
+        const partial = Buffer.from(await rangeRes.arrayBuffer());
+        expect(partial.length).toBe(PNG_BYTES.length - 1);
+        expect(partial.equals(PNG_BYTES.subarray(0, PNG_BYTES.length - 1))).toBe(true);
+      },
+      20_000,
+    );
   });
 
   describe("Versioning (Safeguard 1: version-number invariant)", () => {
