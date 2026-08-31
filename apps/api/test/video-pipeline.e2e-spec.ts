@@ -1394,6 +1394,35 @@ describe("Video pipeline — Phase 7.3 scoring + review (e2e)", () => {
     await h.cleanup(ws);
   });
 
+  it("VIDEO_RENDER is required to submit a render; Content Manager (VIDEO_EDIT/APPROVE but no VIDEO_RENDER, per the frozen role matrix) is refused with 403, while a Video Editor (has VIDEO_RENDER) passes the permission gate and reaches pipeline-state business logic instead", async () => {
+    const ws = await h.createWorkspace();
+    const packId = await h.createActivePack(ws);
+    const { itemId } = await h.createVideo(ws, packId);
+
+    const manager = await h.addMember(ws, "video-73-manager-render", "Content Manager");
+    const managerAuth = { Authorization: `Bearer ${manager.accessToken}`, "X-Workspace-Id": ws.publicId };
+    // VideoController's render route is gated by a static
+    // @RequirePermission(VIDEO_RENDER) (Phase 7.6 — split out from
+    // VIDEO_EDIT specifically so "can edit a video" and "can submit a
+    // real render job" are independently grantable). Content Manager has
+    // VIDEO_EDIT/VIDEO_APPROVE but the frozen matrix does NOT grant it
+    // VIDEO_RENDER.
+    const managerRes = await request(h.server()).post(`${h.base(ws)}/${itemId}/render`).set(managerAuth).send({});
+    expect(managerRes.status).toBe(403);
+
+    const editor = await h.addMember(ws, "video-73-editor-render", "Video Editor");
+    const editorAuth = { Authorization: `Bearer ${editor.accessToken}`, "X-Workspace-Id": ws.publicId };
+    // A freshly created item has no approved script/ready assets/voice —
+    // the permission GUARD still must pass before the request ever
+    // reaches that pipeline-state check, so the meaningful assertion
+    // here is "not a 403" (the guard is satisfied), not any particular
+    // success/failure status from the business logic beyond it.
+    const editorRes = await request(h.server()).post(`${h.base(ws)}/${itemId}/render`).set(editorAuth).send({});
+    expect(editorRes.status).not.toBe(403);
+
+    await h.cleanup(ws);
+  });
+
   it("approve requires the item to be in REVIEW — direct approval from IN_PROGRESS is rejected", async () => {
     const ws = await h.createWorkspace();
     const packId = await h.createActivePack(ws);
