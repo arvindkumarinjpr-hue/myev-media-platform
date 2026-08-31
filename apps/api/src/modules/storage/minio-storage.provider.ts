@@ -35,6 +35,15 @@ async function streamToBuffer(stream: Readable): Promise<Buffer> {
 export class MinioStorageProvider implements StorageProvider, OnModuleInit {
   private readonly logger = new Logger(MinioStorageProvider.name);
   private readonly client: S3Client;
+  // Presigning-only client. Identical credentials/path-style, but built
+  // against `storage.publicEndpoint` when configured — the host a real
+  // browser can actually reach, distinct from `storage.endpoint` (the
+  // fast internal address the API server itself uses for every other S3
+  // operation, e.g. the Docker Compose service name on staging). Falls
+  // back to reusing `client` when unset, so every environment that
+  // never sets STORAGE_PUBLIC_ENDPOINT (local dev, CI) is byte-for-byte
+  // unchanged.
+  private readonly presignClient: S3Client;
   private readonly bucket: string;
   private readonly healthCheckUrl: string;
 
@@ -44,12 +53,16 @@ export class MinioStorageProvider implements StorageProvider, OnModuleInit {
     const endpoint = `${protocol}://${storage.endpoint}:${storage.port}`;
     this.bucket = storage.bucket;
     this.healthCheckUrl = `${endpoint}/minio/health/live`;
+    const credentials = { accessKeyId: storage.accessKey, secretAccessKey: storage.secretKey };
     this.client = new S3Client({
       endpoint,
       region: "us-east-1", // MinIO ignores region but the SDK requires one
-      credentials: { accessKeyId: storage.accessKey, secretAccessKey: storage.secretKey },
+      credentials,
       forcePathStyle: true, // required for MinIO; harmless for most S3-compatible providers
     });
+    this.presignClient = storage.publicEndpoint
+      ? new S3Client({ endpoint: storage.publicEndpoint, region: "us-east-1", credentials, forcePathStyle: true })
+      : this.client;
   }
 
   /**
@@ -78,7 +91,7 @@ export class MinioStorageProvider implements StorageProvider, OnModuleInit {
     maxSizeBytes: number;
     expiresInSeconds: number;
   }): Promise<PresignedUploadInstruction> {
-    const { url, fields } = await createPresignedPost(this.client, {
+    const { url, fields } = await createPresignedPost(this.presignClient, {
       Bucket: this.bucket,
       Key: input.key,
       Conditions: [
@@ -153,7 +166,7 @@ export class MinioStorageProvider implements StorageProvider, OnModuleInit {
       Key: input.key,
       ResponseContentDisposition: input.downloadFilename ? `attachment; filename="${input.downloadFilename}"` : undefined,
     });
-    const downloadUrl = await getSignedUrl(this.client, command, { expiresIn: input.expiresInSeconds });
+    const downloadUrl = await getSignedUrl(this.presignClient, command, { expiresIn: input.expiresInSeconds });
     return { downloadUrl, expiresAt: new Date(Date.now() + input.expiresInSeconds * 1000) };
   }
 
