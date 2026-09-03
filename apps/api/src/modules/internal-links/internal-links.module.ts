@@ -1,25 +1,34 @@
 import { Module } from "@nestjs/common";
+import { AuthModule } from "../auth/auth.module";
 import { ContentScoringModule } from "../content-scoring/content-scoring.module";
+import { BlogInternalLinksController } from "./blog-internal-links.controller";
 import { InternalLinkAnchorService } from "./internal-link-anchor.service";
 import { InternalLinkDiscoveryService } from "./internal-link-discovery.service";
+import { InternalLinksController } from "./internal-links.controller";
+import { InternalLinksQueryService } from "./internal-links-query.service";
 import { InternalLinksService } from "./internal-links.service";
 
 /**
  * Module 8 — AI Internal Linking Engine: Domain + Persistence Foundation
  * (Phase 8.1) + Candidate Discovery + Relevance Engine (Phase 8.2) +
- * Anchor Recommendation Engine (Phase 8.3).
+ * Anchor Recommendation Engine (Phase 8.3) + Human Review API + Module 6
+ * Blog Integration (Phase 8.4).
  *
- * No controller yet — PrismaService/AuditService are both @Global(), so
- * no explicit import is needed for those, mirroring TopicClustersModule/
- * ContentScoringModule's own minimal imports list. ContentScoringModule
- * is imported only for its exported, read-only ContentScoringService
- * (target-authority lookups via getLatest() — never triggers scoring).
- * The HTTP surface (generate/list/patch-anchor/accept/reject/orphans,
- * SEO_EDIT/BLOG_VIEW-gated) lands in Phase 8.4.
+ * AuthModule import mirrors BlogModule/ContentScoringModule: the new
+ * controllers' SessionGuard needs JwtService; PermissionGuard/RbacModule
+ * are @Global(). ContentScoringModule is imported only for its exported,
+ * read-only ContentScoringService (target-authority lookups via
+ * getLatest() — never triggers scoring).
+ *
+ * Exports InternalLinkDiscoveryService for BlogModule to inject into
+ * BlogPipelineService (the Phase 8.4 seam integration) — BlogModule
+ * importing InternalLinksModule creates no circular dependency:
+ * InternalLinksModule never imports BlogModule.
  */
 @Module({
-  imports: [ContentScoringModule],
-  providers: [InternalLinksService, InternalLinkDiscoveryService, InternalLinkAnchorService],
-  exports: [InternalLinksService, InternalLinkDiscoveryService, InternalLinkAnchorService],
+  imports: [AuthModule, ContentScoringModule],
+  controllers: [BlogInternalLinksController, InternalLinksController],
+  providers: [InternalLinksService, InternalLinkDiscoveryService, InternalLinkAnchorService, InternalLinksQueryService],
+  exports: [InternalLinksService, InternalLinkDiscoveryService, InternalLinkAnchorService, InternalLinksQueryService],
 })
 export class InternalLinksModule {}
