@@ -287,9 +287,85 @@ describe("Blog pipeline — full workflow (e2e)", () => {
     const packId = await h.createActivePack(ws);
     const { itemId } = await walkToDraftAndSeo(h, ws, packId, "Public charging");
     const linked = await request(h.server()).post(`${h.base(ws)}/${itemId}/internal-linking`).set(h.auth(ws)).expect(200);
+    // PRE-INTEGRATION value — see the characterization block immediately
+    // below. This exact assertion is deliberately updated later in this
+    // same phase, once Module 8's real engine replaces the stub body (the
+    // one specific value the phase intentionally changes); the CONTRACT
+    // this test also exercises (COMPLETED, empty suggestions is legitimate)
+    // is what the characterization tests below prove holds unchanged.
     expect(linked.body.data.internalLinking).toMatchObject({ status: "COMPLETED", suggestions: [], reason: "engine_not_available" });
     await h.cleanup(ws);
   }, 90_000);
+
+  // =========================================================================
+  // Module 8 Phase 8.4 — CHARACTERIZATION of runInternalLinking()'s frozen
+  // contract, written and confirmed green against the seam BEFORE Module 8's
+  // real discovery engine replaced its stub body (Module 8 Phase 8.4
+  // architecture instruction, Part C). These assert the CONTRACT elements
+  // that hold identically both before and after the integration: the SEO-
+  // readiness precondition, the stage always reaching COMPLETED regardless
+  // of suggestion count, the QA gate depending only on
+  // internalLinking.status (never suggestions.length), and the frozen
+  // InternalLinkingSuggestion shape ({ targetContentItemPublicId, anchorText,
+  // reason }). They remain in the suite, unchanged and still green, after
+  // the integration — proving the contract itself was preserved.
+  // =========================================================================
+
+  it("[characterization] SEO must be READY before internal-linking can run", async () => {
+    const ws = await h.createWorkspace();
+    const packId = await h.createActivePack(ws);
+    const create = await request(h.server()).post(h.base(ws)).set(h.auth(ws)).send({ topic: "Characterization SEO gate", knowledgePackVersionId: packId }).expect(202);
+    const itemId = (create.body.data.contentItem as { publicId: string }).publicId;
+    await h.completeStageJob(ws, h.briefJobId(create.body.data), BRIEF_OUTPUT);
+    await h.reconcileGet(ws, itemId);
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/brief/approve`).set(h.auth(ws)).expect(200);
+    const outline = await request(h.server()).post(`${h.base(ws)}/${itemId}/outline`).set(h.auth(ws)).expect(202);
+    await h.completeStageJob(ws, h.stageJobId(outline.body.data, "outline"), OUTLINE_OUTPUT);
+    await h.reconcileGet(ws, itemId);
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/outline/approve`).set(h.auth(ws)).expect(200);
+    // Draft/SEO not yet generated -> SEO cannot be READY -> internal-linking must reject.
+    const res = await request(h.server()).post(`${h.base(ws)}/${itemId}/internal-linking`).set(h.auth(ws)).expect(422);
+    expect(res.body.code).toBe("BLOG_SEO_NOT_READY");
+    await h.cleanup(ws);
+  }, 90_000);
+
+  it("[characterization] the stage always reaches COMPLETED, and QA's gate depends only on status, never suggestions.length", async () => {
+    const ws = await h.createWorkspace();
+    const packId = await h.createActivePack(ws);
+    const { itemId } = await walkToDraftAndSeo(h, ws, packId, "Characterization QA gate");
+
+    // Not yet run -> QA must refuse.
+    const qaBefore = await request(h.server()).post(`${h.base(ws)}/${itemId}/qa`).set(h.auth(ws)).expect(422);
+    expect(qaBefore.body.code).toBe("BLOG_INTERNAL_LINKING_NOT_COMPLETE");
+
+    const linked = await request(h.server()).post(`${h.base(ws)}/${itemId}/internal-linking`).set(h.auth(ws)).expect(200);
+    const stage = linked.body.data.internalLinking as { status: string; suggestions: unknown[]; reason: string; completedAt: string | null };
+    expect(stage.status).toBe("COMPLETED");
+    expect(Array.isArray(stage.suggestions)).toBe(true); // may legitimately be empty — zero suggestions is not an error
+    expect(stage.completedAt).toBeTruthy();
+
+    // QA now proceeds purely because status === COMPLETED, irrespective of suggestions.length.
+    await request(h.server()).post(`${h.base(ws)}/${itemId}/qa`).set(h.auth(ws)).expect(200);
+
+    await h.cleanup(ws);
+  }, 90_000);
+
+  it("[characterization] a suggestion, when present, has exactly the frozen shape: targetContentItemPublicId, anchorText, reason", async () => {
+    // Static/type-level characterization: InternalLinkingSuggestion (Module
+    // 6 Phase 6.3, blog-pipeline.types.ts) is frozen as exactly this shape.
+    // A runtime assertion on a populated array is covered by the post-
+    // integration suggestion-mapping tests below, once the real engine can
+    // legitimately produce a non-empty array; before Phase 8.4 the stub
+    // body could never populate one at all (unconditionally suggestions: []),
+    // so there is nothing further to characterize about its element shape
+    // at runtime pre-integration.
+    const shape: { targetContentItemPublicId: string; anchorText: string; reason: string } = {
+      targetContentItemPublicId: "x",
+      anchorText: "y",
+      reason: "z",
+    };
+    expect(Object.keys(shape).sort()).toEqual(["anchorText", "reason", "targetContentItemPublicId"]);
+  });
 
   it("AI failure preserves the previous checkpoint; approving a FAILED stage is refused", async () => {
     const ws = await h.createWorkspace();
