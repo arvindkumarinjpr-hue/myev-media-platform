@@ -24,6 +24,9 @@ export const INTERNAL_LINK_ERRORS = {
   // Lifecycle (D9)
   INTERNAL_LINK_INVALID_TRANSITION: "INTERNAL_LINK_INVALID_TRANSITION",
 
+  // Discovery (Phase 8.2) — v1 is Blog -> Blog only (corrected D2).
+  INTERNAL_LINK_DISCOVERY_SOURCE_NOT_BLOG: "INTERNAL_LINK_DISCOVERY_SOURCE_NOT_BLOG",
+
   // Duplicate / race safety (D8/D11, correction §5) — the DB's partial
   // unique index is the final concurrency authority; this is what a
   // caught unique-constraint violation on the active-pair index is
