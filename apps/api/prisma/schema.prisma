@@ -362,6 +362,13 @@ enum AuditAction {
   // planning decision, mirroring AI_EXECUTION_REQUESTED's own "audit the
   // triggering intent" reasoning above.
   TOPIC_CLUSTER_CREATED
+  // Module 8 Phase 8.1: internal-linking recommendation persistence
+  // events. One generic status-change action (mirrors CONTENT_ITEM_UPDATED's
+  // own generic-action-plus-afterState-diff style) rather than one enum
+  // value per transition — GENERATED/ACCEPTED/REJECTED/STALE are all
+  // captured in the event's afterState, not the action name itself.
+  INTERNAL_LINK_CREATED
+  INTERNAL_LINK_STATUS_CHANGED
 }
 
 model User {
@@ -426,6 +433,7 @@ model User {
   updatedBlogArticles    BlogArticle[]         @relation("BlogArticleUpdatedBy")
   createdVideoScripts    VideoScript[]         @relation("VideoScriptCreatedBy")
   updatedVideoScripts    VideoScript[]         @relation("VideoScriptUpdatedBy")
+  reviewedInternalLinks  InternalLink[]        @relation("InternalLinkReviewedBy")
 
   @@map("users")
 }
@@ -646,6 +654,7 @@ model Workspace {
   seoReports              SeoReport[]
   blogArticles            BlogArticle[]
   videoScripts            VideoScript[]
+  internalLinks           InternalLink[]
 
   @@index([slug])
   @@index([status])
@@ -1016,6 +1025,11 @@ model ContentItem {
   seoReports    SeoReport[]
   blogArticle   BlogArticle?
   videoScript   VideoScript?
+  // Module 8 Phase 8.1: an item can appear as either side of an
+  // InternalLink — two distinct named relations, same pattern as
+  // BlogArticle.createdBy/updatedBy both pointing at User.
+  internalLinksAsSource InternalLink[] @relation("InternalLinkSource")
+  internalLinksAsTarget InternalLink[] @relation("InternalLinkTarget")
 
   // Workspace-safe composite FK target for content_review_events'
   // contentItemId relation.
@@ -2417,4 +2431,95 @@ model VideoScript {
   @@unique([contentItemId, workspaceId])
   @@index([workspaceId])
   @@map("video_scripts")
+}
+
+// ---------------------------------------------------------------------------
+// Module 8 Phase 8.1 — AI Internal Linking Engine: Domain + Persistence
+// Foundation.
+//
+// AI_CONTENT_DATABASE_AND_ENTITY_DESIGN_V1.0.md Appendix G names
+// `internal_links` as the frozen table for this feature — extended here
+// with a full recommendation-lifecycle field set, the same relationship
+// every other real Prisma model already has to its own minimal logical-
+// schema-doc listing (see ContentScore/BlogArticle/VideoScript above).
+//
+// v1 scope is Blog -> Blog only (Module 8 Architecture Checkpoint
+// Correction, corrected D2 — VideoScript has no stable linkable-URL
+// concept today; BlogArticle.urlSlug does). Persistence itself stays
+// content-item-generic (plain FKs to content_items, no Blog-specific
+// column) so a future content type is a business-logic change to
+// candidate discovery, not a schema redesign.
+//
+// This migration adds ONLY this table + two enum values on AuditAction +
+// the two ContentItem back-relations + the one User back-relation above.
+// No existing table is altered, dropped, or backfilled.
+// ---------------------------------------------------------------------------
+
+// GENERATED -> ACCEPTED | REJECTED | STALE; ACCEPTED -> STALE. REJECTED and
+// STALE are both terminal for that row — a fresh recommendation for the
+// same pair is always a NEW row, never a resurrection (see the partial
+// unique index below, which deliberately excludes REJECTED/STALE from
+// its uniqueness scope for exactly this reason).
+enum InternalLinkStatus {
+  GENERATED
+  ACCEPTED
+  REJECTED
+  STALE
+}
+
+model InternalLink {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  // Workspace-safe composite FKs — source and target must each belong to
+  // the SAME workspace as this row (same pattern as ContentScore/
+  // BlogArticle/VideoScript's own contentItemId relation). Two distinct
+  // named relations onto the same target model, same pattern as
+  // BlogArticle.createdBy/updatedBy both pointing at User.
+  sourceContentItemId String      @map("source_content_item_id") @db.Uuid
+  sourceContentItem   ContentItem @relation("InternalLinkSource", fields: [sourceContentItemId, workspaceId], references: [id, workspaceId])
+  targetContentItemId String      @map("target_content_item_id") @db.Uuid
+  targetContentItem   ContentItem @relation("InternalLinkTarget", fields: [targetContentItemId, workspaceId], references: [id, workspaceId])
+
+  anchorText     String @map("anchor_text")
+  // 0-100, enforced at the domain layer (assertValidRelevanceScore) —
+  // Postgres CHECK constraints are deliberately not used anywhere else in
+  // this schema, so none is introduced here either.
+  relevanceScore Int    @map("relevance_score")
+  // Structured per-factor breakdown (topic-cluster proximity, keyword
+  // overlap, freshness, authority, anchor fit, density/duplicate
+  // penalties — Module 8 Architecture Checkpoint §9). Populated by the
+  // Phase 8.2 discovery engine; opaque to Phase 8.1.
+  evidence Json
+
+  status InternalLinkStatus @default(GENERATED)
+
+  // Bumped only if Module 8's own scoring/discovery logic changes in a
+  // way that should be visible per-row without retroactively touching
+  // history (Architecture Checkpoint D14) — a plain version stamp, not a
+  // FK to anything.
+  engineVersion Int      @default(1) @map("engine_version")
+  generatedAt   DateTime @default(now()) @map("generated_at")
+
+  reviewedById String?   @map("reviewed_by") @db.Uuid
+  reviewedBy   User?     @relation("InternalLinkReviewedBy", fields: [reviewedById], references: [id])
+  reviewedAt   DateTime? @map("reviewed_at")
+
+  rejectionReason String? @map("rejection_reason")
+  staleReason     String? @map("stale_reason")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // The partial-unique invariant (at most one live GENERATED/ACCEPTED row
+  // per pair — REJECTED/STALE rows are history, not "live") is a hand-
+  // written raw-SQL index in the migration, not expressible in Prisma's
+  // schema DSL (same precedent as KnowledgePack's own "at most one ACTIVE
+  // per lineage root" partial unique index) — see migration.sql.
+  @@index([workspaceId, sourceContentItemId, status])
+  @@index([workspaceId, targetContentItemId, status])
+  @@map("internal_links")
 }
