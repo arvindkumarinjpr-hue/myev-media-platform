@@ -287,13 +287,18 @@ describe("Blog pipeline — full workflow (e2e)", () => {
     const packId = await h.createActivePack(ws);
     const { itemId } = await walkToDraftAndSeo(h, ws, packId, "Public charging");
     const linked = await request(h.server()).post(`${h.base(ws)}/${itemId}/internal-linking`).set(h.auth(ws)).expect(200);
-    // PRE-INTEGRATION value — see the characterization block immediately
-    // below. This exact assertion is deliberately updated later in this
-    // same phase, once Module 8's real engine replaces the stub body (the
-    // one specific value the phase intentionally changes); the CONTRACT
-    // this test also exercises (COMPLETED, empty suggestions is legitimate)
-    // is what the characterization tests below prove holds unchanged.
-    expect(linked.body.data.internalLinking).toMatchObject({ status: "COMPLETED", suggestions: [], reason: "engine_not_available" });
+    // Module 8 Phase 8.4: this workspace has no other APPROVED Blog
+    // content for the real discovery engine to find, so the seam
+    // legitimately still completes with zero suggestions — but the
+    // reason is now the real engine's own "no related content found"
+    // outcome, not the pre-Phase-8.4 stub's unconditional "engine not
+    // available". This is the ONE deliberate, disclosed update to this
+    // test as part of Phase 8.4 (see the characterization tests above,
+    // written and confirmed green against the seam BEFORE this change,
+    // for the CONTRACT elements — SEO-ready precondition, always
+    // reaching COMPLETED, QA gate depending only on status — that hold
+    // identically both before and after it).
+    expect(linked.body.data.internalLinking).toMatchObject({ status: "COMPLETED", suggestions: [], reason: "no_related_content_found" });
     await h.cleanup(ws);
   }, 90_000);
 
