@@ -139,6 +139,25 @@ export interface AppConfig {
     // Content Score scale.
     passThreshold: number;
   };
+  internalLinking: {
+    // Module 8 Phase 8.2 — IMPLEMENTATION DEFAULTS, not frozen product
+    // policy (same status as contentScoring.passThreshold above): no
+    // frozen document gives these numbers, so they are config-driven,
+    // live here and nowhere else, and are never hardcoded in a service
+    // or test.
+    //
+    // How many workspace-scoped candidates a single generateForSource()
+    // call may gather (across all discovery signals combined) before
+    // scoring — the hard bound that keeps discovery from ever becoming
+    // an unrestricted full-workspace scan.
+    candidatePoolLimit: number;
+    // A scored candidate below this (0-100) is discarded, never persisted.
+    minRelevanceThreshold: number;
+    // How many GENERATED rows a single generateForSource() call may
+    // create — the top-N surviving candidates by score, after the
+    // threshold above is applied.
+    maxRecommendationsPerRun: number;
+  };
   ai: {
     // Module 3 Phase 3.4 — real vendor credentials, read here only (never
     // in packages/shared, never hardcoded, never sent to the web bundle).
@@ -268,6 +287,12 @@ export default (): AppConfig => ({
   contentScoring: {
     // Implementation default — see the AppConfig comment. Not a frozen figure.
     passThreshold: parseInt(process.env.CONTENT_SCORING_PASS_THRESHOLD ?? "70", 10),
+  },
+  internalLinking: {
+    // Implementation defaults — see the AppConfig comment. Not frozen figures.
+    candidatePoolLimit: parseInt(process.env.INTERNAL_LINKING_CANDIDATE_POOL_LIMIT ?? "50", 10),
+    minRelevanceThreshold: parseInt(process.env.INTERNAL_LINKING_MIN_RELEVANCE_THRESHOLD ?? "40", 10),
+    maxRecommendationsPerRun: parseInt(process.env.INTERNAL_LINKING_MAX_RECOMMENDATIONS_PER_RUN ?? "5", 10),
   },
   ai: {
     openai: { apiKey: process.env.OPENAI_API_KEY ?? "", model: process.env.OPENAI_MODEL ?? "gpt-4o" },
