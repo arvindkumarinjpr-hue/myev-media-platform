@@ -152,3 +152,33 @@ export function validateAnchorStructure(phrase: string, blockedTerms: string[]):
 
   return { valid: true };
 }
+
+/** The value to actually persist for a human anchor edit — trim + collapse internal whitespace, never the raw input. */
+export function normalizeHumanAnchorText(phrase: string): string {
+  return normalizeWhitespace(phrase);
+}
+
+/**
+ * Module 8 Phase 8.4 — human anchor-edit validation, DELIBERATELY
+ * DISTINCT from validateAnchorStructure() (the Phase 8.3 automatic
+ * engine's own rules). A human editor is exercising editorial judgment,
+ * not participating in a "was this phrase actually found verbatim in
+ * the source" naturalness check — so this omits: the 2-8 word minimum
+ * (a human may legitimately want a single-word anchor), the sentence-
+ * punctuation/keyword-stuffing heuristics (a human's own text is not a
+ * substring match the engine is validating for naturalness), and the
+ * brand/competitor blocklist (a human may have a legitimate editorial
+ * reason the deterministic engine cannot judge). What remains are the
+ * only rules explicitly required of human input: non-empty, a safe
+ * length ceiling, no URL, no punctuation-only value, and no invalid
+ * (control-character) whitespace.
+ */
+export function validateHumanAnchorText(phrase: string): AnchorValidationResult {
+  if (/[\t\n\r]/.test(phrase)) return { valid: false, reason: "invalid-whitespace" };
+  const normalized = normalizeWhitespace(phrase);
+  if (!normalized) return { valid: false, reason: "empty-after-normalization" };
+  if (!/[a-zA-Z0-9]/.test(normalized)) return { valid: false, reason: "punctuation-only" };
+  if (isUrlLike(normalized)) return { valid: false, reason: "url-like" };
+  if (normalized.length > MAX_CHARS) return { valid: false, reason: "above-max-chars" };
+  return { valid: true };
+}

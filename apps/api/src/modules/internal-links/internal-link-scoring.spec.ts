@@ -1,4 +1,4 @@
-import { scoreCandidate, type CandidateScoringInput } from "./internal-link-scoring";
+import { scoreCandidate, summarizeEvidenceReason, type CandidateScoringInput } from "./internal-link-scoring";
 
 const NOW = new Date("2026-09-01T00:00:00Z");
 
@@ -123,5 +123,29 @@ describe("scoreCandidate", () => {
     for (const method of ["cluster", "keyword-cluster", "kp-keyword", "token-fallback"] as const) {
       expect(scoreCandidate({ ...baseInput, discoveryMethod: method }).discoveryMethod).toBe(method);
     }
+  });
+});
+
+describe("summarizeEvidenceReason", () => {
+  it("produces a short, deterministic, human-readable label per discovery method, with the score", () => {
+    for (const method of ["cluster", "keyword-cluster", "kp-keyword", "token-fallback"] as const) {
+      const evidence = scoreCandidate({ ...baseInput, discoveryMethod: method });
+      const reason = summarizeEvidenceReason(evidence);
+      expect(typeof reason).toBe("string");
+      expect(reason.length).toBeGreaterThan(0);
+      expect(reason).toContain(String(evidence.overallScore));
+    }
+  });
+
+  it("is deterministic — identical evidence always produces an identical reason string", () => {
+    const evidence = scoreCandidate(baseInput);
+    expect(summarizeEvidenceReason(evidence)).toBe(summarizeEvidenceReason(evidence));
+  });
+
+  it("never dumps the full evidence object — the reason is a short label, not a JSON serialization", () => {
+    const evidence = scoreCandidate(baseInput);
+    const reason = summarizeEvidenceReason(evidence);
+    expect(reason).not.toContain("factors");
+    expect(reason.length).toBeLessThan(80);
   });
 });

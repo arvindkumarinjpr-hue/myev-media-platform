@@ -18,10 +18,12 @@ import { AuditService } from "../audit/audit.service";
 import { AiJobSubmissionService } from "../ai-jobs/ai-job-submission.service";
 import { ContentScoringService } from "../content-scoring/content-scoring.service";
 import { ContentBodyValidator } from "../content/content-body-validator";
+import { InternalLinkDiscoveryService } from "../internal-links/internal-link-discovery.service";
+import { InternalLinksQueryService } from "../internal-links/internal-links-query.service";
 import { BLOG_ERRORS } from "./blog.errors";
 import { deriveStage, emptyPipelineState, isPublishReady, readPipelineState, unmetReviewGates, writePipelineState } from "./blog-pipeline-state";
 import { runQaChecks } from "./blog-qa";
-import type { BriefStageState, DraftStageState, OutlineStageState, SeoStageState, BlogPipelineState } from "./blog-pipeline.types";
+import type { BriefStageState, DraftStageState, OutlineStageState, SeoStageState, BlogPipelineState, InternalLinkingStageState, InternalLinkingSuggestion } from "./blog-pipeline.types";
 
 export interface BlogActor {
   userPublicId: string;
@@ -80,6 +82,8 @@ export class BlogPipelineService {
     private readonly aiJobs: AiJobSubmissionService,
     private readonly scoring: ContentScoringService,
     private readonly bodyValidator: ContentBodyValidator,
+    private readonly internalLinkDiscovery: InternalLinkDiscoveryService,
+    private readonly internalLinksQuery: InternalLinksQueryService,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -549,7 +553,72 @@ export class BlogPipelineService {
   // Stage: internal linking (FR-BLOG-005 seam — Module 8 not built)
   // ---------------------------------------------------------------------
 
+  /**
+   * Module 8 Phase 8.4 — the intentional seam completion. FR-BLOG-005:
+   * "No related content found → pass completes with zero suggestions,
+   * not an error." Module 8's real, deterministic discovery + anchor
+   * engine (Phase 8.2/8.3) now runs here instead of the Phase 6.3 stub;
+   * the pipeline stage contract itself (SEO-ready precondition, always
+   * reaching COMPLETED, the InternalLinkingSuggestion shape, QA depending
+   * only on status) is unchanged — see the Phase 8.4 characterization
+   * tests in blog-pipeline.e2e-spec.ts, which pass identically before and
+   * after this change.
+   *
+   * InternalLinksService.create()/updateAnchor() (called transitively via
+   * internalLinkDiscovery.generateForSource()) each run their OWN
+   * transaction and cannot be nested inside this method's own item-
+   * locking transaction — same reason runQa() gathers its own external
+   * data (loadBrandTerms()/loadWorkspaceBlogCorpus()) BEFORE its
+   * transaction rather than inside it. Three steps, not one:
+   *
+   *  1. Lock + finalizeStages + verify SEO READY, and — critically —
+   *     PERSIST that reconciliation if it changed anything. This is
+   *     required, not optional: GET (projectReadModel) is deliberately,
+   *     testedly read-only and never persists a pending AI-job
+   *     reconciliation (see "GET ... is strictly read-only" elsewhere in
+   *     this suite) — a mutating call is the only place that happens, so
+   *     this step's persist is what makes "SEO READY" durably true
+   *     before Module 8 ever runs.
+   *  2. Module 8's own transaction(s) — discovery, then the current live
+   *     suggestion list.
+   *  3. Lock again, finalizeStages again (a no-op now — step 1 already
+   *     persisted it, so every idempotency guard in finalizeStages
+   *     short-circuits), re-verify SEO READY (closes the race window to
+   *     just the duration of step 2), set internalLinking, persist.
+   *
+   * Only LIVE (GENERATED/ACCEPTED) recommendations are mapped into the
+   * lightweight suggestions[] snapshot — this reflects the source's
+   * CURRENT full set of live recommendations (not just ones newly
+   * created by this call), so a repeated call safely reports the true
+   * up-to-date picture. The full lifecycle/evidence stays in
+   * internal_links; only a lightweight { targetContentItemPublicId,
+   * anchorText, reason } snapshot is copied here, per the frozen
+   * contract.
+   */
   async runInternalLinking(workspaceId: string, actor: BlogActor, itemPublicId: string, ctx: RequestContext): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      const { item, state } = await this.loadLockedPipeline(tx, workspaceId, itemPublicId);
+      this.assertEditable(item);
+      const { state: reconciled, changed } = await this.finalizeStages(tx, item, state);
+      if (reconciled.seo.status !== "READY") {
+        throw new UnprocessableEntityException({ code: BLOG_ERRORS.BLOG_SEO_NOT_READY, message: "The SEO pass must complete before internal linking." });
+      }
+      if (changed) {
+        await this.persistState(tx, item, reconciled, {
+          action: "CONTENT_ITEM_UPDATED",
+          afterState: { "blogPipeline.reconciledBeforeInternalLinking": true },
+          actorInternalId: actor.userInternalId,
+          ipAddress: ctx.ipAddress,
+        });
+      }
+    });
+
+    await this.internalLinkDiscovery.generateForSource(workspaceId, itemPublicId, actor.userInternalId, { ipAddress: ctx.ipAddress });
+    const views = await this.internalLinksQuery.listForItem(workspaceId, itemPublicId);
+    const liveSuggestions: InternalLinkingSuggestion[] = views
+      .filter((v) => v.status === "GENERATED" || v.status === "ACCEPTED")
+      .map((v) => ({ targetContentItemPublicId: v.targetContentItemPublicId, anchorText: v.anchorText, reason: v.reason }));
+
     await this.prisma.$transaction(async (tx) => {
       const { item, state } = await this.loadLockedPipeline(tx, workspaceId, itemPublicId);
       this.assertEditable(item);
@@ -557,15 +626,11 @@ export class BlogPipelineService {
       if (reconciled.seo.status !== "READY") {
         throw new UnprocessableEntityException({ code: BLOG_ERRORS.BLOG_SEO_NOT_READY, message: "The SEO pass must complete before internal linking." });
       }
-      // FR-BLOG-005: "No related content found → pass completes with zero
-      // suggestions, not an error." Module 8 (the real engine) is not
-      // built in Phase 6.3 — the stage/seam exists and returns zero
-      // suggestions with an explicit typed status until it lands. No
-      // external search, no fabricated links.
-      reconciled.internalLinking = { status: "COMPLETED", suggestions: [], reason: "engine_not_available", completedAt: new Date().toISOString() };
+      const reason: InternalLinkingStageState["reason"] = liveSuggestions.length > 0 ? "suggestions_generated" : "no_related_content_found";
+      reconciled.internalLinking = { status: "COMPLETED", suggestions: liveSuggestions, reason, completedAt: new Date().toISOString() };
       await this.persistState(tx, item, reconciled, {
         action: "CONTENT_ITEM_UPDATED",
-        afterState: { "blogPipeline.internalLinking.status": "COMPLETED", "blogPipeline.internalLinking.reason": "engine_not_available" },
+        afterState: { "blogPipeline.internalLinking.status": "COMPLETED", "blogPipeline.internalLinking.reason": reason, "blogPipeline.internalLinking.suggestionCount": liveSuggestions.length },
         actorInternalId: actor.userInternalId,
         ipAddress: ctx.ipAddress,
       });

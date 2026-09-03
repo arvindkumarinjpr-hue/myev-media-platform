@@ -1,4 +1,4 @@
-import { Injectable, UnprocessableEntityException } from "@nestjs/common";
+import { Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import type { ContentItem } from "../../../generated/prisma";
 import { PrismaService } from "../../prisma/prisma.service";
@@ -8,7 +8,7 @@ import { assertSourceEligible } from "./internal-link-domain";
 import { INTERNAL_LINK_ERRORS } from "./internal-link.errors";
 import { InternalLinksService } from "./internal-links.service";
 import { extractPlainText, extractRelativeLinkPaths, tokenize } from "./internal-link-text";
-import { scoreCandidate, type CandidateEvidence, type DiscoveryMethod } from "./internal-link-scoring";
+import { scoreCandidate, summarizeEvidenceReason, type CandidateEvidence, type DiscoveryMethod } from "./internal-link-scoring";
 import { InternalLinkAnchorService } from "./internal-link-anchor.service";
 import { resolveInternalLinkingPolicy, type InternalLinkingPolicy } from "./internal-link-policy";
 
@@ -20,7 +20,7 @@ export interface DiscoveryRunResult {
   sourceContentItemPublicId: string;
   candidatesConsidered: number;
   candidatesScored: number;
-  recommendationsCreated: Array<{ targetContentItemPublicId: string; relevanceScore: number; discoveryMethod: DiscoveryMethod; anchorText: string }>;
+  recommendationsCreated: Array<{ targetContentItemPublicId: string; relevanceScore: number; discoveryMethod: DiscoveryMethod; anchorText: string; reason: string }>;
 }
 
 interface CandidateEntry {
@@ -75,7 +75,12 @@ export class InternalLinkDiscoveryService {
   async generateForSource(workspaceId: string, sourceContentItemPublicId: string, actorUserId: string | null, context: RequestContext = {}): Promise<DiscoveryRunResult> {
     const source = await this.prisma.contentItem.findFirst({ where: { workspaceId, publicId: sourceContentItemPublicId }, select: SOURCE_SELECT });
     if (!source) {
-      throw new UnprocessableEntityException({ code: INTERNAL_LINK_ERRORS.INTERNAL_LINK_SOURCE_NOT_FOUND, message: "Content item not found." });
+      // Module 8 Phase 8.4 fix: "not found" (including cross-workspace,
+      // enumeration-safe) is a 404, matching Phase 8.1's own
+      // resolveEligibilityRow() and the platform-wide convention — not
+      // a 422 (which is reserved for a found-but-wrong-state entity,
+      // e.g. INTERNAL_LINK_DISCOVERY_SOURCE_NOT_BLOG just below).
+      throw new NotFoundException({ code: INTERNAL_LINK_ERRORS.INTERNAL_LINK_SOURCE_NOT_FOUND, message: "Content item not found." });
     }
     if (source.contentType !== "BLOG") {
       throw new UnprocessableEntityException({
@@ -276,7 +281,7 @@ export class InternalLinkDiscoveryService {
           // exists and is fully valid with its Phase 8.2 seed.
         }
 
-        recommendationsCreated.push({ targetContentItemPublicId: entry.item.publicId, relevanceScore: created.relevanceScore, discoveryMethod: entry.discoveryMethod, anchorText: finalAnchorText });
+        recommendationsCreated.push({ targetContentItemPublicId: entry.item.publicId, relevanceScore: created.relevanceScore, discoveryMethod: entry.discoveryMethod, anchorText: finalAnchorText, reason: summarizeEvidenceReason(evidence) });
       } catch (error) {
         // The pre-filter above already excludes known-active pairs; this
         // catch only matters under a genuine concurrent-generation race,

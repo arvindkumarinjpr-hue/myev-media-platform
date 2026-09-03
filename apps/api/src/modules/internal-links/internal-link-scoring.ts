@@ -219,3 +219,22 @@ export function scoreCandidate(input: CandidateScoringInput): CandidateEvidence 
 
   return { overallScore, totalWeight, factors, discoveryMethod: input.discoveryMethod };
 }
+
+const DISCOVERY_METHOD_LABELS: Record<DiscoveryMethod, string> = {
+  cluster: "Same content series / topic cluster",
+  "keyword-cluster": "Shared keyword-cluster topic",
+  "kp-keyword": "Shared Knowledge Pack keywords",
+  "token-fallback": "Related by shared terms",
+};
+
+/**
+ * Module 8 Phase 8.4 — a short, deterministic, human-readable summary of
+ * WHY a recommendation was made, derived from its own structured
+ * evidence. Used only for the Module 6 Blog pipeline's lightweight
+ * InternalLinkingSuggestion.reason snapshot (never the full evidence
+ * JSON — that stays in internal_links, per the pipeline seam's own
+ * frozen "lightweight snapshot" contract).
+ */
+export function summarizeEvidenceReason(evidence: CandidateEvidence): string {
+  return `${DISCOVERY_METHOD_LABELS[evidence.discoveryMethod]} (relevance ${evidence.overallScore})`;
+}
