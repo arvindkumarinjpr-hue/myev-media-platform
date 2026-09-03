@@ -1,4 +1,4 @@
-import { buildCandidates, extractDomainToken, validateAnchorStructure } from "./internal-link-anchor";
+import { buildCandidates, extractDomainToken, normalizeHumanAnchorText, validateAnchorStructure, validateHumanAnchorText } from "./internal-link-anchor";
 
 describe("buildCandidates", () => {
   it("selects a natural phrase matching the target primary keyword, preserving source casing", () => {
@@ -113,5 +113,56 @@ describe("extractDomainToken", () => {
 
   it("returns null for a token too short to be meaningful", () => {
     expect(extractDomainToken("a.co")).toBeNull();
+  });
+});
+
+describe("validateHumanAnchorText", () => {
+  it("accepts a normal phrase", () => {
+    expect(validateHumanAnchorText("home ev charging")).toEqual({ valid: true });
+  });
+
+  it("accepts a SINGLE word — deliberately no 2-word minimum, unlike the automatic engine", () => {
+    expect(validateHumanAnchorText("Voltiq").valid).toBe(true);
+  });
+
+  it("accepts a phrase that does NOT appear anywhere in any source text — human judgment, not a naturalness check", () => {
+    expect(validateHumanAnchorText("completely invented anchor phrase").valid).toBe(true);
+  });
+
+  it("does NOT apply the automatic engine's brand/competitor blocklist", () => {
+    // validateAnchorStructure would reject this with blockedTerms=["voltiq"]; validateHumanAnchorText never even takes a blockedTerms argument.
+    expect(validateHumanAnchorText("Voltiq comparison").valid).toBe(true);
+  });
+
+  it("rejects empty and whitespace-only candidates", () => {
+    expect(validateHumanAnchorText("").valid).toBe(false);
+    expect(validateHumanAnchorText("   ").valid).toBe(false);
+  });
+
+  it("rejects punctuation-only candidates", () => {
+    expect(validateHumanAnchorText("--- ...").valid).toBe(false);
+  });
+
+  it("rejects URL-like candidates", () => {
+    expect(validateHumanAnchorText("https://example.com/page").valid).toBe(false);
+    expect(validateHumanAnchorText("www.example.com").valid).toBe(false);
+  });
+
+  it("rejects candidates over 60 characters", () => {
+    expect(validateHumanAnchorText("a".repeat(61)).valid).toBe(false);
+  });
+
+  it("rejects invalid (control-character) whitespace", () => {
+    expect(validateHumanAnchorText("home\tev\ncharging").valid).toBe(false);
+  });
+
+  it("does NOT reject a sentence-like candidate — a human may legitimately want punctuation the automatic engine would refuse", () => {
+    expect(validateHumanAnchorText("Is this the best charger?").valid).toBe(true);
+  });
+});
+
+describe("normalizeHumanAnchorText", () => {
+  it("trims and collapses internal whitespace", () => {
+    expect(normalizeHumanAnchorText("  home   ev  charging  ")).toBe("home ev charging");
   });
 });

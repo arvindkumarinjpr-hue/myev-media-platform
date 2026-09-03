@@ -27,6 +27,11 @@ export const INTERNAL_LINK_ERRORS = {
   // Discovery (Phase 8.2) — v1 is Blog -> Blog only (corrected D2).
   INTERNAL_LINK_DISCOVERY_SOURCE_NOT_BLOG: "INTERNAL_LINK_DISCOVERY_SOURCE_NOT_BLOG",
 
+  // Human anchor editing (Phase 8.4) — distinct from the Phase 8.3
+  // automatic-engine's own structural rules (see internal-link-anchor.ts's
+  // validateHumanAnchorText vs validateAnchorStructure).
+  INTERNAL_LINK_ANCHOR_VALIDATION_FAILED: "INTERNAL_LINK_ANCHOR_VALIDATION_FAILED",
+
   // Duplicate / race safety (D8/D11, correction §5) — the DB's partial
   // unique index is the final concurrency authority; this is what a
   // caught unique-constraint violation on the active-pair index is
