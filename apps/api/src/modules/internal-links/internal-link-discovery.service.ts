@@ -9,6 +9,8 @@ import { INTERNAL_LINK_ERRORS } from "./internal-link.errors";
 import { InternalLinksService } from "./internal-links.service";
 import { extractPlainText, extractRelativeLinkPaths, tokenize } from "./internal-link-text";
 import { scoreCandidate, type CandidateEvidence, type DiscoveryMethod } from "./internal-link-scoring";
+import { InternalLinkAnchorService } from "./internal-link-anchor.service";
+import { resolveInternalLinkingPolicy, type InternalLinkingPolicy } from "./internal-link-policy";
 
 interface RequestContext {
   ipAddress?: string;
@@ -18,7 +20,7 @@ export interface DiscoveryRunResult {
   sourceContentItemPublicId: string;
   candidatesConsidered: number;
   candidatesScored: number;
-  recommendationsCreated: Array<{ targetContentItemPublicId: string; relevanceScore: number; discoveryMethod: DiscoveryMethod }>;
+  recommendationsCreated: Array<{ targetContentItemPublicId: string; relevanceScore: number; discoveryMethod: DiscoveryMethod; anchorText: string }>;
 }
 
 interface CandidateEntry {
@@ -66,6 +68,7 @@ export class InternalLinkDiscoveryService {
     private readonly prisma: PrismaService,
     private readonly internalLinks: InternalLinksService,
     private readonly contentScoring: ContentScoringService,
+    private readonly anchorEngine: InternalLinkAnchorService,
     private readonly config: ConfigService<AppConfig, true>,
   ) {}
 
@@ -86,7 +89,12 @@ export class InternalLinkDiscoveryService {
     const sourceTokens = [...tokenize(sourceText)];
     const sourceRelativeLinkPaths = extractRelativeLinkPaths(source.currentVersion?.body ?? null);
 
-    const { limit, minThreshold, maxPerRun } = this.readConfig();
+    const { limit, minThreshold: configThreshold, maxPerRun } = this.readConfig();
+    const policy = await this.loadPolicy(workspaceId);
+    // Phase 8.3 §G: when a workspace's own KP policy sets a minimum, it
+    // is an ADDITIONAL floor on top of the global AppConfig default,
+    // never a way to weaken it.
+    const minThreshold = policy.minRelevanceScore !== null ? Math.max(configThreshold, policy.minRelevanceScore) : configThreshold;
 
     // 1 & 2. Cluster proximity + keyword-cluster overlap — the one real
     // structural relationship in the schema (ContentItem.seriesId ->
@@ -147,6 +155,16 @@ export class InternalLinkDiscoveryService {
     });
     const activeTargetIds = new Set(existingActiveTargets.map((r) => r.targetContentItemId));
     for (const id of activeTargetIds) candidates.delete(id);
+
+    // internalLinkingPolicy.excludedContentItemIds — public ids, so
+    // resolve against the already-loaded candidate metadata rather than
+    // a second query.
+    if (policy.excludedContentItemIds.length > 0) {
+      const excludedPublicIds = new Set(policy.excludedContentItemIds);
+      for (const [id, entry] of candidates) {
+        if (excludedPublicIds.has(entry.item.publicId)) candidates.delete(id);
+      }
+    }
 
     const candidatesConsidered = candidates.size;
     if (candidatesConsidered === 0) {
@@ -224,10 +242,13 @@ export class InternalLinkDiscoveryService {
           {
             sourceContentItemPublicId,
             targetContentItemPublicId: entry.item.publicId,
-            // Truthful placeholder, not a fabricated/polished anchor —
-            // Phase 8.3 owns real anchor selection (deterministic
-            // substring extraction + optional AI polish) and can revise
-            // this field via the already-supported edit path.
+            // The InternalLink schema requires anchorText NOT NULL and
+            // no anchor engine has run yet at create()-time — this is
+            // the deterministic Phase 8.2 seed/fallback. Immediately
+            // below, Phase 8.3's anchor engine attempts to replace it
+            // with a real natural-phrase candidate via updateAnchor();
+            // this value is what stands if that engine finds nothing
+            // better (or is unreachable), never a fabricated anchor.
             anchorText: entry.item.title,
             relevanceScore: evidence.overallScore,
             evidence: evidence as unknown as Record<string, unknown>,
@@ -235,7 +256,27 @@ export class InternalLinkDiscoveryService {
           },
           context,
         );
-        recommendationsCreated.push({ targetContentItemPublicId: entry.item.publicId, relevanceScore: created.relevanceScore, discoveryMethod: entry.discoveryMethod });
+        let finalAnchorText = created.anchorText;
+
+        // Phase 8.3 — deterministic anchor recommendation, applied
+        // in-place onto the row create() just seeded with the target
+        // title. Never allowed to fail the whole discovery run: a
+        // provider is never involved here (no AI dependency at all in
+        // this phase), but the engine still runs defensively — if it
+        // throws for any reason, the already-seeded target-title
+        // fallback from create() stands untouched, which is always a
+        // safe, deterministic, already-valid result on its own.
+        try {
+          const anchorEvidence = await this.anchorEngine.selectAnchor(workspaceId, sourceText, { id: entry.item.id, title: entry.item.title });
+          const mergedEvidence = { ...(created.evidence as Record<string, unknown>), anchor: anchorEvidence };
+          const revised = await this.internalLinks.updateAnchor(workspaceId, created.publicId, { anchorText: anchorEvidence.selectedAnchor, evidence: mergedEvidence });
+          finalAnchorText = revised.anchorText;
+        } catch {
+          // Deliberately swallowed — see comment above. The row already
+          // exists and is fully valid with its Phase 8.2 seed.
+        }
+
+        recommendationsCreated.push({ targetContentItemPublicId: entry.item.publicId, relevanceScore: created.relevanceScore, discoveryMethod: entry.discoveryMethod, anchorText: finalAnchorText });
       } catch (error) {
         // The pre-filter above already excludes known-active pairs; this
         // catch only matters under a genuine concurrent-generation race,
@@ -314,5 +355,13 @@ export class InternalLinkDiscoveryService {
   private readConfig(): { limit: number; minThreshold: number; maxPerRun: number } {
     const cfg = this.config.get("internalLinking", { infer: true });
     return { limit: cfg.candidatePoolLimit, minThreshold: cfg.minRelevanceThreshold, maxPerRun: cfg.maxRecommendationsPerRun };
+  }
+
+  private async loadPolicy(workspaceId: string): Promise<InternalLinkingPolicy> {
+    const pack = await this.prisma.knowledgePack.findFirst({
+      where: { workspaceId, status: "ACTIVE", deletedAt: null },
+      select: { seoRules: { select: { internalLinkingPolicy: true }, take: 1 } },
+    });
+    return resolveInternalLinkingPolicy(pack?.seoRules[0]?.internalLinkingPolicy ?? null);
   }
 }

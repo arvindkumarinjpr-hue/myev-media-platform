@@ -1,11 +1,13 @@
 import { Module } from "@nestjs/common";
 import { ContentScoringModule } from "../content-scoring/content-scoring.module";
+import { InternalLinkAnchorService } from "./internal-link-anchor.service";
 import { InternalLinkDiscoveryService } from "./internal-link-discovery.service";
 import { InternalLinksService } from "./internal-links.service";
 
 /**
  * Module 8 — AI Internal Linking Engine: Domain + Persistence Foundation
- * (Phase 8.1) + Candidate Discovery + Relevance Engine (Phase 8.2).
+ * (Phase 8.1) + Candidate Discovery + Relevance Engine (Phase 8.2) +
+ * Anchor Recommendation Engine (Phase 8.3).
  *
  * No controller yet — PrismaService/AuditService are both @Global(), so
  * no explicit import is needed for those, mirroring TopicClustersModule/
@@ -17,7 +19,7 @@ import { InternalLinksService } from "./internal-links.service";
  */
 @Module({
   imports: [ContentScoringModule],
-  providers: [InternalLinksService, InternalLinkDiscoveryService],
-  exports: [InternalLinksService, InternalLinkDiscoveryService],
+  providers: [InternalLinksService, InternalLinkDiscoveryService, InternalLinkAnchorService],
+  exports: [InternalLinksService, InternalLinkDiscoveryService, InternalLinkAnchorService],
 })
 export class InternalLinksModule {}

@@ -131,6 +131,43 @@ export class InternalLinksService {
     return this.transition(workspaceId, internalLinkPublicId, "STALE", null, context, { staleReason });
   }
 
+  /**
+   * Module 8 Phase 8.3 — lets the deterministic anchor engine revise a
+   * still-undecided recommendation's anchorText/evidence in place. Only
+   * GENERATED rows may ever be touched here — ACCEPTED/REJECTED/STALE
+   * are all terminal-or-human-owned and must never be automatically
+   * revised (Phase 8.3 architecture §K). The status-scoped `updateMany`
+   * is the atomicity guarantee: a concurrent accept()/reject() moving
+   * the row out of GENERATED between a plain read and a plain write
+   * could otherwise silently clobber a human decision; here the WHERE
+   * clause itself is evaluated atomically by Postgres, so at most one of
+   * "the human's transition" or "the engine's revision" wins outright —
+   * never a torn write.
+   *
+   * No new audit action: this is considered part of the single
+   * "generation" business event already recorded by create()'s
+   * INTERNAL_LINK_CREATED entry, not a second human-facing event — and
+   * adding a dedicated AuditAction enum value would require a migration
+   * this phase does not need.
+   */
+  async updateAnchor(workspaceId: string, internalLinkPublicId: string, patch: { anchorText: string; evidence: Record<string, unknown> }): Promise<InternalLink> {
+    const updated = await this.prisma.internalLink.updateMany({
+      where: { workspaceId, publicId: internalLinkPublicId, status: "GENERATED" },
+      data: { anchorText: patch.anchorText, evidence: patch.evidence as Prisma.InputJsonValue },
+    });
+    if (updated.count === 0) {
+      const existing = await this.prisma.internalLink.findFirst({ where: { workspaceId, publicId: internalLinkPublicId } });
+      if (!existing) {
+        throw new NotFoundException({ code: INTERNAL_LINK_ERRORS.INTERNAL_LINK_NOT_FOUND, message: "Internal-link recommendation not found." });
+      }
+      throw new ConflictException({
+        code: INTERNAL_LINK_ERRORS.INTERNAL_LINK_INVALID_TRANSITION,
+        message: `Cannot automatically revise an internal-link recommendation that is "${existing.status}" — only GENERATED rows may be updated by the anchor engine.`,
+      });
+    }
+    return this.prisma.internalLink.findFirstOrThrow({ where: { workspaceId, publicId: internalLinkPublicId } });
+  }
+
   async findOne(workspaceId: string, internalLinkPublicId: string): Promise<InternalLink> {
     const row = await this.prisma.internalLink.findFirst({ where: { workspaceId, publicId: internalLinkPublicId } });
     if (!row) {
