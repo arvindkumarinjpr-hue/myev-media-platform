@@ -31,6 +31,11 @@
   margin: 0;
 }
 
+.hint {
+  font-size: var(--text-xs);
+  color: var(--color-text-subtle);
+}
+
 .filterEmpty {
   font-size: var(--text-sm);
   color: var(--color-text-muted);
