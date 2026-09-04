@@ -65,7 +65,28 @@ describe("Publishing — Phase 9.3 Dispatch + Scheduling (e2e)", () => {
     return { id: account.id, publicId: account.publicId };
   }
 
+  // This suite dispatches real durable publishing.execute.v1 jobs a real,
+  // already-running general Worker (WORKER_QUEUES includes PUBLISHING in
+  // CI) picks up and executes asynchronously — same shape as
+  // ai-jobs-submission.e2e-spec.ts's own established precedent. Waiting
+  // for every BackgroundJob this workspace created to reach a terminal
+  // status before cleanup starts closes the race between the Worker's
+  // own BackgroundJobHistory inserts and cleanup's deletes entirely,
+  // rather than merely narrowing it by reordering/retrying deletes. The
+  // fixture provider registry is empty in the real worker process too
+  // (no real connector exists), so every dispatched job fails fast
+  // (PROVIDER_NOT_CONFIGURED) — this never waits long in practice.
+  async function waitForAllPublishingJobsTerminal(ws: Workspace): Promise<void> {
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      const pending = await ctx.prisma.backgroundJob.count({ where: { workspaceId: ws.id, jobType: "publishing.execute.v1", status: { in: ["QUEUED", "RUNNING"] } } });
+      if (pending === 0) return;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+
   async function cleanup(ws: Workspace): Promise<void> {
+    await waitForAllPublishingJobsTerminal(ws);
     await ctx.prisma.publishAttempt.deleteMany({ where: { publicationTarget: { workspaceId: ws.id } } });
     await ctx.prisma.publicationTarget.deleteMany({ where: { workspaceId: ws.id } });
     await ctx.prisma.publication.deleteMany({ where: { workspaceId: ws.id } });
