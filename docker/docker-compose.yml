@@ -107,6 +107,12 @@ services:
       APP_URL: http://localhost:3100
       # Dev-only secret — never used outside this local compose stack.
       JWT_ACCESS_SECRET: dev-only-jwt-secret-do-not-use-in-production
+      # Module 9 Phase 9.1 — dev-only 64-hex-char AES-256-GCM key, never
+      # used outside this local compose stack (same convention as
+      # JWT_ACCESS_SECRET above). Previously missing here entirely — a
+      # gap dating to Phase 9.1, closed now that Phase 9.3 actually
+      # exercises credential encryption in a local dev/worker flow.
+      PUBLISHING_CREDENTIAL_ENCRYPTION_KEY: "1111111111111111111111111111111111111111111111111111111111111111"
     depends_on:
       postgres:
         condition: service_healthy
@@ -153,12 +159,17 @@ services:
       LOG_LEVEL: info
       DATABASE_URL: postgresql://myev:myev_dev_password@postgres:5432/myev_media?schema=public
       REDIS_URL: redis://redis:6379
-      # This worker instance's own queue selection. SYSTEM + AI only — it
-      # has NO media/render code path (no Remotion, no Chromium in the
-      # apps/worker image). The MEDIA queue is owned exclusively by the
-      # render-worker service below; putting MEDIA here would dead-letter
-      # every media/render job (no handler is bound).
-      WORKER_QUEUES: SYSTEM,AI
+      # This worker instance's own queue selection. SYSTEM + AI +
+      # PUBLISHING (Module 9 Phase 9.3) — it has NO media/render code path
+      # (no Remotion, no Chromium in the apps/worker image). The MEDIA
+      # queue is owned exclusively by the render-worker service below;
+      # putting MEDIA here would dead-letter every media/render job (no
+      # handler is bound).
+      WORKER_QUEUES: SYSTEM,AI,PUBLISHING
+      # Dev-only secret — same fixed value as the api service above (both
+      # read from the identical Postgres-stored ChannelCredential rows,
+      # so they must share one key in this local stack).
+      PUBLISHING_CREDENTIAL_ENCRYPTION_KEY: "1111111111111111111111111111111111111111111111111111111111111111"
       WORKER_APPLICATION_VERSION: "0.1.0"
     depends_on:
       postgres:
