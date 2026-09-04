@@ -185,11 +185,22 @@ describe("Worker (e2e) — Module 9 Phase 9.5 YouTube connector, real provider t
     const serializedAttempts = JSON.stringify(attempts);
     expect(serializedAttempts).not.toContain(FIXTURE_ACCESS_TOKEN);
     expect(serializedAttempts).not.toContain(FIXTURE_REFRESH_TOKEN);
-    // The checkpoint row (saved BEFORE any byte upload) must carry only
-    // the non-secret session URI/byte count — never the credential.
+    // Module 9 Phase 9.5 pre-merge security correction — the checkpoint
+    // row (saved BEFORE any byte upload) must carry the resumable-upload
+    // session URI ONLY as an encrypted envelope. The session URI is
+    // sensitive capability data (a bearer of it can query/resume the
+    // upload without separately presenting the OAuth credential) — it
+    // must never appear anywhere in the row as plaintext.
     const checkpointAttempt = attempts.find((a) => a.fromStatus === "PUBLISHING" && a.toStatus === "PUBLISHING");
     expect(checkpointAttempt).toBeDefined();
-    expect(Object.keys(checkpointAttempt?.detail as Record<string, unknown>).sort()).toEqual(["totalBytes", "uploadSessionUri"]);
+    const checkpointDetail = checkpointAttempt?.detail as Record<string, unknown>;
+    expect(checkpointDetail.checkpointType).toBe("YOUTUBE_RESUMABLE_UPLOAD");
+    expect(Object.keys(checkpointDetail).sort()).toEqual(["checkpointType", "encrypted"]);
+    expect(Object.keys(checkpointDetail.encrypted as Record<string, unknown>).sort()).toEqual(["authTag", "ciphertext", "keyVersion", "nonce"]);
+    // The fixture session URI (`${fixtureServer.url}/upload/session/it1`)
+    // must not appear anywhere in the serialized attempt history —
+    // proving the envelope genuinely carries no plaintext capability data.
+    expect(serializedAttempts).not.toContain("/upload/session/it1");
     // completeTarget() persists only { externalContentId, externalUrl } —
     // never the raw YouTube response verbatim (Part S).
     const publishedAttempt = attempts.find((a) => a.toStatus === "PUBLISHED");

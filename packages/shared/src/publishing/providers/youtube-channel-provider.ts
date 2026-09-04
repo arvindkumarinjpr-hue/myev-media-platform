@@ -32,8 +32,19 @@ export interface YouTubeChannelProviderOptions {
   oauthTokenEndpoint?: string;
 }
 
-/** The non-secret, resumable-upload checkpoint this connector persists via `PublishingExecutionCallbacks.saveCheckpoint()` — see that method's own doc comment. Never contains credentials. */
-interface YouTubeUploadCheckpoint {
+/**
+ * The non-secret, resumable-upload checkpoint this connector persists via
+ * `PublishingExecutionCallbacks.saveCheckpoint()` — see that method's own
+ * doc comment. Never contains credentials. `uploadSessionUri` IS treated
+ * as sensitive capability data by the caller (a bearer can query/resume
+ * the session) and is persisted encrypted at rest — see
+ * apps/worker/src/publishing/publishing-execution.service.ts's own
+ * `saveCheckpoint`/`loadPriorCheckpoint`. Exported (with its own type
+ * guard) so that encryption/decryption boundary can validate the
+ * decrypted payload's shape using this exact, single-source-of-truth
+ * definition rather than re-deriving it.
+ */
+export interface YouTubeUploadCheckpoint {
   uploadSessionUri: string;
   totalBytes: number;
 }
@@ -42,7 +53,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function isYouTubeUploadCheckpoint(value: unknown): value is YouTubeUploadCheckpoint {
+export function isYouTubeUploadCheckpoint(value: unknown): value is YouTubeUploadCheckpoint {
   return isRecord(value) && typeof value.uploadSessionUri === "string" && value.uploadSessionUri.length > 0 && typeof value.totalBytes === "number";
 }
 
