@@ -1,0 +1,138 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.healthStrip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+}
+.healthStrip strong {
+  color: var(--color-text-strong);
+  font-variant-numeric: tabular-nums;
+}
+.healthLink {
+  margin-left: auto;
+  font-weight: var(--weight-medium);
+}
+
+.generateRow {
+  display: flex;
+}
+
+.rowAlert {
+  margin: 0;
+}
+
+.filterEmpty {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  padding: var(--space-3) 0;
+}
+
+.recList {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+}
+.row[data-status="STALE"],
+.row[data-status="REJECTED"] {
+  opacity: 0.85;
+}
+
+.rowHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.targetTitle {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text-strong);
+}
+
+.rowBody {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+.anchorLine {
+  font-size: var(--text-sm);
+}
+
+.reasonLine {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.evidence {
+  font-size: var(--text-xs);
+  color: var(--color-text-subtle);
+}
+.evidence summary {
+  cursor: pointer;
+  color: var(--color-text-muted);
+  font-weight: var(--weight-medium);
+}
+.evidence ul {
+  list-style: disc;
+  padding-left: var(--space-4);
+  margin-top: var(--space-1);
+}
+
+.timestamps {
+  font-size: var(--text-xs);
+  color: var(--color-text-subtle);
+}
+
+.reasonNote {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.rowActions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.rejectForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+@media (max-width: 40rem) {
+  .healthStrip {
+    gap: var(--space-2);
+  }
+  .healthLink {
+    margin-left: 0;
+    width: 100%;
+  }
+  .rowBody {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-2);
+  }
+}

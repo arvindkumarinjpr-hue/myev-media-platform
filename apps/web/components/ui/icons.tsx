@@ -286,6 +286,16 @@ export function VideoIcon(props: IconProps) {
   );
 }
 
+export function LinkGraphIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <rect x="3" y="4" width="6" height="6" rx="1.5" />
+      <rect x="15" y="14" width="6" height="6" rx="1.5" />
+      <path d="M9 7h4a3 3 0 0 1 3 3v4" />
+    </Base>
+  );
+}
+
 export function CheckCircleIcon(props: IconProps) {
   return (
     <Base {...props}>

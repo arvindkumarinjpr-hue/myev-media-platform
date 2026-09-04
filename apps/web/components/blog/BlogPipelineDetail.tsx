@@ -18,6 +18,7 @@ import { Stepper } from "../ui/Stepper";
 import { Textarea } from "../ui/Textarea";
 import { ChevronRightIcon, CheckCircleIcon, XCircleIcon } from "../ui/icons";
 import { ContentItemStatusBadge, DeterministicStageBadge, GenerationStageBadge } from "./BlogStageBadge";
+import { InternalLinkRecommendations } from "./InternalLinkRecommendations";
 import { useBlogPipeline } from "./useBlogPipeline";
 import { currentStepIndex, deriveStage } from "./pipelineStage";
 import {
@@ -460,7 +461,7 @@ function InternalLinkingPanel({ workspaceId, itemId, p, caps, run, busy, mutable
     <StagePanel
       title="Internal linking"
       badge={<DeterministicStageBadge status={s.status} />}
-      description="Suggests related internal links once the linking engine is available."
+      description="Deterministic, editorial internal-link recommendations from already-approved Blog articles — reviewed and approved by a human, never inserted automatically."
       actions={
         caps.edit && mutable && s.status === "PENDING" && prereqMet ? (
           <Button size="sm" loading={busy("link.run")} onClick={() => run("link.run", () => blogApi.runInternalLinking(workspaceId, itemId))}>
@@ -470,19 +471,14 @@ function InternalLinkingPanel({ workspaceId, itemId, p, caps, run, busy, mutable
       }
     >
       {!prereqMet && s.status === "PENDING" && <p className={styles.prereq}>Complete the SEO pass first.</p>}
+      {/* Legacy pre-Module-8 completions only — every stage completed via runInternalLinking() today reaches "suggestions_generated" or "no_related_content_found" instead. */}
       {s.status === "COMPLETED" && s.reason === "engine_not_available" && (
         <Alert tone="info" role="status" className={styles.failure}>
-          The internal-linking engine will be available in a later module. This stage is complete for the current workflow — no suggestions were generated.
+          This stage completed before the linking engine was available — no suggestions were generated.
         </Alert>
       )}
-      {s.status === "COMPLETED" && s.suggestions.length > 0 && (
-        <ul className={styles.linkList}>
-          {s.suggestions.map((sg, i) => (
-            <li key={i}>
-              <strong>{sg.anchorText}</strong> — {sg.reason}
-            </li>
-          ))}
-        </ul>
+      {s.status === "COMPLETED" && s.reason !== "engine_not_available" && (
+        <InternalLinkRecommendations workspaceId={workspaceId} itemId={itemId} canEdit={caps.seoEdit} />
       )}
     </StagePanel>
   );

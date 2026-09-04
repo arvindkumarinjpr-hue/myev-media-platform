@@ -753,3 +753,104 @@ export interface MediaDownloadUrl {
   downloadUrl: string;
   expiresAt: string;
 }
+
+// Module 8 — AI Internal Linking Engine (Phases 8.1-8.5). Mirrors
+// InternalLinksQueryService.InternalLinkView, InternalLinkIntelligenceService's
+// three read views, and the two mutation-response shapes exactly (see
+// apps/api/src/modules/internal-links/*.ts) — never invented.
+
+export type InternalLinkStatus = "GENERATED" | "ACCEPTED" | "REJECTED" | "STALE";
+
+export type InternalLinkDiscoveryMethod = "cluster" | "keyword-cluster" | "kp-keyword" | "token-fallback";
+
+export type InternalLinkAnchorSource = "target-primary-keyword" | "target-title-subphrase" | "target-title-fallback";
+
+export interface InternalLinkEvidenceFactor {
+  id: string;
+  label: string;
+  reason: string;
+  normalizedScore: number;
+  weight: number;
+  contribution: number;
+}
+
+export interface InternalLinkAnchorEvidence {
+  source: InternalLinkAnchorSource;
+  selectedAnchor: string;
+  humanEdited?: boolean;
+  editedAt?: string;
+  previousAnchor?: string;
+}
+
+export interface InternalLinkEvidence {
+  overallScore: number;
+  totalWeight: number;
+  factors: InternalLinkEvidenceFactor[];
+  discoveryMethod: InternalLinkDiscoveryMethod;
+  anchor?: InternalLinkAnchorEvidence;
+}
+
+/** The full recommendation read model — GET .../blog/:itemId/internal-links and POST .../generate both return this shape. */
+export interface InternalLinkRecommendation {
+  publicId: string;
+  sourceContentItemPublicId: string;
+  targetContentItemPublicId: string;
+  targetTitle: string;
+  anchorText: string;
+  relevanceScore: number;
+  status: InternalLinkStatus;
+  evidence: InternalLinkEvidence;
+  reason: string;
+  generatedAt: string;
+  reviewedAt: string | null;
+  reviewedByPublicId: string | null;
+  rejectionReason: string | null;
+  staleReason: string | null;
+}
+
+/** The narrower shape returned by PATCH anchor / accept / reject (InternalLinksController's own serialize()). */
+export interface InternalLinkMutationResult {
+  publicId: string;
+  anchorText: string;
+  relevanceScore: number;
+  status: InternalLinkStatus;
+  reviewedAt: string | null;
+  rejectionReason: string | null;
+  staleReason: string | null;
+}
+
+export interface OrphanBlog {
+  contentItemPublicId: string;
+  title: string;
+  urlSlug: string | null;
+  contentSeriesPublicId: string | null;
+  topicClusterPublicId: string | null;
+  incomingAcceptedLinkCount: number;
+  outgoingAcceptedLinkCount: number;
+  latestContentScore: number | null;
+  updatedAt: string;
+  reason: "NO_ACCEPTED_INCOMING_LINKS";
+}
+
+export interface ClusterLinkHealth {
+  topicClusterPublicId: string;
+  name: string;
+  approvedBlogCount: number;
+  orphanBlogCount: number;
+  blogsWithZeroOutgoingAcceptedLinksCount: number;
+  intraClusterAcceptedLinkCount: number;
+  crossClusterAcceptedLinkCount: number;
+  linkCoveragePercentage: number | null;
+}
+
+export interface WorkspaceLinkHealthSummary {
+  eligibleApprovedBlogs: number;
+  orphanBlogs: number;
+  blogsWithNoOutgoingAcceptedLinks: number;
+  acceptedLinks: number;
+  generatedRecommendations: number;
+  staleRecommendations: number;
+  rejectedRecommendations: number;
+  clustersEvaluated: number;
+  clustersWithOrphans: number;
+}
