@@ -91,11 +91,24 @@ describe("BlogPipelineDetail", () => {
     expect(screen.getByText(/Inline editing and full version history land in a later phase/i)).toBeInTheDocument();
   });
 
-  it("shows the internal-linking engine-not-available state as a non-error", async () => {
+  it("shows a legacy pre-Module-8 internal-linking completion as a non-error", async () => {
     const p = pipeline({ internalLinking: { status: "COMPLETED", suggestions: [], reason: "engine_not_available", completedAt: "x" } });
     jest.spyOn(global, "fetch").mockImplementation(routeFetch({ "blog-1/score": null, "blog-1": p }));
     renderDetail(["BLOG_VIEW"]);
-    await waitFor(() => expect(screen.getByText(/internal-linking engine will be available in a later module/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/completed before the linking engine was available/i)).toBeInTheDocument());
+  });
+
+  it("renders the Module 8 recommendations UI once the internal-linking stage has real results", async () => {
+    const p = pipeline({ internalLinking: { status: "COMPLETED", suggestions: [], reason: "suggestions_generated", completedAt: "x" } });
+    const fetchMock = jest.fn(async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes("/internal-links")) return mockResponse({ data: [] });
+      if (url.includes("/score")) return mockResponse({ data: null });
+      return mockResponse({ data: p });
+    });
+    jest.spyOn(global, "fetch").mockImplementation(fetchMock as unknown as typeof fetch);
+    renderDetail(["BLOG_VIEW"]);
+    await waitFor(() => expect(screen.getByText("No internal-link recommendations yet.")).toBeInTheDocument());
   });
 
   it("renders all six QA checks with pass/fail, explanation and evidence", async () => {
