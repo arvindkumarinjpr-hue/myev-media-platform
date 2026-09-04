@@ -33,6 +33,15 @@ export const PUBLISHING_ERRORS = {
   // Credential encryption (Part Q)
   PUBLISHING_CREDENTIAL_ENCRYPTION_KEY_INVALID: "PUBLISHING_CREDENTIAL_ENCRYPTION_KEY_INVALID",
   PUBLISHING_CREDENTIAL_DECRYPTION_FAILED: "PUBLISHING_CREDENTIAL_DECRYPTION_FAILED",
+
+  // Phase 9.2 — provider abstraction / resolution. Provider absence must
+  // be typed and non-catastrophic (never a crash at startup or an
+  // unhandled throw at resolution time) — see publishing-provider-
+  // resolver.service.ts.
+  PUBLISHING_PROVIDER_NOT_CONFIGURED: "PUBLISHING_PROVIDER_NOT_CONFIGURED",
+  PUBLISHING_CHANNEL_ACCOUNT_NOT_CONNECTED: "PUBLISHING_CHANNEL_ACCOUNT_NOT_CONNECTED",
+  PUBLISHING_CREDENTIAL_UNAVAILABLE: "PUBLISHING_CREDENTIAL_UNAVAILABLE",
+  PUBLISHING_CREDENTIAL_EXPIRED: "PUBLISHING_CREDENTIAL_EXPIRED",
 } as const;
 
 export type PublishingErrorCode = (typeof PUBLISHING_ERRORS)[keyof typeof PUBLISHING_ERRORS];

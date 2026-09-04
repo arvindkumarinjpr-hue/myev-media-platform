@@ -190,6 +190,13 @@ jobs:
       # just created.
       BOOTSTRAP_OWNER_EMAIL: owner@myevmedia.com
       BOOTSTRAP_OWNER_PASSWORD: ci-only-owner-password-do-not-use-elsewhere-123
+      # Module 9 Phase 9.1: PublishingCredentialCryptoService's AES-256-GCM
+      # master key — a fixed, 64-hex-char CI-only value (never a real
+      # secret). Phase 9.1's own e2e suite never exercised the real crypto
+      # service (its fixtures wrote raw placeholder ciphertext directly),
+      # so this gap went unnoticed until Phase 9.2's e2e suite started
+      # calling PublishingCredentialCryptoService.encrypt() for real.
+      PUBLISHING_CREDENTIAL_ENCRYPTION_KEY: "1111111111111111111111111111111111111111111111111111111111111111"
       # Module 1D: MinIO started via the "Start MinIO" step below (see the
       # comment above `services:` for why it isn't a service container).
       STORAGE_ENDPOINT: localhost
