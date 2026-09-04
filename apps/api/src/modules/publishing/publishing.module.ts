@@ -1,4 +1,6 @@
 import { Module } from "@nestjs/common";
+import { ConfigModule, ConfigService } from "@nestjs/config";
+import type { AppConfig } from "../../config/configuration";
 import { BackgroundJobsModule } from "../background-jobs/background-jobs.module";
 import { PublishingCredentialCryptoService } from "./publishing-credential-crypto.service";
 import { PublishingDispatchService } from "./publishing-dispatch.service";
@@ -28,14 +30,18 @@ import { PublishingReadinessService } from "./publishing-readiness.service";
  * RESEARCH_SOURCE_PROVIDER/AiProviderRegistryModule already established.
  */
 @Module({
-  imports: [BackgroundJobsModule],
+  imports: [BackgroundJobsModule, ConfigModule],
   providers: [
     PublishingCredentialCryptoService,
     PublishingPersistenceService,
     PublishingProviderResolverService,
     PublishingReadinessService,
     PublishingDispatchService,
-    { provide: PUBLISHING_PROVIDER_REGISTRY, useFactory: buildPublishingProviderRegistry },
+    {
+      provide: PUBLISHING_PROVIDER_REGISTRY,
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService<AppConfig, true>) => buildPublishingProviderRegistry(configService.get("publishing", { infer: true }).youtube),
+    },
   ],
   exports: [PublishingCredentialCryptoService, PublishingPersistenceService, PublishingProviderResolverService, PublishingReadinessService, PublishingDispatchService, PUBLISHING_PROVIDER_REGISTRY],
 })

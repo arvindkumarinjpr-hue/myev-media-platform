@@ -179,6 +179,16 @@ export interface AppConfig {
     // (PUBLISHING_CREDENTIAL_ENCRYPTION_KEY_INVALID), never platform
     // startup — no current code path calls it yet in Phase 9.1.
     credentialEncryptionKey: string;
+    // Module 9 Phase 9.5 — the platform's OWN Google OAuth 2.0 client
+    // (registered once in Google's API console), needed to refresh a
+    // workspace's YouTube access token via the standard refresh_token
+    // grant. Unlike WordPress (per-workspace credentials, nothing
+    // platform-level to gate on), this IS a platform secret — same
+    // discipline as ai.* above: read here only, never in
+    // packages/shared, never sent to the web bundle. An empty clientId
+    // means YouTubeChannelProvider is simply not registered (mirrors
+    // the ai.* "provider left unconfigured" convention exactly).
+    youtube: { oauthClientId: string; oauthClientSecret: string };
   };
 }
 
@@ -312,5 +322,6 @@ export default (): AppConfig => ({
   },
   publishing: {
     credentialEncryptionKey: process.env.PUBLISHING_CREDENTIAL_ENCRYPTION_KEY ?? "",
+    youtube: { oauthClientId: process.env.YOUTUBE_OAUTH_CLIENT_ID ?? "", oauthClientSecret: process.env.YOUTUBE_OAUTH_CLIENT_SECRET ?? "" },
   },
 });
