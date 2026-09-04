@@ -189,6 +189,13 @@ export interface AppConfig {
     // means YouTubeChannelProvider is simply not registered (mirrors
     // the ai.* "provider left unconfigured" convention exactly).
     youtube: { oauthClientId: string; oauthClientSecret: string };
+    // Module 9 Phase 9.6 — Meta's own registered App id, required by
+    // FacebookChannelProvider's resumable-upload session endpoint
+    // (`/APP_ID/uploads`). No app secret is needed at runtime (no OAuth
+    // token exchange happens in this phase). InstagramChannelProvider
+    // needs no platform-level app credential at all — always registered,
+    // like WordPress.
+    meta: { appId: string };
   };
 }
 
@@ -323,5 +330,6 @@ export default (): AppConfig => ({
   publishing: {
     credentialEncryptionKey: process.env.PUBLISHING_CREDENTIAL_ENCRYPTION_KEY ?? "",
     youtube: { oauthClientId: process.env.YOUTUBE_OAUTH_CLIENT_ID ?? "", oauthClientSecret: process.env.YOUTUBE_OAUTH_CLIENT_SECRET ?? "" },
+    meta: { appId: process.env.META_APP_ID ?? "" },
   },
 });

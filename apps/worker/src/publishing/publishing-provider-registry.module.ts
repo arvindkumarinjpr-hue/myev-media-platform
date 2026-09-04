@@ -1,6 +1,6 @@
 import { Global, Logger, Module } from "@nestjs/common";
 import { ConfigModule, ConfigService } from "@nestjs/config";
-import { PublishingProviderRegistryBuilder, WordPressChannelProvider, YouTubeChannelProvider, type PublishingProviderRegistry } from "@myev/shared";
+import { FacebookChannelProvider, InstagramChannelProvider, PublishingProviderRegistryBuilder, WordPressChannelProvider, YouTubeChannelProvider, type PublishingProviderRegistry } from "@myev/shared";
 import type { WorkerConfig } from "../config/configuration";
 
 export const PUBLISHING_PROVIDER_REGISTRY = Symbol("PUBLISHING_PROVIDER_REGISTRY");
@@ -24,12 +24,14 @@ const logger = new Logger("PublishingProviderRegistryModule");
  * `YouTubeChannelProvider`, gated behind the platform's own Google OAuth
  * client id/secret exactly like apps/api's own factory (see its doc
  * comment) — identical capabilities/behavior apps/api registers (Part T:
- * no capability/auth-parsing drift between the two processes). No other
- * real connector exists yet — no Facebook/Instagram connector (later
- * phases). Every `resolve(channelType)` call against an unconfigured
- * channel still fails as a typed error, never a crash.
+ * no capability/auth-parsing drift between the two processes). Module 9
+ * Phase 9.6 adds `InstagramChannelProvider` (unconditional, mirrors
+ * WordPress) and `FacebookChannelProvider` (gated on Meta's App id alone
+ * — no app secret needed at runtime this phase). Every `resolve(channelType)`
+ * call against an unconfigured channel still fails as a typed error,
+ * never a crash.
  */
-export function buildPublishingProviderRegistry(youtube: { oauthClientId: string; oauthClientSecret: string }): PublishingProviderRegistry {
+export function buildPublishingProviderRegistry(youtube: { oauthClientId: string; oauthClientSecret: string }, meta: { appId: string }): PublishingProviderRegistry {
   const builder = new PublishingProviderRegistryBuilder();
   builder.register(new WordPressChannelProvider());
 
@@ -38,6 +40,15 @@ export function buildPublishingProviderRegistry(youtube: { oauthClientId: string
     logger.log("YouTube provider configured.");
   } else {
     logger.warn("YouTube provider not configured — YOUTUBE_OAUTH_CLIENT_ID/YOUTUBE_OAUTH_CLIENT_SECRET are not set.");
+  }
+
+  builder.register(new InstagramChannelProvider());
+
+  if (meta.appId) {
+    builder.register(new FacebookChannelProvider({ appId: meta.appId }));
+    logger.log("Facebook provider configured.");
+  } else {
+    logger.warn("Facebook provider not configured — META_APP_ID is not set.");
   }
 
   return builder.freeze();
@@ -50,7 +61,10 @@ export function buildPublishingProviderRegistry(youtube: { oauthClientId: string
     {
       provide: PUBLISHING_PROVIDER_REGISTRY,
       inject: [ConfigService],
-      useFactory: (configService: ConfigService<WorkerConfig, true>) => buildPublishingProviderRegistry(configService.get("publishing", { infer: true }).youtube),
+      useFactory: (configService: ConfigService<WorkerConfig, true>) => {
+        const publishing = configService.get("publishing", { infer: true });
+        return buildPublishingProviderRegistry(publishing.youtube, publishing.meta);
+      },
     },
   ],
   exports: [PUBLISHING_PROVIDER_REGISTRY],

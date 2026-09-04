@@ -8,7 +8,7 @@ import {
   type PublishingReadinessFacts,
   type PublishingReadinessResult,
 } from "@myev/shared";
-import type { ContentType } from "../../../generated/prisma";
+import type { ContentType, PublishingChannelType, VideoTargetPlatform } from "../../../generated/prisma";
 import { PrismaService } from "../../prisma/prisma.service";
 import { PublishingProviderResolverService, type ResolvedPublishingChannelContext } from "./publishing-provider-resolver.service";
 import { PUBLISHING_ERRORS } from "./publishing.errors";
@@ -42,6 +42,17 @@ function isPublishingErrorCode(err: unknown, code: string): boolean {
   const response = err.getResponse();
   return typeof response === "object" && response !== null && (response as Record<string, unknown>).code === code;
 }
+
+/**
+ * Module 9 Phase 9.6 — mirrors apps/worker's own identically-named
+ * constant exactly (see its doc comment). EXPORT_PROFILES defines
+ * exactly one 9:16 render profile per Reel-shaped channel, so there is no
+ * ambiguity to resolve.
+ */
+const REEL_TARGET_PLATFORM_BY_CHANNEL: Partial<Record<PublishingChannelType, VideoTargetPlatform>> = {
+  FACEBOOK: "FACEBOOK_REEL",
+  INSTAGRAM: "INSTAGRAM_REEL",
+};
 
 /**
  * Module 9 Phase 9.2/9.3 — the apps/api thin adapter over `@myev/shared`'s
@@ -83,7 +94,7 @@ export class PublishingReadinessService {
     }
 
     const connectionHealthResult = await this.buildConnectionHealthResult(workspaceId, channelAccountPublicId, channelContext);
-    const contentTypeFacts = await this.buildContentTypeFacts(workspaceId, contentItem);
+    const contentTypeFacts = await this.buildContentTypeFacts(workspaceId, contentItem, channelContext.channelType);
 
     const facts: PublishingReadinessFacts = {
       ...baseFacts,
@@ -161,16 +172,21 @@ export class PublishingReadinessService {
     };
   }
 
-  private async buildContentTypeFacts(workspaceId: string, contentItem: ContentItemForReadiness): Promise<Partial<PublishingReadinessFacts>> {
+  private async buildContentTypeFacts(workspaceId: string, contentItem: ContentItemForReadiness, channelType: PublishingChannelType): Promise<Partial<PublishingReadinessFacts>> {
     if (contentItem.contentType === "BLOG") {
       const blogArticle = await this.prisma.blogArticle.findFirst({ where: { workspaceId, contentItemId: contentItem.id }, select: { metaDescription: true } });
       const blogPublishingContentAvailable = await this.resolveBlogPublishingContentAvailable(contentItem.currentVersionId);
       return { blogArticleExists: blogArticle !== null, blogMetaDescription: blogArticle?.metaDescription ?? null, blogPublishingContentAvailable };
     }
     if (contentItem.contentType === "VIDEO") {
+      // Module 9 Phase 9.6 — mirrors apps/worker's own identically-named
+      // service's doc comment: for Reel-shaped channels, the "latest
+      // render" query is scoped to the platform-matched render only, to
+      // avoid handing Instagram/Facebook a wrong-aspect-ratio video.
+      const requiredTargetPlatform = REEL_TARGET_PLATFORM_BY_CHANNEL[channelType];
       const [latestRenderJob, videoScript] = await Promise.all([
         this.prisma.videoRenderJob.findFirst({
-          where: { workspaceId, contentItemId: contentItem.id },
+          where: { workspaceId, contentItemId: contentItem.id, ...(requiredTargetPlatform ? { targetPlatform: requiredTargetPlatform } : {}) },
           orderBy: { createdAt: "desc" },
           select: { status: true, outputMediaAssetPublicId: true },
         }),

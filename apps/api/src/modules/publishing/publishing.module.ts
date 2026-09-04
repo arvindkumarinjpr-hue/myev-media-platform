@@ -40,7 +40,10 @@ import { PublishingReadinessService } from "./publishing-readiness.service";
     {
       provide: PUBLISHING_PROVIDER_REGISTRY,
       inject: [ConfigService],
-      useFactory: (configService: ConfigService<AppConfig, true>) => buildPublishingProviderRegistry(configService.get("publishing", { infer: true }).youtube),
+      useFactory: (configService: ConfigService<AppConfig, true>) => {
+        const publishing = configService.get("publishing", { infer: true });
+        return buildPublishingProviderRegistry(publishing.youtube, publishing.meta);
+      },
     },
   ],
   exports: [PublishingCredentialCryptoService, PublishingPersistenceService, PublishingProviderResolverService, PublishingReadinessService, PublishingDispatchService, PUBLISHING_PROVIDER_REGISTRY],

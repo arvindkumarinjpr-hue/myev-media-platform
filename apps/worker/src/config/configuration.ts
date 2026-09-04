@@ -40,6 +40,15 @@ export interface WorkerConfig extends WorkerCoreConfig {
     // key exactly (its own doc comment explains why this is a platform
     // secret, unlike WordPress's per-workspace credentials).
     youtube: { oauthClientId: string; oauthClientSecret: string };
+    // Module 9 Phase 9.6 — Meta's own registered App id, required by
+    // FacebookChannelProvider's resumable-upload session endpoint
+    // (`/APP_ID/uploads`). Research finding: unlike YouTube, no app
+    // secret is needed at runtime (no OAuth token exchange happens in
+    // this phase — Phase 9.7 owns that), and InstagramChannelProvider
+    // needs no platform-level app credential at all (its resumable
+    // upload path is scoped by the per-workspace container id, not an
+    // app id) — mirrors apps/api's own identically-named key.
+    meta: { appId: string };
   };
 }
 
@@ -74,6 +83,7 @@ export default function configuration(): WorkerConfig {
     publishing: {
       credentialEncryptionKey: process.env.PUBLISHING_CREDENTIAL_ENCRYPTION_KEY ?? "",
       youtube: { oauthClientId: process.env.YOUTUBE_OAUTH_CLIENT_ID ?? "", oauthClientSecret: process.env.YOUTUBE_OAUTH_CLIENT_SECRET ?? "" },
+      meta: { appId: process.env.META_APP_ID ?? "" },
     },
   };
 }
