@@ -100,6 +100,9 @@ export function InternalLinkRecommendations({ workspaceId, itemId, canEdit }: { 
           </Button>
         </div>
       )}
+      {canEdit && rows.some((r) => r.status === "REJECTED") && (
+        <p className={styles.hint}>Previously rejected recommendations may be suggested again if content or relevance has changed since.</p>
+      )}
       {genError && (
         <Alert tone="danger" role="alert" className={styles.rowAlert}>
           {genError}

@@ -146,6 +146,16 @@ describe("InternalLinkRecommendations", () => {
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("The SEO pass must complete first."));
   });
 
+  it("shows a re-suggestion hint only when a rejected recommendation exists in the current data", async () => {
+    const { unmount } = renderList([recommendation()], true);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Generate recommendations" })).toBeInTheDocument());
+    expect(screen.queryByText(/Previously rejected recommendations may be suggested again/)).not.toBeInTheDocument();
+    unmount();
+
+    renderList([recommendation({ status: "REJECTED", rejectionReason: "Not relevant." })], true);
+    await waitFor(() => expect(screen.getByText(/Previously rejected recommendations may be suggested again/)).toBeInTheDocument());
+  });
+
   it("anchor edit: save calls PATCH and adopts the new anchor text; cancel discards the draft", async () => {
     const updated = { publicId: "il-1", anchorText: "cheapest home charging", relevanceScore: 82, status: "GENERATED" as const, reviewedAt: null, rejectionReason: null, staleReason: null };
     const fetchMock = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
