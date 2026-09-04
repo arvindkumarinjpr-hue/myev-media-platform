@@ -9,6 +9,15 @@ import { PublishingDispatchProcessor } from "../src/queue/processors/publishing-
 import { SchedulerTickManager } from "../src/scheduler/scheduler-tick.manager";
 import type { ContentItemStatus, ContentType, ScheduledJob } from "../../api/generated/prisma";
 
+/** Module 9 Phase 9.4 — a minimal, valid ContentVersion.body.blogDraft fixture (see blog-publishing-content.ts's own BlogPublishingDraft shape). */
+const FIXTURE_BLOG_DRAFT = {
+  introduction: "Fixture introduction.",
+  bodySections: [{ level: 2, heading: "Fixture Section", content: "Fixture section content." }],
+  conclusion: "Fixture conclusion.",
+  cta: "Fixture call to action.",
+  faqs: [],
+};
+
 /**
  * Module 9 Phase 9.3 Pre-Merge Correction — proves the actual Publishing
  * scheduler handoff: SchedulerTickManager -> a due publishing.dispatch.v1
@@ -129,7 +138,13 @@ describe("Worker (e2e) — Module 9 Phase 9.3 Publishing scheduler integration",
       const created = await tx.contentItem.create({
         data: { workspaceId: ws.id, contentType: overrides.contentType ?? "BLOG", title: overrides.title ?? `Fixture ${randomUUID()}`, status: overrides.status ?? "DRAFT", createdById: userId },
       });
-      const version = await tx.contentVersion.create({ data: { contentItemId: created.id, versionNumber: 1, body: { content: "fixture" }, createdById: userId } });
+      // Module 9 Phase 9.4 — a real WordPress connector requires
+      // body.blogDraft to resolve BLOG_PUBLISHING_CONTENT_MISSING; this
+      // helper's fixtures are BLOG by default and mostly expect readiness
+      // to succeed, so a valid blogDraft is always attached (harmless/
+      // ignored for VIDEO content items).
+      const body = { content: "fixture", blogDraft: FIXTURE_BLOG_DRAFT };
+      const version = await tx.contentVersion.create({ data: { contentItemId: created.id, versionNumber: 1, body, createdById: userId } });
       return tx.contentItem.update({ where: { id: created.id }, data: { currentVersionId: version.id } });
     });
     return { id: item.id, publicId: item.publicId };

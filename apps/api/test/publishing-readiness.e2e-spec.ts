@@ -86,7 +86,23 @@ describe("Publishing — Phase 9.2 Provider Abstraction + Readiness (e2e)", () =
   const auth = (ws: Workspace) => ({ Authorization: `Bearer ${ownerAccessToken}`, "X-Workspace-Id": ws.publicId });
 
   async function createItem(ws: Workspace, contentType: "BLOG" | "VIDEO", title: string): Promise<{ id: string; publicId: string }> {
-    const body = contentType === "VIDEO" ? { script: "Fixture script for Module 9 Phase 9.2 tests." } : { content: "Fixture content for Module 9 Phase 9.2 tests." };
+    const body =
+      contentType === "VIDEO"
+        ? { script: "Fixture script for Module 9 Phase 9.2 tests." }
+        : {
+            content: "Fixture content for Module 9 Phase 9.2 tests.",
+            // Module 9 Phase 9.4 — a real WordPress connector requires
+            // body.blogDraft to resolve BLOG_PUBLISHING_CONTENT_MISSING;
+            // most fixtures in this file expect readiness to succeed, so
+            // this shape must be present and valid by default.
+            blogDraft: {
+              introduction: "Fixture introduction.",
+              bodySections: [{ level: 2, heading: "Fixture Section", content: "Fixture section content." }],
+              conclusion: "Fixture conclusion.",
+              cta: "Fixture call to action.",
+              faqs: [],
+            },
+          };
     const res = await request(ctx.app.getHttpServer()).post(`/api/v1/workspaces/${ws.publicId}/content-items`).set(auth(ws)).send({ contentType, title, body }).expect(201);
     const publicId = res.body.data.publicId as string;
     const row = await ctx.prisma.contentItem.findUniqueOrThrow({ where: { publicId }, select: { id: true } });
@@ -129,6 +145,15 @@ describe("Publishing — Phase 9.2 Provider Abstraction + Readiness (e2e)", () =
         createdById: ownerUserId,
       },
     });
+  }
+
+  /** Module 9 Phase 9.4 — a BLOG content item whose body deliberately carries no blogDraft, for BLOG_PUBLISHING_CONTENT_MISSING's own negative test. */
+  async function createItemWithoutBlogDraft(ws: Workspace, title: string): Promise<{ id: string; publicId: string }> {
+    const body = { content: "Fixture content with no structured blogDraft." };
+    const res = await request(ctx.app.getHttpServer()).post(`/api/v1/workspaces/${ws.publicId}/content-items`).set(auth(ws)).send({ contentType: "BLOG", title, body }).expect(201);
+    const publicId = res.body.data.publicId as string;
+    const row = await ctx.prisma.contentItem.findUniqueOrThrow({ where: { publicId }, select: { id: true } });
+    return { id: row.id, publicId };
   }
 
   /** APPROVED Blog + a real BlogArticle row + a current version — the full "ready" happy-path fixture. */
@@ -385,6 +410,21 @@ describe("Publishing — Phase 9.2 Provider Abstraction + Readiness (e2e)", () =
       const result = await readiness.evaluateReadiness(ws.id, item.publicId, channel.publicId);
       expect(result.ready).toBe(false);
       expect(result.blockingReasons).toContain("BLOG_ARTICLE_MISSING");
+
+      await cleanup(ws);
+    });
+
+    it("Module 9 Phase 9.4 — an APPROVED Blog whose current version has no body.blogDraft is not ready — BLOG_PUBLISHING_CONTENT_MISSING", async () => {
+      const ws = await createWorkspace();
+      const item = await createItemWithoutBlogDraft(ws, "No blogDraft");
+      await setContentItemStatusDirectly(item.id, "APPROVED");
+      await createBlogArticle(ws, item.id);
+      const channel = await createChannelAccount(ws, "WORDPRESS");
+
+      const result = await readiness.evaluateReadiness(ws.id, item.publicId, channel.publicId);
+      expect(result.ready).toBe(false);
+      expect(result.blockingReasons).toContain("BLOG_PUBLISHING_CONTENT_MISSING");
+      expect(result.blockingReasons).not.toContain("BLOG_ARTICLE_MISSING");
 
       await cleanup(ws);
     });

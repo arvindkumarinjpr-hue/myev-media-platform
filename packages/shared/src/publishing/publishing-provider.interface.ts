@@ -82,9 +82,27 @@ export interface PublishingArtifactRef {
   mediaAssetPublicId: string;
 }
 
+/**
+ * Module 9 Phase 9.4 — the already-resolved body content a provider
+ * actually publishes, in a channel-neutral, provider-ready shape. A
+ * provider never receives opaque ContentVersion JSON or any other raw
+ * storage representation — the readiness/execution layer resolves it
+ * (e.g. `resolveBlogPublishingContent()` for BLOG, in
+ * blog-publishing-content.ts) before ever constructing a
+ * PublishingPublishInput. `format` is deliberately a closed union so a
+ * provider can never be handed a representation it doesn't know how to
+ * interpret.
+ */
+export interface PublishingContentPayload {
+  format: "HTML";
+  body: string;
+}
+
 export interface PublishingPublishInput {
   contentType: PublishingContentType;
   metadata: PublishingContentMetadataInput;
+  /** The resolved body content to publish — present whenever the channel/content-type combination requires one (e.g. every BLOG publish). Absent for content types that carry no separate body (e.g. VIDEO, where the artifact itself is the payload). */
+  content?: PublishingContentPayload;
   artifact?: PublishingArtifactRef;
   /** A stable, caller-supplied correlation/idempotency token for this one operation attempt — passed straight through so a future real connector can reconcile a provider-succeeded-but-DB-failed race before retrying (Phase 9.3 Part W). Opaque to every Phase 9.2/9.3 provider. */
   operationToken: string;

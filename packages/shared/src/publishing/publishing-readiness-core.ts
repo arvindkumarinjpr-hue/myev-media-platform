@@ -32,6 +32,8 @@ export interface PublishingReadinessFacts {
 
   blogArticleExists: boolean;
   blogMetaDescription: string | null;
+  /** Whether `resolveBlogPublishingContent()` (blog-publishing-content.ts) can successfully resolve this content item's `ContentVersion.body.blogDraft` into a publishable payload — distinct from `blogArticleExists`, see BLOG_PUBLISHING_CONTENT_MISSING's own doc comment. Only meaningful for BLOG. */
+  blogPublishingContentAvailable: boolean;
 
   videoLatestRenderStatus: PublishingVideoRenderJobStatus | null;
   videoOutputMediaAssetPublicId: string | null;
@@ -141,10 +143,25 @@ function evaluateVideoRenderReadiness(facts: PublishingReadinessFacts, blockingR
   return { mediaAssetPublicId: facts.videoOutputMediaAssetPublicId };
 }
 
-/** Blog: BlogArticle row exists. No "current body/version exists" check — Module 1E's own deferred DB trigger already guarantees a non-deleted ContentItem's currentVersionId is never null at commit (confirmed live in Phase 9.2), so that state is unreachable and there is nothing to check. Module 8 ACCEPTED links are never consulted — irrelevant to publish readiness by design. */
+/**
+ * Blog: BlogArticle row exists. No "current body/version exists" check —
+ * Module 1E's own deferred DB trigger already guarantees a non-deleted
+ * ContentItem's currentVersionId is never null at commit (confirmed live
+ * in Phase 9.2), so that state is unreachable and there is nothing to
+ * check. Module 8 ACCEPTED links are never consulted — irrelevant to
+ * publish readiness by design.
+ *
+ * Phase 9.4 adds `blogPublishingContentAvailable` — a version existing
+ * is not the same as its `body.blogDraft` being present/well-formed
+ * (the structured payload a real connector needs to build a publishable
+ * body from); see BLOG_PUBLISHING_CONTENT_MISSING's own doc comment.
+ */
 function evaluateBlogReadiness(facts: PublishingReadinessFacts, blockingReasons: PublishingReadinessReasonCode[]): void {
   if (!facts.blogArticleExists) {
     blockingReasons.push(PUBLISHING_READINESS_REASONS.BLOG_ARTICLE_MISSING);
+  }
+  if (!facts.blogPublishingContentAvailable) {
+    blockingReasons.push(PUBLISHING_READINESS_REASONS.BLOG_PUBLISHING_CONTENT_MISSING);
   }
 }
 
