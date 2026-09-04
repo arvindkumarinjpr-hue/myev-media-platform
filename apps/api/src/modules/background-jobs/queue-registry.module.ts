@@ -5,6 +5,8 @@ import {
   MEDIA_SUBTITLE_GENERATE_V1_MANIFEST,
   MEDIA_TTS_V1_MANIFEST,
   MEDIA_VIDEO_RENDER_V1_MANIFEST,
+  PUBLISHING_DISPATCH_V1_MANIFEST,
+  PUBLISHING_EXECUTE_V1_MANIFEST,
   QueueRegistryBuilder,
   SYSTEM_PING_V1_MANIFEST,
   type QueueRegistry,
@@ -42,6 +44,11 @@ export const QUEUE_REGISTRY = Symbol("QUEUE_REGISTRY");
         // Module 7 Phase 7.5 — manifest-only here (the isolated render
         // worker binds the handler).
         builder.registerManifest(MEDIA_VIDEO_RENDER_V1_MANIFEST);
+        // Module 9 Phase 9.3 — manifest-only here (PublishingDispatchService
+        // enqueues publishing.execute.v1 via BackgroundJobsService.enqueue();
+        // the general apps/worker process binds both handlers).
+        builder.registerManifest(PUBLISHING_EXECUTE_V1_MANIFEST);
+        builder.registerManifest(PUBLISHING_DISPATCH_V1_MANIFEST);
         return builder.freeze();
       },
     },
