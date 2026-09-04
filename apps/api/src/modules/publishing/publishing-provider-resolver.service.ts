@@ -1,10 +1,14 @@
 import { Inject, Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
+import {
+  PublishingProviderRegistryValidationError,
+  type PublishingChannelProvider,
+  type PublishingConnectionValidationResult,
+  type PublishingProviderRegistry,
+} from "@myev/shared";
 import type { PublishingChannelType, PublishingConnectionStatus } from "../../../generated/prisma";
 import { PrismaService } from "../../prisma/prisma.service";
 import { PublishingCredentialCryptoService, PublishingCredentialDecryptionError } from "./publishing-credential-crypto.service";
 import { PUBLISHING_PROVIDER_REGISTRY } from "./publishing-provider-registry.factory";
-import { PublishingProviderRegistry, PublishingProviderRegistryValidationError } from "./publishing-provider-registry";
-import type { PublishingChannelProvider, PublishingConnectionValidationResult } from "./publishing-provider.interface";
 import { PUBLISHING_ERRORS } from "./publishing.errors";
 
 export interface ResolvedPublishingChannelContext {

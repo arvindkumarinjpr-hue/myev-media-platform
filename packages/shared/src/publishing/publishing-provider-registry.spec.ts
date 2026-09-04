@@ -1,7 +1,8 @@
 import { FixturePublishingChannelProvider } from "./fixture-publishing-provider";
 import { PublishingProviderRegistryBuilder, PublishingProviderRegistryValidationError } from "./publishing-provider-registry";
+import type { PublishingChannelType } from "./publishing-types";
 
-function fixture(channelType: "WORDPRESS" | "YOUTUBE" | "FACEBOOK" | "INSTAGRAM") {
+function fixture(channelType: PublishingChannelType) {
   return new FixturePublishingChannelProvider({ channelType });
 }
 

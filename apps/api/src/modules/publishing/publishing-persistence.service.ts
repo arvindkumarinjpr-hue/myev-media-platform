@@ -1,9 +1,9 @@
 import { randomUUID } from "crypto";
-import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { ConflictException, Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
+import { assertContentPublishEligible, assertPublicationTargetTransition, PublishingDomainError } from "@myev/shared";
 import { Prisma, type Publication, type PublicationTarget, type PublicationTargetStatus } from "../../../generated/prisma";
 import { PrismaService } from "../../prisma/prisma.service";
 import { AuditService } from "../audit/audit.service";
-import { assertContentPublishEligible, assertPublicationTargetTransition } from "./publishing-domain";
 import { PUBLISHING_ERRORS } from "./publishing.errors";
 
 const UNIQUE_CONSTRAINT_VIOLATION = "P2002";
@@ -15,6 +15,22 @@ const UNIQUE_CONSTRAINT_VIOLATION = "P2002";
 // raw Prisma/Postgres error.
 function isLiveTargetConflict(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === UNIQUE_CONSTRAINT_VIOLATION;
+}
+
+// Translates a shared, framework-free PublishingDomainError (thrown by
+// @myev/shared's assertContentPublishEligible/assertPublicationTargetTransition)
+// into this process's own HTTP exception idiom — Phase 9.3 Milestone A's
+// apps/api boundary, mirroring agent-executor.service.ts's own
+// AgentExecutionResolutionError catch-and-translate pattern. Never
+// rethrows a raw PublishingDomainError past this point.
+function translatePublishingDomainError(error: unknown): never {
+  if (error instanceof PublishingDomainError) {
+    if (error.code === "PUBLISHING_TARGET_INVALID_TRANSITION") {
+      throw new ConflictException({ code: error.code, message: error.message });
+    }
+    throw new UnprocessableEntityException({ code: error.code, message: error.message });
+  }
+  throw error;
 }
 
 interface CreatePublicationInput {
@@ -76,12 +92,16 @@ export class PublishingPersistenceService {
         latestVideoRenderJobStatus = latestRenderJob?.status ?? null;
       }
 
-      assertContentPublishEligible({
-        contentType: contentItem.contentType,
-        status: contentItem.status,
-        deletedAt: contentItem.deletedAt,
-        latestVideoRenderJobStatus,
-      });
+      try {
+        assertContentPublishEligible({
+          contentType: contentItem.contentType,
+          status: contentItem.status,
+          deletedAt: contentItem.deletedAt,
+          latestVideoRenderJobStatus,
+        });
+      } catch (error) {
+        translatePublishingDomainError(error);
+      }
 
       const channelAccounts = await tx.publishingChannelAccount.findMany({
         where: { workspaceId, publicId: { in: input.channelAccountPublicIds } },
@@ -150,7 +170,11 @@ export class PublishingPersistenceService {
         throw new NotFoundException({ code: PUBLISHING_ERRORS.PUBLISHING_TARGET_NOT_FOUND, message: "Publication target not found." });
       }
 
-      assertPublicationTargetTransition(target.status, toStatus);
+      try {
+        assertPublicationTargetTransition(target.status, toStatus);
+      } catch (error) {
+        translatePublishingDomainError(error);
+      }
 
       const updated = await tx.publicationTarget.update({
         where: { id: target.id },
