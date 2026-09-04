@@ -100,3 +100,5 @@ export * from "./publishing/publishing-readiness-types";
 export * from "./publishing/publishing-readiness-core";
 export * from "./publishing/publishing-crypto";
 export * from "./publishing/fixture-publishing-provider";
+export * from "./queue/jobs/publishing-execute";
+export * from "./queue/jobs/publishing-dispatch";
