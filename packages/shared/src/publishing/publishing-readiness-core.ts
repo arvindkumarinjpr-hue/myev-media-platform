@@ -39,11 +39,16 @@ export interface PublishingReadinessFacts {
   videoOutputMediaAssetPublicId: string | null;
   /** null when no asset row was found for `videoOutputMediaAssetPublicId` (or that field is itself null). */
   videoOutputMediaAssetStatus: string | null;
+  /** Module 9 Phase 9.5 — VideoScript.metaDescription/tags, the real Video-pipeline-produced SEO metadata (Module 7 Phase 7.2/7.3) — preferred over the generic metadata.publishing bag for VIDEO, mirroring BLOG's own BlogArticle.metaDescription preference. null when no VideoScript row exists or the field itself is null. Title is NOT included here — title always comes from ContentItem.title for every content type, unchanged. */
+  videoMetaDescription: string | null;
+  videoTags: string[] | null;
 
   /** Pre-written metadata read from ContentItem's own generic `metadata.publishing` JSON bag — never generated here. */
   metadataDescription?: string;
   metadataTags?: string[];
   metadataCaption?: string;
+  /** Module 9 Phase 9.5 — opaque, provider-defined privacy value from the same generic bag. */
+  metadataPrivacy?: string;
 }
 
 /** The single, shared authority for "is this stored token expiry already in the past" — called by an adapter BEFORE deciding whether to decrypt/call the provider, and re-checked inside `derivePublishingReadiness` itself so the classification can never depend on whether an adapter remembered to call this first. */
@@ -168,17 +173,28 @@ function evaluateBlogReadiness(facts: PublishingReadinessFacts, blockingReasons:
 /**
  * Pre-written metadata pass-through only — never generated or optimized
  * here (Module 10 owns social/caption intelligence). Title always comes
- * from ContentItem.title. Description comes from BlogArticle.metaDescription
- * for BLOG, or the generic metadata.publishing bag otherwise.
+ * from ContentItem.title. Description for BLOG comes from
+ * BlogArticle.metaDescription only (that channel has no generic-bag
+ * fallback precedent to preserve). For VIDEO (Phase 9.5), VideoScript's
+ * own SEO-stage description/tags are PREFERRED when present (Part K:
+ * "prefer real fields already produced by the Video pipeline"), but fall
+ * back to the generic metadata.publishing bag when they are not — VIDEO
+ * content authored/configured before the SEO stage ran (or via the
+ * generic bag directly, an existing Phase 9.2 mechanism other code
+ * already depends on) must keep working exactly as before. Every other
+ * content type uses the generic bag only.
  */
 function resolvePlatformMetadata(facts: PublishingReadinessFacts, capabilities: PublishingChannelCapabilities, blockingReasons: PublishingReadinessReasonCode[]): PublishingReadinessMetadata {
-  const description = facts.contentType === "BLOG" ? (facts.blogMetaDescription ?? undefined) : facts.metadataDescription;
+  const description =
+    facts.contentType === "BLOG" ? (facts.blogMetaDescription ?? undefined) : facts.contentType === "VIDEO" ? (facts.videoMetaDescription ?? facts.metadataDescription) : facts.metadataDescription;
+  const tags = facts.contentType === "VIDEO" ? (facts.videoTags ?? facts.metadataTags) : facts.metadataTags;
 
   const metadata: PublishingReadinessMetadata = {
     title: facts.contentTitle || undefined,
     description,
-    tags: facts.metadataTags,
+    tags,
     caption: facts.metadataCaption,
+    privacy: facts.metadataPrivacy,
   };
 
   const alreadyMissing = blockingReasons.includes(PUBLISHING_READINESS_REASONS.REQUIRED_METADATA_MISSING);

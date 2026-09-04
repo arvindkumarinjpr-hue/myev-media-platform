@@ -27,15 +27,105 @@ export interface PublishingChannelProvider {
    * simulates outcomes) — a later phase's real connector may perform an
    * actual lightweight API call here (e.g. "whoami").
    */
-  validateConnection(input: PublishingConnectionCheckInput): Promise<PublishingConnectionValidationResult>;
+  validateConnection(input: PublishingConnectionCheckInput, callbacks?: PublishingExecutionCallbacks): Promise<PublishingConnectionValidationResult>;
 
   /**
    * Not exercised by any Phase 9.2 code path; Phase 9.3 exercises it
    * only against the fixture provider (no real connector exists yet).
    * Declared now so the interface is complete and stable for the first
    * real connector to implement.
+   *
+   * `callbacks` (Module 9 Phase 9.5, additive — optional, and every
+   * pre-9.5 provider needs zero code change since TS allows implementing
+   * an interface method with fewer parameters than it declares) exists
+   * for connectors whose external protocol is NOT a single atomic call —
+   * e.g. YouTube's resumable upload, where a provider-succeeded-but-
+   * MYEV-crashed race is a real risk mid-upload, unlike WordPress's
+   * single-request create. See `PublishingExecutionCallbacks`'s own doc
+   * comment.
    */
-  publish(input: PublishingPublishInput, decryptedCredential: Record<string, unknown>): Promise<PublishingPublishResult>;
+  publish(input: PublishingPublishInput, decryptedCredential: Record<string, unknown>, callbacks?: PublishingExecutionCallbacks): Promise<PublishingPublishResult>;
+}
+
+/**
+ * Module 9 Phase 9.5 — the narrow, optional seam a provider whose
+ * external protocol spans more than one HTTP call (a resumable upload;
+ * an OAuth access-token refresh) uses to report state back to the
+ * caller (apps/api's or apps/worker's own PublishingProviderResolverService/
+ * PublishingExecutionService) for persistence — WITHOUT the provider
+ * itself ever touching Prisma or the credential-encryption boundary.
+ * WordPress needs neither method and simply never calls them.
+ *
+ * Both methods are themselves optional on this interface — a provider
+ * that never uses one simply never calls it; the caller's own
+ * implementation is what actually decides how (and whether) to persist
+ * anything.
+ */
+export interface PublishingExecutionCallbacks {
+  /**
+   * Persists a plain, NON-SECRET checkpoint bag for the CURRENT target
+   * (every attempt generation of the same PublicationTarget shares the
+   * same checkpoint history — mirrors WordPress's own target-scoped, not
+   * attempt-scoped, reconciliation marker) so a later attempt — an
+   * automatic BullMQ redelivery OR a manual retry with a new
+   * operationToken generation — can resume via
+   * `PublishingPublishInput.priorCheckpoint` instead of blindly redoing
+   * already-completed provider-side work (e.g. re-uploading a video
+   * whose upload actually already finished on the provider's side).
+   * MUST NEVER be called with credentials, tokens, or any other secret —
+   * the caller persists this in a plain, unencrypted, human-readable
+   * column (PublishAttempt.detail). Safe to call zero or more times
+   * during one `publish()` call.
+   */
+  saveCheckpoint(detail: Record<string, unknown>): Promise<void>;
+
+  /**
+   * Reports that the provider obtained NEW credential material during
+   * this call (e.g. a refreshed OAuth access token) that must replace
+   * what is currently stored for this channel account. The CALLER is
+   * solely responsible for re-encrypting (via the existing
+   * PublishingCredentialCryptoService — the SAME boundary that decrypted
+   * the credential in the first place) and persisting it; the provider
+   * itself never sees ciphertext and never touches Prisma. `credential`
+   * replaces the full decrypted payload (not a partial merge — the
+   * provider must include every field the stored credential needs, not
+   * just the changed one). `tokenExpiresAt` updates
+   * `ChannelCredential.tokenExpiresAt` (a plain, non-secret column) when
+   * the provider knows the new expiry; omit/null to leave it unchanged.
+   */
+  onCredentialRefreshed?(credential: Record<string, unknown>, tokenExpiresAt?: Date | null): Promise<void>;
+
+  /**
+   * Workspace-scoped, already-validated read access to a resolved
+   * artifact's bytes (Module 9 Phase 9.5) — supplied per-call by the
+   * caller, never held by the provider, since the provider must never
+   * touch Prisma or storage credentials directly (mirrors why
+   * `PublishingArtifactRef` only ever carries a `mediaAssetPublicId`,
+   * never a storage key). Present whenever the channel actually needs
+   * media bytes (e.g. YouTube's resumable upload); a text-only channel
+   * like WordPress never reads this.
+   */
+  mediaReader?: PublishingMediaReader;
+}
+
+/**
+ * Module 9 Phase 9.5 — the minimal, framework-free seam a real
+ * (byte-transferring) connector uses to read a resolved artifact's
+ * bytes, WITHOUT the connector itself ever depending on `@myev/worker-core`
+ * (a NestJS package — `@myev/shared` must stay framework-free) or
+ * knowing anything about S3/MinIO/object keys. Each process supplies its
+ * own concrete, workspace-scoped implementation (apps/worker wraps its
+ * own `MediaStorageService`); `mediaAssetPublicId` is resolved to a real,
+ * workspace-scoped, ACTIVE `MediaAsset` row — and only then to a storage
+ * object key — entirely inside that implementation, never by the
+ * provider. Reading a bounded range at a time (never a single
+ * `readRange` call for the whole object) is what keeps a connector's own
+ * memory usage bounded regardless of the underlying file's size.
+ */
+export interface PublishingMediaReader {
+  headObject(mediaAssetPublicId: string): Promise<{ sizeBytes: number; contentType?: string }>;
+  /** Reads exactly the inclusive byte range `[start, end]` — never the whole object in one call. */
+  readRange(mediaAssetPublicId: string, start: number, end: number): Promise<Buffer>;
 }
 
 export interface PublishingChannelCapabilities {
@@ -106,6 +196,8 @@ export interface PublishingPublishInput {
   artifact?: PublishingArtifactRef;
   /** A stable, caller-supplied correlation/idempotency token for this one operation attempt — passed straight through so a future real connector can reconcile a provider-succeeded-but-DB-failed race before retrying (Phase 9.3 Part W). Opaque to every Phase 9.2/9.3 provider. */
   operationToken: string;
+  /** Module 9 Phase 9.5 — the most recently `saveCheckpoint()`-persisted, non-secret detail bag for THIS target (any earlier attempt generation), if any. See `PublishingExecutionCallbacks.saveCheckpoint`'s own doc comment. Undefined on a target's first-ever attempt, or for a provider that never checkpoints (e.g. WordPress). */
+  priorCheckpoint?: Record<string, unknown>;
 }
 
 export interface PublishingPublishResult {

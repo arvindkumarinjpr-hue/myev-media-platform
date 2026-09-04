@@ -36,6 +36,8 @@ export interface PublishingReadinessMetadata {
   description?: string;
   tags?: string[];
   caption?: string;
+  /** Module 9 Phase 9.5 — opaque, provider-defined privacy value (e.g. YouTube's PRIVATE/UNLISTED/PUBLIC), pass-through only from the generic metadata.publishing bag. Undefined means "not set by the caller yet" — a channel that needs a default (Part L: YouTube defaults to PRIVATE when omitted) applies that default itself; readiness never invents one. */
+  privacy?: string;
 }
 
 /**
