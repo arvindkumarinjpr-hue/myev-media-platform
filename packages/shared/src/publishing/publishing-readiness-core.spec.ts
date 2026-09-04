@@ -12,6 +12,7 @@ function baseFacts(overrides: Partial<PublishingReadinessFacts> = {}): Publishin
     connectionHealthResult: { healthy: true },
     blogArticleExists: true,
     blogMetaDescription: "A ready description",
+    blogPublishingContentAvailable: true,
     videoLatestRenderStatus: null,
     videoOutputMediaAssetPublicId: null,
     videoOutputMediaAssetStatus: null,
@@ -86,6 +87,17 @@ describe("derivePublishingReadiness — Blog", () => {
   it("rejects a Blog with no BlogArticle row — BLOG_ARTICLE_MISSING", () => {
     const result = derivePublishingReadiness(baseFacts({ blogArticleExists: false }), blogCapabilities());
     expect(result.blockingReasons).toContain("BLOG_ARTICLE_MISSING");
+  });
+
+  it("rejects a Blog whose publishing content (body.blogDraft) cannot be resolved — BLOG_PUBLISHING_CONTENT_MISSING, distinct from BLOG_ARTICLE_MISSING", () => {
+    const result = derivePublishingReadiness(baseFacts({ blogPublishingContentAvailable: false }), blogCapabilities());
+    expect(result.blockingReasons).toContain("BLOG_PUBLISHING_CONTENT_MISSING");
+    expect(result.blockingReasons).not.toContain("BLOG_ARTICLE_MISSING");
+  });
+
+  it("BLOG_ARTICLE_MISSING and BLOG_PUBLISHING_CONTENT_MISSING can both fire independently in the same evaluation", () => {
+    const result = derivePublishingReadiness(baseFacts({ blogArticleExists: false, blogPublishingContentAvailable: false }), blogCapabilities());
+    expect(result.blockingReasons).toEqual(expect.arrayContaining(["BLOG_ARTICLE_MISSING", "BLOG_PUBLISHING_CONTENT_MISSING"]));
   });
 
   it("rejects an unsupported channel — CHANNEL_NOT_SUPPORTED", () => {

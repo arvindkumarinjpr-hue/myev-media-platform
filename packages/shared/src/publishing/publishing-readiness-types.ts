@@ -14,6 +14,16 @@ export const PUBLISHING_READINESS_REASONS = {
   CREDENTIAL_INVALID: "CREDENTIAL_INVALID",
   REQUIRED_METADATA_MISSING: "REQUIRED_METADATA_MISSING",
   BLOG_ARTICLE_MISSING: "BLOG_ARTICLE_MISSING",
+  /**
+   * Module 9 Phase 9.4 — distinct from the removed BLOG_CONTENT_MISSING
+   * check (which concerned ContentItem.currentVersionId existence, later
+   * found to be permanently unreachable given Module 1E's own deferred
+   * DB trigger). This one means a current version DOES exist, but the
+   * structured `body.blogDraft` payload a real connector (WordPress)
+   * needs to build a publishable body from is missing or malformed —
+   * see blog-publishing-content.ts's own parseBlogPublishingDraft().
+   */
+  BLOG_PUBLISHING_CONTENT_MISSING: "BLOG_PUBLISHING_CONTENT_MISSING",
   RENDER_NOT_READY: "RENDER_NOT_READY",
   MEDIA_ASSET_MISSING: "MEDIA_ASSET_MISSING",
   MEDIA_ASSET_INELIGIBLE: "MEDIA_ASSET_INELIGIBLE",
