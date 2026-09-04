@@ -7,12 +7,15 @@
  * not a reused precedent.
  *
  * Scope: hostname/literal-IP pattern matching against the well-known
- * private/loopback/link-local ranges, plus basic URL-shape hygiene
- * (scheme, embedded credentials). Deliberately does NOT perform DNS
- * resolution or connection-pinning to defend against DNS-rebinding
- * attacks (a real, distinct hardening concern) — that is out of this
- * phase's scope and documented as technical debt, not silently assumed
- * solved.
+ * private/loopback/link-local/multicast ranges, plus basic URL-shape
+ * hygiene (scheme, embedded credentials). This file validates URL SHAPE
+ * only — it never performs DNS resolution, so it cannot by itself defend
+ * against DNS rebinding (a hostname that resolves safely here could
+ * still rebind to a private address by the time a connection is actually
+ * made). That defense lives in the companion module
+ * `publishing-dns-safety.ts`, which reuses this file's own IP
+ * classification helpers and pins the exact resolved address used for
+ * the real socket connection (see its own header comment).
  */
 
 export class UnsafePublishingSiteUrlError extends Error {
@@ -49,7 +52,8 @@ function isLoopbackIpv4(host: string): boolean {
   return match ? Number(match[1]) === 127 : false;
 }
 
-function isPrivateOrReservedIpv4(host: string): boolean {
+/** loopback, RFC1918, link-local (incl. cloud metadata), "this network", and multicast — every non-loopback category `publishing-dns-safety.ts` must also reject in a DNS answer. */
+export function isPrivateOrReservedIpv4(host: string): boolean {
   const match = IPV4_PATTERN.exec(host);
   if (!match) return false;
   const [a, b] = [Number(match[1]), Number(match[2])];
@@ -58,16 +62,19 @@ function isPrivateOrReservedIpv4(host: string): boolean {
   if (a === 172 && b >= 16 && b <= 31) return true; // RFC1918
   if (a === 192 && b === 168) return true; // RFC1918
   if (a === 169 && b === 254) return true; // link-local (also cloud metadata endpoints)
-  if (a === 0) return true; // "this network"
+  if (a === 0) return true; // "this network" / unspecified
+  if (a >= 224 && a <= 239) return true; // multicast (224.0.0.0/4)
   return false;
 }
 
-function isPrivateOrReservedIpv6(host: string): boolean {
+/** loopback, unspecified, link-local, unique-local, multicast, and IPv4-mapped-private — the IPv6 counterpart to `isPrivateOrReservedIpv4`. */
+export function isPrivateOrReservedIpv6(host: string): boolean {
   const normalized = host.toLowerCase();
   if (normalized === "::1") return true; // loopback
   if (normalized === "::") return true; // unspecified
   if (normalized.startsWith("fe80:") || normalized.startsWith("fe80::")) return true; // link-local
   if (/^f[cd][0-9a-f]{2}:/.test(normalized)) return true; // unique local (fc00::/7)
+  if (/^ff[0-9a-f]{2}:/.test(normalized)) return true; // multicast (ff00::/8)
 
   // IPv4-mapped IPv6 — Node's URL parser normalizes the embedded address
   // into two trailing hex groups (e.g. "::ffff:127.0.0.1" becomes
@@ -97,9 +104,11 @@ function isPrivateOrReservedIpv6(host: string): boolean {
  * (169.254.0.0/16 — cloud metadata endpoints live here), and IPv6
  * unique-local addresses are NOT loopback and must stay rejected even in
  * test mode, or a malicious/misconfigured redirect during a test run
- * could silently reach a real private-network target.
+ * could silently reach a real private-network target. Exported for reuse
+ * by `publishing-dns-safety.ts`'s own DNS-answer validation, so both
+ * layers apply the identical loopback-only exemption rule.
  */
-function isLoopbackAddress(host: string): boolean {
+export function isLoopbackAddress(host: string): boolean {
   if (isLoopbackIpv4(host)) return true;
   const normalized = host.toLowerCase();
   if (normalized === "::1") return true;

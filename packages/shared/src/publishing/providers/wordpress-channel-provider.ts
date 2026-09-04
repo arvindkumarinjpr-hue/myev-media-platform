@@ -1,3 +1,5 @@
+import { request as httpRequest, type IncomingMessage } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { PublishingProviderPermanentError, PublishingProviderRetryableError } from "../publishing-provider-error";
 import type {
   PublishingChannelCapabilities,
@@ -7,6 +9,7 @@ import type {
   PublishingPublishInput,
   PublishingPublishResult,
 } from "../publishing-provider.interface";
+import { createSsrfSafeLookup, UnsafeResolvedAddressError, type DnsResolvers } from "../publishing-dns-safety";
 import { assertSafePublishingSiteUrl, isSafePublishingRedirectTarget, UnsafePublishingSiteUrlError } from "../publishing-site-url-safety";
 import { parseWordPressCredential, type WordPressCredentialPayload } from "./wordpress-credential";
 
@@ -14,11 +17,33 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_REDIRECTS = 3;
 const MAX_RESPONSE_BYTES = 1_048_576; // 1 MiB — a WordPress REST post/user response never legitimately needs to be larger.
 
+const TIMEOUT_MARKER = Symbol("wordpress-request-timeout");
+interface TimeoutError extends Error {
+  [TIMEOUT_MARKER]: true;
+}
+function isTimeoutError(err: unknown): err is TimeoutError {
+  return err instanceof Error && TIMEOUT_MARKER in err;
+}
+
 export interface WordPressChannelProviderOptions {
   timeoutMs?: number;
   maxRedirects?: number;
-  /** Test-only escape hatch for a local fixture HTTP server — never the production default (see publishing-site-url-safety.ts). */
+  /** Test-only escape hatch for a local fixture HTTP server — never the production default (see publishing-site-url-safety.ts). Scoped to loopback only, both at the URL-shape layer AND (Pre-Merge Security Correction) at DNS-resolution time. */
   allowLocalTestTarget?: boolean;
+  /** Test-only DNS resolver injection, passed straight through to publishing-dns-safety.ts — see its own doc comment. Defaults to real DNS. */
+  dnsResolvers?: DnsResolvers;
+  /**
+   * Test-only additional trusted CA certificate(s) (PEM), passed straight
+   * through to `https.request`'s own `ca` option — ADDS trust for a
+   * specific test-only self-signed certificate, it never disables or
+   * weakens verification (`rejectUnauthorized` is never touched, here or
+   * anywhere else in this class). Exists solely so a local HTTPS fixture
+   * server can be used in tests without either reaching the real
+   * internet or ever setting `rejectUnauthorized: false`. Undefined by
+   * default — production connections rely on Node's normal system CA
+   * trust store, exactly as before.
+   */
+  caCertificates?: string[] | Buffer[];
 }
 
 interface WordPressRequestResult {
@@ -63,11 +88,15 @@ export class WordPressChannelProvider implements PublishingChannelProvider {
   private readonly timeoutMs: number;
   private readonly maxRedirects: number;
   private readonly allowLocalTestTarget: boolean;
+  private readonly dnsResolvers: DnsResolvers | undefined;
+  private readonly caCertificates: string[] | Buffer[] | undefined;
 
   constructor(options: WordPressChannelProviderOptions = {}) {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
     this.allowLocalTestTarget = options.allowLocalTestTarget ?? false;
+    this.dnsResolvers = options.dnsResolvers;
+    this.caCertificates = options.caCertificates;
   }
 
   getCapabilities(): PublishingChannelCapabilities {
@@ -128,6 +157,14 @@ export class WordPressChannelProvider implements PublishingChannelProvider {
     } catch (err) {
       if (err instanceof UnsafePublishingSiteUrlError) {
         return { healthy: false, reasonCode: "CREDENTIAL_INVALID", detail: "The configured WordPress site URL failed safety validation." };
+      }
+      // DNS-resolution-time rejection (Pre-Merge Security Correction) —
+      // a hostname that validated at the URL-shape layer but resolved to
+      // a private/reserved address is the same class of "this site is
+      // misconfigured/unsafe" problem as a literal private IP, so it is
+      // classified identically rather than as a generic unavailability.
+      if (err instanceof PublishingProviderPermanentError && err.errorCode === "WORDPRESS_UNSAFE_CONNECT_TARGET") {
+        return { healthy: false, reasonCode: "CREDENTIAL_INVALID", detail: "The configured WordPress site URL resolved to a disallowed network address." };
       }
       return { healthy: false, reasonCode: "PROVIDER_UNAVAILABLE", detail: "WordPress site unreachable or timed out." };
     }
@@ -230,56 +267,63 @@ export class WordPressChannelProvider implements PublishingChannelProvider {
   }
 
   /**
-   * The one focused HTTP client this class uses (Part N) — bounded
+   * The one focused HTTP client this class uses (Part N), hardened
+   * against DNS rebinding (Pre-Merge Security Correction): a bounded
    * timeout, a manual, safety-checked, bounded redirect loop (never
    * `redirect: "follow"`), a response-size guard, and curated/sanitized
-   * errors only. The Basic Auth header (built from the application
-   * password) is never logged, and no raw fetch/DOM exception ever
-   * propagates past this method.
+   * errors only — plus, for EVERY hop (initial request and every
+   * redirect alike), DNS resolution is performed and validated by this
+   * class itself via `createSsrfSafeLookup()` and handed to
+   * `http(s).request()`'s own `lookup` option, so the real socket
+   * connects to exactly the address that was validated. There is no
+   * separate "validate the URL, then let the HTTP client resolve DNS
+   * again" step for a rebinding attacker to exploit. `host` passed to
+   * `http(s).request()` always stays the ORIGINAL hostname string
+   * (never the resolved IP), which is what keeps TLS SNI and
+   * certificate-hostname verification — and the `Host` header — correct
+   * automatically; this class never sets `rejectUnauthorized: false` and
+   * never overrides `servername`. The Basic Auth header is only ever
+   * attached when the current hop's origin still matches the originally
+   * configured site's origin (see `request`'s own redirect-origin check)
+   * and is never logged.
    */
   private async request(credential: WordPressCredentialPayload, method: "GET" | "POST", path: string, body?: unknown): Promise<WordPressRequestResult> {
-    let target = assertSafePublishingSiteUrl(credential.siteUrl, { allowLocalTestTarget: this.allowLocalTestTarget });
+    const initialTarget = assertSafePublishingSiteUrl(credential.siteUrl, { allowLocalTestTarget: this.allowLocalTestTarget });
+    const originalOrigin = new URL(initialTarget).origin;
     const authHeader = `Basic ${Buffer.from(`${credential.username}:${credential.applicationPassword}`).toString("base64")}`;
 
+    let target = initialTarget;
     for (let redirects = 0; ; redirects++) {
       const url = `${target}/wp-json/wp/v2/${path}`;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-      let response: Response;
-      try {
-        response = await fetch(url, {
-          method,
-          redirect: "manual",
-          signal: controller.signal,
-          headers: {
-            Authorization: authHeader,
-            ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-          },
-          body: body !== undefined ? JSON.stringify(body) : undefined,
-        });
-      } catch (err) {
-        const message = err instanceof Error && err.name === "AbortError" ? "WordPress request timed out." : "WordPress request failed (network error).";
-        throw new PublishingProviderRetryableError("WORDPRESS_NETWORK_ERROR", message);
-      } finally {
-        clearTimeout(timeout);
-      }
+      const parsedUrl = new URL(url);
+      const includeAuth = parsedUrl.origin === originalOrigin;
+
+      const response = await this.performOneHop(parsedUrl, method, includeAuth ? authHeader : undefined, body);
 
       if (response.status >= 300 && response.status < 400) {
-        const location = response.headers.get("location");
-        if (!location) throw new PublishingProviderPermanentError("WORDPRESS_MALFORMED_RESPONSE", "WordPress returned a redirect with no Location header.");
+        const location = response.headers["location"];
+        if (!location || typeof location !== "string") throw new PublishingProviderPermanentError("WORDPRESS_MALFORMED_RESPONSE", "WordPress returned a redirect with no Location header.");
         if (redirects >= this.maxRedirects) throw new PublishingProviderPermanentError("WORDPRESS_TOO_MANY_REDIRECTS", "WordPress redirected too many times.");
         const resolved = new URL(location, url).toString();
         if (!isSafePublishingRedirectTarget(resolved, { allowLocalTestTarget: this.allowLocalTestTarget })) {
           throw new PublishingProviderPermanentError("WORDPRESS_UNSAFE_REDIRECT", "WordPress redirected to a disallowed target.");
         }
+        if (new URL(resolved).origin !== originalOrigin) {
+          // Part E/I: never forward the Authorization header to a
+          // different origin. The simplest safe policy — reject the
+          // redirect outright rather than attempting a credential-less
+          // follow (which WordPress would reject anyway) — the
+          // applicationPassword must never even be considered for a
+          // host the workspace didn't configure.
+          throw new PublishingProviderPermanentError("WORDPRESS_CROSS_ORIGIN_REDIRECT_REJECTED", "WordPress redirected to a different origin than the configured site; the credential was not forwarded.");
+        }
         target = resolved.replace(/\/wp-json\/wp\/v2\/.*$/, "");
         continue;
       }
 
-      const text = await this.readBoundedText(response);
       let json: unknown;
       try {
-        json = text.length > 0 ? JSON.parse(text) : undefined;
+        json = response.text.length > 0 ? JSON.parse(response.text) : undefined;
       } catch {
         // A non-JSON body (e.g. an HTML error page from a
         // misconfigured site) is a malformed response, not a parse
@@ -290,24 +334,92 @@ export class WordPressChannelProvider implements PublishingChannelProvider {
     }
   }
 
-  private async readBoundedText(response: Response): Promise<string> {
-    const reader = response.body?.getReader();
-    if (!reader) return response.text();
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) {
-        total += value.byteLength;
-        if (total > MAX_RESPONSE_BYTES) {
-          await reader.cancel();
-          throw new PublishingProviderPermanentError("WORDPRESS_RESPONSE_TOO_LARGE", "WordPress response exceeded the maximum allowed size.");
+  /** One single HTTP request/response round trip — DNS-safe connect, bounded timeout, bounded response size. Never follows a redirect itself; that is `request()`'s own loop. */
+  private performOneHop(parsedUrl: URL, method: "GET" | "POST", authHeader: string | undefined, body: unknown): Promise<{ status: number; headers: Record<string, string | string[] | undefined>; text: string }> {
+    return new Promise((resolve, reject) => {
+      const isHttps = parsedUrl.protocol === "https:";
+      const transport = isHttps ? httpsRequest : httpRequest;
+      const lookup = createSsrfSafeLookup({ allowLocalTestTarget: this.allowLocalTestTarget, resolvers: this.dnsResolvers });
+      const payload = body !== undefined ? JSON.stringify(body) : undefined;
+
+      const req = transport(
+        {
+          protocol: parsedUrl.protocol,
+          host: parsedUrl.hostname, // ALWAYS the original hostname — never the resolved IP — so SNI/cert/Host stay correct.
+          port: parsedUrl.port || (isHttps ? 443 : 80),
+          path: `${parsedUrl.pathname}${parsedUrl.search}`,
+          method,
+          agent: false, // No connection pooling/reuse across hops or calls — every request resolves and connects fresh.
+          lookup: lookup as never, // Node's own LookupFunction type doesn't model the options.all=true shape our function also handles; verified correct at runtime (publishing-dns-safety.spec.ts).
+          // Test-only ADDITIONAL trust (never a substitute for real CA
+          // trust, never rejectUnauthorized:false) — see caCertificates'
+          // own doc comment. Only meaningful for https; harmless/ignored
+          // by http.request's own option surface.
+          ...(isHttps && this.caCertificates ? { ca: this.caCertificates } : {}),
+          headers: {
+            ...(authHeader ? { Authorization: authHeader } : {}),
+            ...(payload !== undefined ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } : {}),
+          },
+        },
+        (res: IncomingMessage) => {
+          const chunks: Buffer[] = [];
+          let total = 0;
+          let rejected = false;
+          res.on("data", (chunk: Buffer) => {
+            if (rejected) return;
+            total += chunk.length;
+            if (total > MAX_RESPONSE_BYTES) {
+              rejected = true;
+              res.destroy();
+              reject(new PublishingProviderPermanentError("WORDPRESS_RESPONSE_TOO_LARGE", "WordPress response exceeded the maximum allowed size."));
+              return;
+            }
+            chunks.push(chunk);
+          });
+          res.on("end", () => {
+            if (rejected) return;
+            resolve({ status: res.statusCode ?? 0, headers: res.headers, text: Buffer.concat(chunks).toString("utf8") });
+          });
+          res.on("error", (err) => {
+            if (rejected) return;
+            reject(new PublishingProviderRetryableError("WORDPRESS_NETWORK_ERROR", "WordPress request failed (network error)."));
+            void err;
+          });
+        },
+      );
+
+      const timer = setTimeout(() => {
+        const timeoutError = new Error("WordPress request timed out.") as Error & { [TIMEOUT_MARKER]: true };
+        timeoutError[TIMEOUT_MARKER] = true;
+        req.destroy(timeoutError);
+      }, this.timeoutMs);
+
+      req.on("error", (err) => {
+        clearTimeout(timer);
+        if (err instanceof PublishingProviderPermanentError || err instanceof PublishingProviderRetryableError) {
+          reject(err);
+          return;
         }
-        chunks.push(value);
-      }
-    }
-    return Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8");
+        if (isTimeoutError(err)) {
+          reject(new PublishingProviderRetryableError("WORDPRESS_NETWORK_ERROR", "WordPress request timed out."));
+          return;
+        }
+        if (err instanceof UnsafeResolvedAddressError) {
+          if (err.reasonCode === "DNS_RESOLVED_UNSAFE_ADDRESS") {
+            reject(new PublishingProviderPermanentError("WORDPRESS_UNSAFE_CONNECT_TARGET", "The configured WordPress site resolved to a private/reserved network address."));
+          } else {
+            reject(new PublishingProviderRetryableError("WORDPRESS_NETWORK_ERROR", "WordPress request failed (network error)."));
+          }
+          return;
+        }
+        reject(new PublishingProviderRetryableError("WORDPRESS_NETWORK_ERROR", "WordPress request failed (network error)."));
+      });
+
+      req.on("close", () => clearTimeout(timer));
+
+      if (payload !== undefined) req.write(payload);
+      req.end();
+    });
   }
 }
 

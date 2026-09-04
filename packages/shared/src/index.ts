@@ -102,6 +102,7 @@ export * from "./publishing/publishing-crypto";
 export * from "./publishing/fixture-publishing-provider";
 export * from "./publishing/blog-publishing-content";
 export * from "./publishing/publishing-site-url-safety";
+export * from "./publishing/publishing-dns-safety";
 export * from "./publishing/providers/wordpress-credential";
 export * from "./publishing/providers/wordpress-channel-provider";
 export * from "./publishing/providers/wordpress-test-fixture-server";
