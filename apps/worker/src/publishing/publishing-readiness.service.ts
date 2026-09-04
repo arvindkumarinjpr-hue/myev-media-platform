@@ -1,10 +1,23 @@
 import { Injectable } from "@nestjs/common";
-import { derivePublishingReadiness, isPublishingCredentialExpired, type PublishingChannelCapabilities, type PublishingReadinessFacts, type PublishingReadinessResult } from "@myev/shared";
+import {
+  derivePublishingReadiness,
+  isPublishingCredentialExpired,
+  resolveBlogPublishingContent,
+  type PublishingChannelCapabilities,
+  type PublishingReadinessFacts,
+  type PublishingReadinessResult,
+} from "@myev/shared";
 import { PrismaService } from "@myev/worker-core";
 import type { ContentType } from "../../../api/generated/prisma";
 import { PublishingProviderNotConfiguredError, PublishingProviderResolverService, type ResolvedPublishingChannelContext } from "./publishing-provider-resolver.service";
 
 export class PublishingContentItemNotFoundError extends Error {}
+
+/** Mechanically extracts `body.blogDraft` off a fetched ContentVersion's opaque Json `body` — the ONE narrowing step `resolveBlogPublishingContent()`'s own doc comment expects its caller to already have done. Never interprets the extracted value further; that is `parseBlogPublishingDraft()`'s (packages/shared) job alone. */
+function extractBlogDraft(body: unknown): unknown {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return undefined;
+  return (body as Record<string, unknown>).blogDraft;
+}
 
 interface ContentItemForReadiness {
   id: string;
@@ -13,6 +26,7 @@ interface ContentItemForReadiness {
   deletedAt: Date | null;
   title: string;
   metadata: unknown;
+  currentVersionId: string | null;
 }
 
 /**
@@ -34,7 +48,7 @@ export class PublishingReadinessService {
   async evaluateReadiness(workspaceId: string, contentItemPublicId: string, channelAccountPublicId: string): Promise<PublishingReadinessResult> {
     const contentItem = await this.prisma.contentItem.findFirst({
       where: { workspaceId, publicId: contentItemPublicId },
-      select: { id: true, contentType: true, status: true, deletedAt: true, title: true, metadata: true },
+      select: { id: true, contentType: true, status: true, deletedAt: true, title: true, metadata: true, currentVersionId: true },
     });
     if (!contentItem) throw new PublishingContentItemNotFoundError("Content item not found.");
 
@@ -96,6 +110,10 @@ export class PublishingReadinessService {
       connectionHealthResult: null,
       blogArticleExists: false,
       blogMetaDescription: null,
+      // Overridden for BLOG in buildContentTypeFacts(); true by default
+      // since this fact is meaningless (never checked) for other content
+      // types — never a silent false-negative there.
+      blogPublishingContentAvailable: true,
       videoLatestRenderStatus: null,
       videoOutputMediaAssetPublicId: null,
       videoOutputMediaAssetStatus: null,
@@ -108,7 +126,8 @@ export class PublishingReadinessService {
   private async buildContentTypeFacts(workspaceId: string, contentItem: ContentItemForReadiness): Promise<Partial<PublishingReadinessFacts>> {
     if (contentItem.contentType === "BLOG") {
       const blogArticle = await this.prisma.blogArticle.findFirst({ where: { workspaceId, contentItemId: contentItem.id }, select: { metaDescription: true } });
-      return { blogArticleExists: blogArticle !== null, blogMetaDescription: blogArticle?.metaDescription ?? null };
+      const blogPublishingContentAvailable = await this.resolveBlogPublishingContentAvailable(contentItem.currentVersionId);
+      return { blogArticleExists: blogArticle !== null, blogMetaDescription: blogArticle?.metaDescription ?? null, blogPublishingContentAvailable };
     }
     if (contentItem.contentType === "VIDEO") {
       const latestRenderJob = await this.prisma.videoRenderJob.findFirst({
@@ -127,6 +146,20 @@ export class PublishingReadinessService {
       };
     }
     return {};
+  }
+
+  /**
+   * Module 9 Phase 9.4 — the mechanical half of BLOG_PUBLISHING_CONTENT_MISSING:
+   * fetch the current ContentVersion's opaque `body` and hand it to
+   * `resolveBlogPublishingContent()` (packages/shared), the ONE place the
+   * blogDraft -> HTML rendering rules live. This service never inspects
+   * `body`'s shape itself.
+   */
+  private async resolveBlogPublishingContentAvailable(currentVersionId: string | null): Promise<boolean> {
+    if (!currentVersionId) return false;
+    const version = await this.prisma.contentVersion.findFirst({ where: { id: currentVersionId }, select: { body: true } });
+    if (!version) return false;
+    return resolveBlogPublishingContent(extractBlogDraft(version.body)) !== null;
   }
 
   private readPublishingMetadataBag(raw: unknown): { description?: string; tags?: string[]; caption?: string } {

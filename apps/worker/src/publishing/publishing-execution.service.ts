@@ -1,9 +1,23 @@
 import { Injectable } from "@nestjs/common";
-import { assertPublicationTargetTransition, PublishingDomainError, PublishingProviderPermanentError, PublishingProviderRetryableError, type PublishingPublishInput } from "@myev/shared";
+import {
+  assertPublicationTargetTransition,
+  PublishingDomainError,
+  PublishingProviderPermanentError,
+  PublishingProviderRetryableError,
+  resolveBlogPublishingContent,
+  type PublishingContentPayload,
+  type PublishingPublishInput,
+} from "@myev/shared";
 import { PrismaService } from "@myev/worker-core";
 import type { Prisma, PublicationTargetStatus } from "../../../api/generated/prisma";
 import { PublishingProviderNotConfiguredError, PublishingProviderResolverService } from "./publishing-provider-resolver.service";
 import { PublishingReadinessService } from "./publishing-readiness.service";
+
+/** Mechanically extracts `body.blogDraft` off a fetched ContentVersion's opaque Json `body` — the ONE narrowing step `resolveBlogPublishingContent()`'s own doc comment expects its caller to already have done. Never interprets the extracted value further; that is `parseBlogPublishingDraft()`'s (packages/shared) job alone. */
+function extractBlogDraft(body: unknown): unknown {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return undefined;
+  return (body as Record<string, unknown>).blogDraft;
+}
 
 export type PublishingExecutionOutcome =
   | { kind: "success"; externalContentId: string; externalUrl?: string }
@@ -98,7 +112,7 @@ export class PublishingExecutionService {
 
     await this.recordTransition(target.id, currentStatus, "PUBLISHING", { reason: "execution_started" });
 
-    const contentItem = await this.prisma.contentItem.findFirst({ where: { id: target.contentItemId, workspaceId }, select: { publicId: true, contentType: true } });
+    const contentItem = await this.prisma.contentItem.findFirst({ where: { id: target.contentItemId, workspaceId }, select: { publicId: true, contentType: true, currentVersionId: true } });
     const channelAccount = await this.prisma.publishingChannelAccount.findFirst({ where: { id: target.channelAccountId, workspaceId }, select: { publicId: true } });
     if (!contentItem || !channelAccount) {
       return this.failTarget(target.id, "PUBLISHING_TARGET_REFERENCE_MISSING", "The content item or channel account this target refers to no longer exists.", "permanent");
@@ -115,6 +129,24 @@ export class PublishingExecutionService {
     if (!readinessResult.ready) {
       const reason = readinessResult.blockingReasons[0] ?? "NOT_READY";
       return this.failTarget(target.id, `READINESS_${reason}`, `Execution-time readiness check failed: ${reason}.`, "permanent");
+    }
+
+    // BLOG publishing content (Part I): resolved here, mechanically, from
+    // this process's own ContentVersion fetch, and handed to the shared
+    // renderer — the ONE place blogDraft -> HTML rendering rules live
+    // (packages/shared/src/publishing/blog-publishing-content.ts). The
+    // provider never queries Prisma and never sees ContentVersion's raw
+    // body shape. Readiness already proved `blogPublishingContentAvailable`
+    // moments ago; a null result here despite that is a genuine (rare)
+    // race — treated as permanent rather than silently retrying forever,
+    // since retrying an execution attempt does not by itself fix an
+    // unresolvable blogDraft.
+    let content: PublishingContentPayload | undefined;
+    if (contentItem.contentType === "BLOG") {
+      content = (await this.resolveBlogPublishingContentPayload(contentItem.currentVersionId)) ?? undefined;
+      if (!content) {
+        return this.failTarget(target.id, "PUBLISHING_BLOG_CONTENT_UNRESOLVABLE", "The blog's publishing content could not be resolved at execution time.", "permanent");
+      }
     }
 
     let providerContext;
@@ -140,6 +172,7 @@ export class PublishingExecutionService {
       contentType: contentItem.contentType,
       metadata: readinessResult.metadata,
       artifact: readinessResult.resolvedArtifact ?? undefined,
+      content,
       operationToken,
     };
 
@@ -166,6 +199,19 @@ export class PublishingExecutionService {
     }
   }
 
+  /**
+   * Module 9 Phase 9.4 — this process's own mechanical ContentVersion
+   * fetch for BLOG execution, mirroring PublishingReadinessService's own
+   * identically-shaped helper. Never mutates the source ContentVersion;
+   * never re-implements the blogDraft -> HTML rules themselves.
+   */
+  private async resolveBlogPublishingContentPayload(currentVersionId: string | null): Promise<PublishingContentPayload | null> {
+    if (!currentVersionId) return null;
+    const version = await this.prisma.contentVersion.findFirst({ where: { id: currentVersionId }, select: { body: true } });
+    if (!version) return null;
+    return resolveBlogPublishingContent(extractBlogDraft(version.body));
+  }
+
   /** PUBLISHING -> PUBLISHED, with the provider's own (already-safe, no-secrets) result summary recorded on the PublishAttempt row. */
   private async completeTarget(targetId: string, result: { externalContentId: string; externalUrl?: string }): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
@@ -186,6 +232,21 @@ export class PublishingExecutionService {
    * caught exception's `.message`/`.stack`, so no provider secret or
    * internal detail can ever reach `PublicationTarget.lastErrorMessageSafe`
    * or the PublishAttempt's `detail` JSON.
+   */
+  /**
+   * Module 9 Phase 9.4 — deliberately does NOT mutate
+   * `PublishingChannelAccount.connectionStatus` here, even for a
+   * WordPress-reported WORDPRESS_UNAUTHORIZED/WORDPRESS_FORBIDDEN
+   * permanent failure (Part R: "do not mutate connection status on every
+   * transient failure... if an explicit account-health updater service
+   * is needed, keep it focused and tested"). No such updater exists yet
+   * — building one hastily here would risk exactly the "worker invents
+   * connection lifecycle changes outside shared rules" pitfall Part R
+   * itself warns against. `PublicationTarget.lastErrorCode`/
+   * `lastErrorMessageSafe` already surface the failure for a human/future
+   * dedicated service to act on; a target's own repeated permanent
+   * failures never, by themselves, revoke or otherwise change the
+   * channel account's connection state. Deferred, not forgotten.
    */
   private async failTarget(targetId: string, errorCode: string, message: string, classification: "retryable" | "permanent"): Promise<PublishingExecutionOutcome> {
     await this.prisma.$transaction(async (tx) => {
