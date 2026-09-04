@@ -23,6 +23,7 @@ import { ContentScoringModule } from "./modules/content-scoring/content-scoring.
 import { BlogModule } from "./modules/blog/blog.module";
 import { VideoModule } from "./modules/video/video.module";
 import { InternalLinksModule } from "./modules/internal-links/internal-links.module";
+import { PublishingModule } from "./modules/publishing/publishing.module";
 import { BackgroundJobsModule } from "./modules/background-jobs/background-jobs.module";
 import { SchedulesModule } from "./modules/schedules/schedules.module";
 import { EventsModule } from "./modules/events/events.module";
@@ -73,6 +74,7 @@ import type { AppConfig } from "./config/configuration";
     BlogModule,
     VideoModule,
     InternalLinksModule,
+    PublishingModule,
     BackgroundJobsModule,
     SchedulesModule,
     EventsModule,
