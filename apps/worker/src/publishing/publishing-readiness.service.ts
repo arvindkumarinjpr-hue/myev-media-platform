@@ -19,6 +19,13 @@ function extractBlogDraft(body: unknown): unknown {
   return (body as Record<string, unknown>).blogDraft;
 }
 
+/** Narrows VideoScript.tags (opaque Json?) into `string[] | null` — never invents/generates tags, only structurally validates what the Video SEO stage already wrote. */
+function parseVideoTags(raw: unknown): string[] | null {
+  if (!Array.isArray(raw)) return null;
+  const tags = raw.filter((t): t is string => typeof t === "string");
+  return tags.length > 0 ? tags : null;
+}
+
 interface ContentItemForReadiness {
   id: string;
   contentType: ContentType;
@@ -117,9 +124,12 @@ export class PublishingReadinessService {
       videoLatestRenderStatus: null,
       videoOutputMediaAssetPublicId: null,
       videoOutputMediaAssetStatus: null,
+      videoMetaDescription: null,
+      videoTags: null,
       metadataDescription: publishingMetadata.description,
       metadataTags: publishingMetadata.tags,
       metadataCaption: publishingMetadata.caption,
+      metadataPrivacy: publishingMetadata.privacy,
     };
   }
 
@@ -130,12 +140,16 @@ export class PublishingReadinessService {
       return { blogArticleExists: blogArticle !== null, blogMetaDescription: blogArticle?.metaDescription ?? null, blogPublishingContentAvailable };
     }
     if (contentItem.contentType === "VIDEO") {
-      const latestRenderJob = await this.prisma.videoRenderJob.findFirst({
-        where: { workspaceId, contentItemId: contentItem.id },
-        orderBy: { createdAt: "desc" },
-        select: { status: true, outputMediaAssetPublicId: true },
-      });
-      if (!latestRenderJob) return { videoLatestRenderStatus: null };
+      const [latestRenderJob, videoScript] = await Promise.all([
+        this.prisma.videoRenderJob.findFirst({
+          where: { workspaceId, contentItemId: contentItem.id },
+          orderBy: { createdAt: "desc" },
+          select: { status: true, outputMediaAssetPublicId: true },
+        }),
+        this.prisma.videoScript.findFirst({ where: { workspaceId, contentItemId: contentItem.id }, select: { metaDescription: true, tags: true } }),
+      ]);
+      const videoContentTypeFacts = { videoMetaDescription: videoScript?.metaDescription ?? null, videoTags: parseVideoTags(videoScript?.tags) };
+      if (!latestRenderJob) return { videoLatestRenderStatus: null, ...videoContentTypeFacts };
       const mediaAsset = latestRenderJob.outputMediaAssetPublicId
         ? await this.prisma.mediaAsset.findFirst({ where: { workspaceId, publicId: latestRenderJob.outputMediaAssetPublicId }, select: { status: true } })
         : null;
@@ -143,6 +157,7 @@ export class PublishingReadinessService {
         videoLatestRenderStatus: latestRenderJob.status,
         videoOutputMediaAssetPublicId: latestRenderJob.outputMediaAssetPublicId,
         videoOutputMediaAssetStatus: mediaAsset?.status ?? null,
+        ...videoContentTypeFacts,
       };
     }
     return {};
@@ -162,15 +177,16 @@ export class PublishingReadinessService {
     return resolveBlogPublishingContent(extractBlogDraft(version.body)) !== null;
   }
 
-  private readPublishingMetadataBag(raw: unknown): { description?: string; tags?: string[]; caption?: string } {
+  private readPublishingMetadataBag(raw: unknown): { description?: string; tags?: string[]; caption?: string; privacy?: string } {
     if (typeof raw !== "object" || raw === null) return {};
     const bag = (raw as Record<string, unknown>).publishing;
     if (typeof bag !== "object" || bag === null) return {};
-    const { description, tags, caption } = bag as Record<string, unknown>;
+    const { description, tags, caption, privacy } = bag as Record<string, unknown>;
     return {
       description: typeof description === "string" ? description : undefined,
       tags: Array.isArray(tags) ? tags.filter((t): t is string => typeof t === "string") : undefined,
       caption: typeof caption === "string" ? caption : undefined,
+      privacy: typeof privacy === "string" ? privacy : undefined,
     };
   }
 }

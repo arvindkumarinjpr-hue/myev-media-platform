@@ -6,10 +6,12 @@ import {
   PublishingProviderRetryableError,
   resolveBlogPublishingContent,
   type PublishingContentPayload,
+  type PublishingExecutionCallbacks,
   type PublishingPublishInput,
 } from "@myev/shared";
 import { PrismaService } from "@myev/worker-core";
 import type { Prisma, PublicationTargetStatus } from "../../../api/generated/prisma";
+import { PublishingMediaReaderService } from "./publishing-media-reader.service";
 import { PublishingProviderNotConfiguredError, PublishingProviderResolverService } from "./publishing-provider-resolver.service";
 import { PublishingReadinessService } from "./publishing-readiness.service";
 
@@ -45,6 +47,7 @@ export class PublishingExecutionService {
     private readonly prisma: PrismaService,
     private readonly resolver: PublishingProviderResolverService,
     private readonly readiness: PublishingReadinessService,
+    private readonly mediaReaderService: PublishingMediaReaderService,
   ) {}
 
   /**
@@ -168,16 +171,38 @@ export class PublishingExecutionService {
     // dispatch-layer redelivery, not a domain retry) produces the exact
     // same token.
     const operationToken = `publishing:${target.publicId}:attempt:${retryCount}`;
+    // Module 9 Phase 9.5 — the most recent checkpoint ANY earlier
+    // attempt generation of this SAME target saved (target-scoped, not
+    // attempt-scoped — mirrors WordPress's own reconciliation-marker
+    // scoping exactly, and for the identical reason: a manual retry
+    // mints a new operationToken/generation, but "does an in-progress
+    // upload already exist" is a fact about the target, not the attempt).
+    const priorCheckpoint = await this.loadPriorCheckpoint(target.id);
     const publishInput: PublishingPublishInput = {
       contentType: contentItem.contentType,
       metadata: readinessResult.metadata,
       artifact: readinessResult.resolvedArtifact ?? undefined,
       content,
       operationToken,
+      priorCheckpoint,
+    };
+
+    // Module 9 Phase 9.5 — the seam a real, multi-request connector
+    // (YouTube's resumable upload; an OAuth refresh) uses to report
+    // state back for persistence, entirely through this process's own
+    // existing Prisma/crypto boundaries — the provider itself never
+    // touches either. mediaReader is only ever constructed for VIDEO;
+    // WordPress (BLOG) never reads it.
+    const callbacks: PublishingExecutionCallbacks = {
+      saveCheckpoint: (detail) => this.saveCheckpoint(target.id, detail),
+      onCredentialRefreshed: (newCredential, tokenExpiresAt) => this.resolver.persistRefreshedCredential(workspaceId, channelAccount.publicId, newCredential, tokenExpiresAt),
+      mediaReader: contentItem.contentType === "VIDEO" ? this.mediaReaderService.createReader(workspaceId) : undefined,
     };
 
     try {
-      const result = await this.resolver.withDecryptedCredential(workspaceId, channelAccount.publicId, (decryptedCredential) => providerContext.provider.publish(publishInput, decryptedCredential));
+      const result = await this.resolver.withDecryptedCredential(workspaceId, channelAccount.publicId, (decryptedCredential) =>
+        providerContext.provider.publish(publishInput, decryptedCredential, callbacks),
+      );
       await this.completeTarget(target.id, result);
       return { kind: "success", externalContentId: result.externalContentId, externalUrl: result.externalUrl };
     } catch (err) {
@@ -210,6 +235,37 @@ export class PublishingExecutionService {
     const version = await this.prisma.contentVersion.findFirst({ where: { id: currentVersionId }, select: { body: true } });
     if (!version) return null;
     return resolveBlogPublishingContent(extractBlogDraft(version.body));
+  }
+
+  /**
+   * Module 9 Phase 9.5 — reads the most recent checkpoint any earlier
+   * attempt of this target saved (see `saveCheckpoint`'s own doc
+   * comment for the exact row shape this looks for). `undefined` on a
+   * target's first-ever attempt, or for a provider that never
+   * checkpoints (WordPress) — both cases are simply "no matching row."
+   */
+  private async loadPriorCheckpoint(targetId: string): Promise<Record<string, unknown> | undefined> {
+    const row = await this.prisma.publishAttempt.findFirst({
+      where: { publicationTargetId: targetId, fromStatus: "PUBLISHING", toStatus: "PUBLISHING" },
+      orderBy: { occurredAt: "desc" },
+      select: { detail: true },
+    });
+    return (row?.detail as Record<string, unknown> | null) ?? undefined;
+  }
+
+  /**
+   * Module 9 Phase 9.5 — persists a non-secret, provider-defined
+   * checkpoint bag as its own `PublishAttempt` row, deliberately WITHOUT
+   * going through `assertPublicationTargetTransition`/updating
+   * `PublicationTarget.status` at all: a checkpoint is not a lifecycle
+   * transition (the target stays PUBLISHING throughout), it is
+   * additional audit-trail state within one still-in-progress attempt —
+   * exactly what the append-only `PublishAttempt` model already exists
+   * for (FR-PUB-005). `fromStatus === toStatus === "PUBLISHING"` is the
+   * one, deliberate marker `loadPriorCheckpoint()` looks for.
+   */
+  private async saveCheckpoint(targetId: string, detail: Record<string, unknown>): Promise<void> {
+    await this.prisma.publishAttempt.create({ data: { publicationTargetId: targetId, fromStatus: "PUBLISHING", toStatus: "PUBLISHING", detail: detail as Prisma.InputJsonValue } });
   }
 
   /** PUBLISHING -> PUBLISHED, with the provider's own (already-safe, no-secrets) result summary recorded on the PublishAttempt row. */

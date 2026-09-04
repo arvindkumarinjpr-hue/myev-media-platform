@@ -3,6 +3,7 @@ import { PublishingCredentialCryptoService } from "./publishing-credential-crypt
 import { PublishingDispatchQueueService } from "./publishing-dispatch-queue.service";
 import { PublishingDispatchService } from "./publishing-dispatch.service";
 import { PublishingExecutionService } from "./publishing-execution.service";
+import { PublishingMediaReaderService } from "./publishing-media-reader.service";
 import { PublishingProviderRegistryModule } from "./publishing-provider-registry.module";
 import { PublishingProviderResolverService } from "./publishing-provider-resolver.service";
 import { PublishingReadinessService } from "./publishing-readiness.service";
@@ -17,7 +18,15 @@ import { PublishingReadinessService } from "./publishing-readiness.service";
  */
 @Module({
   imports: [PublishingProviderRegistryModule],
-  providers: [PublishingCredentialCryptoService, PublishingProviderResolverService, PublishingReadinessService, PublishingExecutionService, PublishingDispatchQueueService, PublishingDispatchService],
+  providers: [
+    PublishingCredentialCryptoService,
+    PublishingProviderResolverService,
+    PublishingReadinessService,
+    PublishingMediaReaderService,
+    PublishingExecutionService,
+    PublishingDispatchQueueService,
+    PublishingDispatchService,
+  ],
   exports: [PublishingCredentialCryptoService, PublishingProviderResolverService, PublishingReadinessService, PublishingExecutionService, PublishingDispatchService],
 })
 export class PublishingModule {}

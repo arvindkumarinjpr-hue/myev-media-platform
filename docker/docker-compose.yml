@@ -113,6 +113,11 @@ services:
       # gap dating to Phase 9.1, closed now that Phase 9.3 actually
       # exercises credential encryption in a local dev/worker flow.
       PUBLISHING_CREDENTIAL_ENCRYPTION_KEY: "1111111111111111111111111111111111111111111111111111111111111111"
+      # Module 9 Phase 9.5 — see the worker service's own identical
+      # comment. Empty by default; set via the deployment's own secret
+      # store, never hardcoded.
+      YOUTUBE_OAUTH_CLIENT_ID: ""
+      YOUTUBE_OAUTH_CLIENT_SECRET: ""
     depends_on:
       postgres:
         condition: service_healthy
@@ -170,11 +175,37 @@ services:
       # read from the identical Postgres-stored ChannelCredential rows,
       # so they must share one key in this local stack).
       PUBLISHING_CREDENTIAL_ENCRYPTION_KEY: "1111111111111111111111111111111111111111111111111111111111111111"
+      # Module 9 Phase 9.5 — read-only object-storage access so the
+      # YouTube connector can read a rendered video's bytes (bounded,
+      # chunked ranges only — this process never writes media). Same
+      # bucket the render-worker below actually writes rendered VIDEO
+      # MediaAssets into (NOT the api service's own `myev-media-dev`
+      # bucket, a separate/unrelated bucket).
+      STORAGE_ENDPOINT: minio
+      STORAGE_PORT: "9000"
+      STORAGE_USE_SSL: "false"
+      STORAGE_ACCESS_KEY: myev_minio_admin
+      STORAGE_SECRET_KEY: myev_minio_dev_password
+      STORAGE_BUCKET: myev-media
+      # This process never creates the bucket (render-worker already
+      # does, and always starts first in practice) — auto-create stays
+      # off here so a permissions issue never silently masks itself.
+      MEDIA_STORAGE_AUTO_CREATE_BUCKET: "false"
+      # Module 9 Phase 9.5 — the platform's own Google OAuth 2.0 client
+      # for refreshing a workspace's YouTube access token. Empty by
+      # default (no real value committed here) — until a real value is
+      # provided, YouTubeChannelProvider is simply not registered
+      # (mirrors ai.* provider-left-unconfigured convention). Set these
+      # via the deployment's own secret store, never hardcoded.
+      YOUTUBE_OAUTH_CLIENT_ID: ""
+      YOUTUBE_OAUTH_CLIENT_SECRET: ""
       WORKER_APPLICATION_VERSION: "0.1.0"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      minio:
         condition: service_healthy
     networks:
       - myev-internal

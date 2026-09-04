@@ -3,6 +3,7 @@ import {
   PublishingProviderRegistryValidationError,
   type PublishingChannelProvider,
   type PublishingConnectionValidationResult,
+  type PublishingExecutionCallbacks,
   type PublishingProviderRegistry,
 } from "@myev/shared";
 import { PrismaService } from "@myev/worker-core";
@@ -88,7 +89,46 @@ export class PublishingProviderResolverService {
       throw err;
     }
 
-    return provider.validateConnection({ channelAccountId: account.id, decryptedCredential, tokenExpiresAt: account.credential.tokenExpiresAt });
+    // Module 9 Phase 9.5 — a provider (e.g. YouTube) may need to
+    // proactively/reactively refresh an OAuth access token even during a
+    // read-only connection check. saveCheckpoint is a required part of
+    // the shared callbacks shape but genuinely never called here (no
+    // publish() is happening) — a no-op is correct, not a stub standing
+    // in for missing behavior.
+    const callbacks: PublishingExecutionCallbacks = {
+      saveCheckpoint: async () => {},
+      onCredentialRefreshed: (newCredential, tokenExpiresAt) => this.persistRefreshedCredential(workspaceId, channelAccountPublicId, newCredential, tokenExpiresAt),
+    };
+
+    return provider.validateConnection({ channelAccountId: account.id, decryptedCredential, tokenExpiresAt: account.credential.tokenExpiresAt }, callbacks);
+  }
+
+  /**
+   * Module 9 Phase 9.5 — the ONE place a refreshed OAuth credential is
+   * ever written back to `ChannelCredential`. A provider never calls
+   * this itself (framework-free, no Prisma) — it only ever reaches here
+   * via `PublishingExecutionCallbacks.onCredentialRefreshed`, which this
+   * service and `PublishingExecutionService` are the sole suppliers of.
+   * Re-encrypts through the SAME `PublishingCredentialCryptoService`
+   * that decrypted it — no new/duplicated encryption logic. `credential`
+   * replaces the full stored payload (the provider's own doc comment on
+   * `onCredentialRefreshed` requires this); `tokenExpiresAt` updates the
+   * plain, non-secret column alongside it when provided.
+   *
+   * A channel account that has since been disconnected/deleted (the
+   * account or its credential row is gone) is not an error here — there
+   * is nothing left to refresh, so this is a silent no-op rather than a
+   * failure that would derail the actual publish/validate call this
+   * refresh was only a side effect of.
+   */
+  async persistRefreshedCredential(workspaceId: string, channelAccountPublicId: string, credential: Record<string, unknown>, tokenExpiresAt?: Date | null): Promise<void> {
+    const account = await this.prisma.publishingChannelAccount.findFirst({ where: { workspaceId, publicId: channelAccountPublicId }, select: { credentialId: true } });
+    if (!account?.credentialId) return;
+    const encrypted = this.crypto.encrypt(credential);
+    await this.prisma.channelCredential.update({
+      where: { id: account.credentialId },
+      data: { ...encrypted, ...(tokenExpiresAt !== undefined ? { tokenExpiresAt } : {}) },
+    });
   }
 
   /**

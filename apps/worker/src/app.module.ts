@@ -6,6 +6,7 @@ import {
   BackgroundJobReconciliationModule,
   BullMqModule,
   HeartbeatModule,
+  MediaModule,
   PrismaModule,
   ShutdownModule,
 } from "@myev/worker-core";
@@ -25,9 +26,15 @@ import { SimulatedShutdownFailureModule } from "./testing/simulated-shutdown-fai
  * (Prisma, heartbeat, BullMQ job lifecycle, the reconciliation sweep,
  * bounded shutdown) is imported from `@myev/worker-core`.
  *
- * This process has NO media, storage, or render dependency — the
+ * This process has NO render dependency and NO media WRITE path — the
  * dedicated render/media worker (`apps/render-worker`) owns the MEDIA
- * queue, every media processor, and Remotion.
+ * queue, every media processor, and Remotion. Module 9 Phase 9.5 adds a
+ * narrow, Publishing-scoped exception: `MediaModule` (read-only from
+ * this process's own perspective — it never calls
+ * `MediaStorageService.put()`) so the YouTube connector can read a
+ * rendered video's bytes (via bounded, chunked ranges — see
+ * `MediaStorageService.headObject()`/`getRange()`) without this process
+ * gaining any render/transcode capability itself.
  */
 @Module({
   imports: [
@@ -52,6 +59,7 @@ import { SimulatedShutdownFailureModule } from "./testing/simulated-shutdown-fai
     EventsModule,
     OutboxRelayModule,
     BackgroundJobReconciliationModule,
+    MediaModule,
     ShutdownModule,
     ...(process.env.SIMULATE_SHUTDOWN_FAILURE === "true" || process.env.SIMULATE_TRACKER_FAILURE === "true" ? [SimulatedShutdownFailureModule] : []),
   ],
