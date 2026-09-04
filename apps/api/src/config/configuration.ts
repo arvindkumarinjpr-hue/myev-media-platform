@@ -169,6 +169,17 @@ export interface AppConfig {
     anthropic: { apiKey: string; model: string };
     gemini: { apiKey: string; model: string };
   };
+  publishing: {
+    // Module 9 Phase 9.1 — AES-256-GCM master key for ChannelCredential
+    // envelope encryption, a 64-character hex string (32 random bytes),
+    // read here only (never in packages/shared, never hardcoded, never
+    // sent to the web bundle — same discipline as the ai.* keys above).
+    // An empty/malformed value means PublishingCredentialCryptoService
+    // simply fails the specific encrypt()/decrypt() call that needed it
+    // (PUBLISHING_CREDENTIAL_ENCRYPTION_KEY_INVALID), never platform
+    // startup — no current code path calls it yet in Phase 9.1.
+    credentialEncryptionKey: string;
+  };
 }
 
 /**
@@ -298,5 +309,8 @@ export default (): AppConfig => ({
     openai: { apiKey: process.env.OPENAI_API_KEY ?? "", model: process.env.OPENAI_MODEL ?? "gpt-4o" },
     anthropic: { apiKey: process.env.ANTHROPIC_API_KEY ?? "", model: process.env.ANTHROPIC_MODEL ?? "claude-3-5-sonnet-20241022" },
     gemini: { apiKey: process.env.GEMINI_API_KEY ?? "", model: process.env.GEMINI_MODEL ?? "gemini-1.5-pro" },
+  },
+  publishing: {
+    credentialEncryptionKey: process.env.PUBLISHING_CREDENTIAL_ENCRYPTION_KEY ?? "",
   },
 });

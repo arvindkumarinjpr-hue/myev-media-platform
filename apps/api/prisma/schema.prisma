@@ -369,6 +369,22 @@ enum AuditAction {
   // captured in the event's afterState, not the action name itself.
   INTERNAL_LINK_CREATED
   INTERNAL_LINK_STATUS_CHANGED
+  // Module 9 Phase 9.1: same generic-action-plus-afterState-diff style as
+  // Module 8's own INTERNAL_LINK_STATUS_CHANGED precedent immediately
+  // above — CONNECTED/EXPIRED/REVOKED/ERROR (channel accounts) and
+  // PENDING/SCHEDULED/QUEUED/PUBLISHING/PUBLISHED/FAILED/CANCELLED
+  // (publication targets) are all captured in each event's own
+  // afterState, never one enum value per fine-grained transition. Only
+  // five actions total, covering exactly the lifecycle this phase's
+  // domain model defines — no action added for an operation not yet
+  // modeled (e.g. no separate "rescheduled" action: rescheduling is a
+  // PublicationTarget status/scheduledFor change, already covered by
+  // PUBLICATION_TARGET_STATUS_CHANGED).
+  PUBLISHING_CHANNEL_ACCOUNT_CONNECTED
+  PUBLISHING_CHANNEL_ACCOUNT_STATUS_CHANGED
+  PUBLISHING_CREDENTIAL_ROTATED
+  PUBLICATION_CREATED
+  PUBLICATION_TARGET_STATUS_CHANGED
 }
 
 model User {
@@ -403,37 +419,39 @@ model User {
   actionTokens    UserActionToken[]
   auditLogs       AuditLog[]
 
-  ownedWorkspaces        Workspace[]           @relation("WorkspaceOwner")
-  createdWorkspaces      Workspace[]           @relation("WorkspaceCreatedBy")
-  workspaceMemberships   WorkspaceMember[]     @relation("WorkspaceMemberUser")
-  memberInvitesSent      WorkspaceMember[]     @relation("WorkspaceMemberInvitedBy")
-  invitationsSent        WorkspaceInvitation[] @relation("InvitationInvitedBy")
-  invitationsReceived    WorkspaceInvitation[] @relation("InvitationInvitedUser")
-  invitationsAccepted    WorkspaceInvitation[] @relation("InvitationAcceptedBy")
-  ownedProjects          Project[]             @relation("ProjectOwner")
-  createdProjects        Project[]             @relation("ProjectCreatedBy")
-  createdMediaAssets     MediaAsset[]          @relation("MediaAssetCreatedBy")
-  createdContentItems    ContentItem[]         @relation("ContentItemCreatedBy")
-  createdContentVersions ContentVersion[]      @relation("ContentVersionCreatedBy")
-  createdContentSeries   ContentSeries[]       @relation("ContentSeriesCreatedBy")
-  contentReviewEvents    ContentReviewEvent[]
-  createdBackgroundJobs  BackgroundJob[]       @relation("BackgroundJobCreatedBy")
-  createdScheduledJobs   ScheduledJob[]        @relation("ScheduledJobCreatedBy")
-  updatedScheduledJobs   ScheduledJob[]        @relation("ScheduledJobUpdatedBy")
-  createdKnowledgePacks  KnowledgePack[]       @relation("KnowledgePackCreatedBy")
-  updatedKnowledgePacks  KnowledgePack[]       @relation("KnowledgePackUpdatedBy")
-  createdAiJobs          AiJob[]               @relation("AiJobCreatedBy")
-  createdMediaJobs       MediaJob[]            @relation("MediaJobCreatedBy")
-  createdVideoRenderJobs VideoRenderJob[]     @relation("VideoRenderJobCreatedBy")
-  createdKeywordClusters KeywordCluster[]      @relation("KeywordClusterCreatedBy")
-  createdTopicClusters   TopicCluster[]        @relation("TopicClusterCreatedBy")
-  createdContentScores   ContentScore[]        @relation("ContentScoreCreatedBy")
-  createdSeoReports      SeoReport[]           @relation("SeoReportCreatedBy")
-  createdBlogArticles    BlogArticle[]         @relation("BlogArticleCreatedBy")
-  updatedBlogArticles    BlogArticle[]         @relation("BlogArticleUpdatedBy")
-  createdVideoScripts    VideoScript[]         @relation("VideoScriptCreatedBy")
-  updatedVideoScripts    VideoScript[]         @relation("VideoScriptUpdatedBy")
-  reviewedInternalLinks  InternalLink[]        @relation("InternalLinkReviewedBy")
+  ownedWorkspaces                    Workspace[]                @relation("WorkspaceOwner")
+  createdWorkspaces                  Workspace[]                @relation("WorkspaceCreatedBy")
+  workspaceMemberships               WorkspaceMember[]          @relation("WorkspaceMemberUser")
+  memberInvitesSent                  WorkspaceMember[]          @relation("WorkspaceMemberInvitedBy")
+  invitationsSent                    WorkspaceInvitation[]      @relation("InvitationInvitedBy")
+  invitationsReceived                WorkspaceInvitation[]      @relation("InvitationInvitedUser")
+  invitationsAccepted                WorkspaceInvitation[]      @relation("InvitationAcceptedBy")
+  ownedProjects                      Project[]                  @relation("ProjectOwner")
+  createdProjects                    Project[]                  @relation("ProjectCreatedBy")
+  createdMediaAssets                 MediaAsset[]               @relation("MediaAssetCreatedBy")
+  createdContentItems                ContentItem[]              @relation("ContentItemCreatedBy")
+  createdContentVersions             ContentVersion[]           @relation("ContentVersionCreatedBy")
+  createdContentSeries               ContentSeries[]            @relation("ContentSeriesCreatedBy")
+  contentReviewEvents                ContentReviewEvent[]
+  createdBackgroundJobs              BackgroundJob[]            @relation("BackgroundJobCreatedBy")
+  createdScheduledJobs               ScheduledJob[]             @relation("ScheduledJobCreatedBy")
+  updatedScheduledJobs               ScheduledJob[]             @relation("ScheduledJobUpdatedBy")
+  createdKnowledgePacks              KnowledgePack[]            @relation("KnowledgePackCreatedBy")
+  updatedKnowledgePacks              KnowledgePack[]            @relation("KnowledgePackUpdatedBy")
+  createdAiJobs                      AiJob[]                    @relation("AiJobCreatedBy")
+  createdMediaJobs                   MediaJob[]                 @relation("MediaJobCreatedBy")
+  createdVideoRenderJobs             VideoRenderJob[]           @relation("VideoRenderJobCreatedBy")
+  createdKeywordClusters             KeywordCluster[]           @relation("KeywordClusterCreatedBy")
+  createdTopicClusters               TopicCluster[]             @relation("TopicClusterCreatedBy")
+  createdContentScores               ContentScore[]             @relation("ContentScoreCreatedBy")
+  createdSeoReports                  SeoReport[]                @relation("SeoReportCreatedBy")
+  createdBlogArticles                BlogArticle[]              @relation("BlogArticleCreatedBy")
+  updatedBlogArticles                BlogArticle[]              @relation("BlogArticleUpdatedBy")
+  createdVideoScripts                VideoScript[]              @relation("VideoScriptCreatedBy")
+  updatedVideoScripts                VideoScript[]              @relation("VideoScriptUpdatedBy")
+  reviewedInternalLinks              InternalLink[]             @relation("InternalLinkReviewedBy")
+  connectedPublishingChannelAccounts PublishingChannelAccount[] @relation("PublishingChannelAccountConnectedBy")
+  requestedPublications              Publication[]              @relation("PublicationRequestedBy")
 
   @@map("users")
 }
@@ -629,32 +647,36 @@ model Workspace {
   archivedAt DateTime? @map("archived_at")
   deletedAt  DateTime? @map("deleted_at")
 
-  members                 WorkspaceMember[]
-  invitations             WorkspaceInvitation[]
-  slugReservations        WorkspaceSlugReservation[]
-  projects                Project[]
-  projectSlugReservations ProjectSlugReservation[]
-  sessionsLastActiveHere  UserSession[]              @relation("LastActiveWorkspace")
-  auditLogs               AuditLog[]
-  mediaAssets             MediaAsset[]
-  contentItems            ContentItem[]
-  contentSeries           ContentSeries[]
-  contentReviewEvents     ContentReviewEvent[]
-  backgroundJobs          BackgroundJob[]
-  domainEvents            DomainEvent[]
-  scheduledJobs           ScheduledJob[]
-  knowledgePacks          KnowledgePack[]
-  aiJobs                  AiJob[]
-  mediaJobs               MediaJob[]
-  videoRenderJobs         VideoRenderJob[]
-  keywords                Keyword[]
-  keywordClusters         KeywordCluster[]
-  topicClusters           TopicCluster[]
-  contentScores           ContentScore[]
-  seoReports              SeoReport[]
-  blogArticles            BlogArticle[]
-  videoScripts            VideoScript[]
-  internalLinks           InternalLink[]
+  members                   WorkspaceMember[]
+  invitations               WorkspaceInvitation[]
+  slugReservations          WorkspaceSlugReservation[]
+  projects                  Project[]
+  projectSlugReservations   ProjectSlugReservation[]
+  sessionsLastActiveHere    UserSession[]              @relation("LastActiveWorkspace")
+  auditLogs                 AuditLog[]
+  mediaAssets               MediaAsset[]
+  contentItems              ContentItem[]
+  contentSeries             ContentSeries[]
+  contentReviewEvents       ContentReviewEvent[]
+  backgroundJobs            BackgroundJob[]
+  domainEvents              DomainEvent[]
+  scheduledJobs             ScheduledJob[]
+  knowledgePacks            KnowledgePack[]
+  aiJobs                    AiJob[]
+  mediaJobs                 MediaJob[]
+  videoRenderJobs           VideoRenderJob[]
+  keywords                  Keyword[]
+  keywordClusters           KeywordCluster[]
+  topicClusters             TopicCluster[]
+  contentScores             ContentScore[]
+  seoReports                SeoReport[]
+  blogArticles              BlogArticle[]
+  videoScripts              VideoScript[]
+  internalLinks             InternalLink[]
+  publishingChannelAccounts PublishingChannelAccount[]
+  channelCredentials        ChannelCredential[]
+  publications              Publication[]
+  publicationTargets        PublicationTarget[]
 
   @@index([slug])
   @@index([status])
@@ -1016,20 +1038,25 @@ model ContentItem {
   archivedAt DateTime? @map("archived_at")
   deletedAt  DateTime? @map("deleted_at")
 
-  versions      ContentVersion[]     @relation("ContentItemVersions")
-  reviewEvents  ContentReviewEvent[]
-  mediaAssets   MediaAsset[]         @relation("MediaAssetContentItem")
-  mediaJobs     MediaJob[]           @relation("MediaJobContentItem")
-  videoRenderJobs VideoRenderJob[]   @relation("VideoRenderJobContentItem")
-  contentScores ContentScore[]
-  seoReports    SeoReport[]
-  blogArticle   BlogArticle?
-  videoScript   VideoScript?
+  versions              ContentVersion[]     @relation("ContentItemVersions")
+  reviewEvents          ContentReviewEvent[]
+  mediaAssets           MediaAsset[]         @relation("MediaAssetContentItem")
+  mediaJobs             MediaJob[]           @relation("MediaJobContentItem")
+  videoRenderJobs       VideoRenderJob[]     @relation("VideoRenderJobContentItem")
+  contentScores         ContentScore[]
+  seoReports            SeoReport[]
+  blogArticle           BlogArticle?
+  videoScript           VideoScript?
   // Module 8 Phase 8.1: an item can appear as either side of an
   // InternalLink — two distinct named relations, same pattern as
   // BlogArticle.createdBy/updatedBy both pointing at User.
-  internalLinksAsSource InternalLink[] @relation("InternalLinkSource")
-  internalLinksAsTarget InternalLink[] @relation("InternalLinkTarget")
+  internalLinksAsSource InternalLink[]       @relation("InternalLinkSource")
+  internalLinksAsTarget InternalLink[]       @relation("InternalLinkTarget")
+  // Module 9 Phase 9.1: a content item may be the subject of multiple
+  // Publication rows over time (e.g. a failed publication followed by a
+  // later retry publication) — never a 1:1, same reasoning as versions/
+  // reviewEvents above.
+  publications          Publication[]
 
   // Workspace-safe composite FK target for content_review_events'
   // contentItemId relation.
@@ -1262,13 +1289,13 @@ model BackgroundJob {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  history BackgroundJobHistory[]
+  history        BackgroundJobHistory[]
   // Module 3 Phase 3.3 — present only when this row is dispatching an
   // "ai.execute.v1" job; see AiJob.backgroundJobId's own comment.
-  aiJob   AiJob?
+  aiJob          AiJob?
   // Module 7 Phase 7.4 — present only when this row is dispatching a
   // media.* job; see MediaJob.backgroundJobId's own comment.
-  mediaJob MediaJob?
+  mediaJob       MediaJob?
   // Module 7 Phase 7.5 — present only when this row is dispatching a
   // media.video-render.v1 job; see VideoRenderJob.backgroundJobId.
   videoRenderJob VideoRenderJob?
@@ -1914,15 +1941,15 @@ model MediaJob {
   inputPayload  Json  @map("input_payload")
   outputPayload Json? @map("output_payload")
 
-  providerUsed String? @map("provider_used")
-  modelUsed    String? @map("model_used")
+  providerUsed  String?  @map("provider_used")
+  modelUsed     String?  @map("model_used")
   // Provider-neutral units, e.g. { imageCount, size } or
   // { characterCount, audioSeconds }. Nullable — mirrors
   // AiJob.tokenUsage.
-  usageMetadata Json? @map("usage_metadata")
+  usageMetadata Json?    @map("usage_metadata")
   // Same precision/nullability discipline as AiJob.costEstimate: no fake
   // pricing — null until a real per-unit price is configured.
-  costEstimate Decimal? @map("cost_estimate") @db.Decimal(10, 6)
+  costEstimate  Decimal? @map("cost_estimate") @db.Decimal(10, 6)
 
   status MediaJobStatus @default(QUEUED)
 
@@ -2004,30 +2031,30 @@ model VideoRenderJob {
   // The FROZEN VideoRenderInputV1 (checkpoint §4). Persisted verbatim at
   // submission, never mutated. The renderer + Gate #4 + every QA check
   // read from this, not from live domain state.
-  renderInputSnapshot  Json @map("render_input_snapshot")
-  renderInputVersion   Int  @default(1) @map("render_input_version")
+  renderInputSnapshot Json @map("render_input_snapshot")
+  renderInputVersion  Int  @default(1) @map("render_input_version")
 
   // Freshness fences — Gate #4 currentness (checkpoint §14/§24). Each is
   // recomputed from live dependencies at Gate #4 evaluation and compared
   // to what the snapshot froze.
-  scriptVersionHash      String  @map("script_version_hash")
-  sceneAssetFingerprint  String  @map("scene_asset_fingerprint")
-  voiceAudioAssetPublicId String @map("voice_audio_asset_public_id") @db.Uuid
+  scriptVersionHash        String  @map("script_version_hash")
+  sceneAssetFingerprint    String  @map("scene_asset_fingerprint")
+  voiceAudioAssetPublicId  String  @map("voice_audio_asset_public_id") @db.Uuid
   subtitleVttAssetPublicId String? @map("subtitle_vtt_asset_public_id") @db.Uuid
 
   // Produced artifact — set on COMPLETED. The VIDEO MediaAsset is the
   // authority for Gate #4, not this pointer.
-  outputMediaAssetPublicId  String? @map("output_media_asset_public_id") @db.Uuid
-  outputMediaAssetGroupId   String? @map("output_media_asset_group_id") @db.Uuid
-  outputWidth               Int?    @map("output_width")
-  outputHeight              Int?    @map("output_height")
-  outputDurationMs          Int?    @map("output_duration_ms")
-  outputFps                 Int?    @map("output_fps")
-  outputByteSize            BigInt? @map("output_byte_size")
-  outputChecksumSha256      String? @map("output_checksum_sha256")
-  outputContainer           String? @map("output_container")
-  outputVideoCodec          String? @map("output_video_codec")
-  outputAudioCodec          String? @map("output_audio_codec")
+  outputMediaAssetPublicId String? @map("output_media_asset_public_id") @db.Uuid
+  outputMediaAssetGroupId  String? @map("output_media_asset_group_id") @db.Uuid
+  outputWidth              Int?    @map("output_width")
+  outputHeight             Int?    @map("output_height")
+  outputDurationMs         Int?    @map("output_duration_ms")
+  outputFps                Int?    @map("output_fps")
+  outputByteSize           BigInt? @map("output_byte_size")
+  outputChecksumSha256     String? @map("output_checksum_sha256")
+  outputContainer          String? @map("output_container")
+  outputVideoCodec         String? @map("output_video_codec")
+  outputAudioCodec         String? @map("output_audio_codec")
 
   // Which engine actually rendered this (checkpoint §13/§32): "remotion"
   // in production, "deterministic-test" for automated tests.
@@ -2322,10 +2349,10 @@ model BlogArticle {
   metaDescription String @map("meta_description")
   urlSlug         String @map("url_slug")
   // schema.org JSON-LD suggestion (FR-SEO-002 / DB Design §5.4 `schema_markup`).
-  schemaMarkup Json @map("schema_markup")
+  schemaMarkup    Json   @map("schema_markup")
 
-  createdById String @map("created_by") @db.Uuid
-  createdBy   User   @relation("BlogArticleCreatedBy", fields: [createdById], references: [id])
+  createdById String  @map("created_by") @db.Uuid
+  createdBy   User    @relation("BlogArticleCreatedBy", fields: [createdById], references: [id])
   updatedById String? @map("updated_by") @db.Uuid
   updatedBy   User?   @relation("BlogArticleUpdatedBy", fields: [updatedById], references: [id])
 
@@ -2493,7 +2520,7 @@ model InternalLink {
   // overlap, freshness, authority, anchor fit, density/duplicate
   // penalties — Module 8 Architecture Checkpoint §9). Populated by the
   // Phase 8.2 discovery engine; opaque to Phase 8.1.
-  evidence Json
+  evidence       Json
 
   status InternalLinkStatus @default(GENERATED)
 
@@ -2522,4 +2549,279 @@ model InternalLink {
   @@index([workspaceId, sourceContentItemId, status])
   @@index([workspaceId, targetContentItemId, status])
   @@map("internal_links")
+}
+
+// ---------------------------------------------------------------------
+// Module 9 Phase 9.1 — Publishing / Content Distribution Engine.
+// Domain + persistence foundation only: no provider connectors, no
+// worker/queue wiring, no scheduling, no OAuth flow, no API surface.
+// See MODULE_ROADMAP_V1.0.md's Module 9 architecture checkpoint for the
+// full design; this is its exact, additive Phase 9.1 slice.
+//
+// V1 channel scope is frozen to WORDPRESS/YOUTUBE/FACEBOOK/INSTAGRAM —
+// LinkedIn/X/TikTok are explicitly out of scope (see the architecture
+// checkpoint's §4 channel-scope table).
+// ---------------------------------------------------------------------
+
+enum PublishingChannelType {
+  WORDPRESS
+  YOUTUBE
+  FACEBOOK
+  INSTAGRAM
+}
+
+// Deliberately 4 values only, no pre-connect/PENDING state: Phase 9.1
+// has no OAuth flow, so a PublishingChannelAccount row is never created
+// except as the OUTCOME of an already-successful connection — there is
+// no in-between state for this phase's domain to represent. If a future
+// phase's real connect workflow genuinely needs a pending-authorization
+// state, it must be added then, deliberately, not speculatively here.
+enum PublishingConnectionStatus {
+  CONNECTED
+  EXPIRED
+  REVOKED
+  ERROR
+}
+
+// PENDING -> SCHEDULED | QUEUED | CANCELLED
+// SCHEDULED -> QUEUED | CANCELLED
+// QUEUED -> PUBLISHING | CANCELLED
+// PUBLISHING -> PUBLISHED | FAILED
+// FAILED -> QUEUED (explicit retry only) | CANCELLED
+// PUBLISHED, CANCELLED -- terminal, no further transition.
+// Enforced in domain code (assertPublicationTargetTransition), not the
+// database — same division of responsibility as InternalLink's
+// assertValidTransition. See that function's own doc comment for the
+// full transition table and the deliberate exclusion of any FAILED ->
+// PENDING path (a silent reset would misrepresent a real prior attempt
+// as never having happened at all).
+enum PublicationTargetStatus {
+  PENDING
+  SCHEDULED
+  QUEUED
+  PUBLISHING
+  PUBLISHED
+  FAILED
+  CANCELLED
+}
+
+model PublishingChannelAccount {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  channelType PublishingChannelType @map("channel_type")
+
+  displayName       String @map("display_name")
+  // The channel's own identifier for this account (e.g. a YouTube
+  // channel id, a WordPress site URL, a Facebook Page id) — opaque to
+  // this schema, meaningful only to that channel's own provider adapter
+  // (a later phase, not built here).
+  externalAccountId String @map("external_account_id")
+
+  connectionStatus PublishingConnectionStatus @default(CONNECTED) @map("connection_status")
+
+  // Required, not optional: per the no-pre-connect-state decision above,
+  // an account row is only ever created once real credential material
+  // exists. 1:1 — @unique here plus the composite [id, workspaceId]
+  // reference on ChannelCredential's own side mirror BlogArticle's own
+  // contentItemId 1:1-plus-workspace-safe-FK pattern exactly.
+  credentialId String            @unique @map("credential_id") @db.Uuid
+  credential   ChannelCredential @relation(fields: [credentialId, workspaceId], references: [id, workspaceId])
+
+  // Provider capability introspection (e.g. granted OAuth scopes) —
+  // opaque Json, read-only display data, never used to bypass a real
+  // readiness check.
+  capabilitiesSnapshot Json? @map("capabilities_snapshot")
+
+  connectedById String @map("connected_by") @db.Uuid
+  connectedBy   User   @relation("PublishingChannelAccountConnectedBy", fields: [connectedById], references: [id])
+
+  connectedAt    DateTime  @default(now()) @map("connected_at")
+  lastVerifiedAt DateTime? @map("last_verified_at")
+  disconnectedAt DateTime? @map("disconnected_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  targets PublicationTarget[]
+
+  // A workspace should never accidentally connect the exact same
+  // external account twice under the same channel type.
+  @@unique([workspaceId, channelType, externalAccountId])
+  // `credentialId` alone is already @unique (the real 1:1 guarantee);
+  // this composite is required only so Prisma recognizes the to-one
+  // shape of the workspace-safe (credentialId, workspaceId) relation —
+  // same pattern as BlogArticle.@@unique([contentItemId, workspaceId]).
+  @@unique([credentialId, workspaceId])
+  // Workspace-safe composite FK target for PublicationTarget's own
+  // channelAccount relation below.
+  @@unique([id, workspaceId])
+  @@index([workspaceId, channelType])
+  @@index([workspaceId, connectionStatus])
+  @@map("publishing_channel_accounts")
+}
+
+// Encrypted credential material only — never a plaintext secrets
+// column. One AEAD-encrypted structured payload (e.g. {accessToken,
+// refreshToken, scope} for OAuth, {applicationPassword} for WordPress)
+// rather than one plaintext column per token component, so adding a new
+// token field for a future channel never needs a migration (Architecture
+// Checkpoint §8/Part P). Encryption/decryption only ever happens inside
+// the one dedicated PublishingCredentialCryptoService — nothing else in
+// the codebase may read `ciphertext` and expect plaintext.
+model ChannelCredential {
+  id String @id @default(uuid()) @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  // AES-256-GCM (or another AEAD already available in the Node runtime)
+  // — never plain AES-CBC. All three of ciphertext/nonce/authTag are
+  // base64-encoded opaque strings to this schema; only the crypto
+  // service interprets their bytes.
+  ciphertext String @map("ciphertext")
+  nonce      String @map("nonce")
+  authTag    String @map("auth_tag")
+  // Which master-key version encrypted this row — enables future key
+  // rotation (re-encrypt under a new version, keep decrypting old rows
+  // under their own recorded version) even though rotation tooling
+  // itself is out of scope for this phase.
+  keyVersion Int    @map("key_version")
+
+  tokenExpiresAt DateTime? @map("token_expires_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  channelAccount PublishingChannelAccount?
+
+  @@unique([id, workspaceId])
+  @@index([workspaceId])
+  @@map("channel_credentials")
+}
+
+model Publication {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  contentItemId String      @map("content_item_id") @db.Uuid
+  contentItem   ContentItem @relation(fields: [contentItemId, workspaceId], references: [id, workspaceId])
+
+  requestedById String @map("requested_by") @db.Uuid
+  requestedBy   User   @relation("PublicationRequestedBy", fields: [requestedById], references: [id])
+
+  requestedAt  DateTime  @default(now()) @map("requested_at")
+  scheduledFor DateTime? @map("scheduled_for")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  targets PublicationTarget[]
+
+  // Deliberately NO persisted status column (Architecture Checkpoint
+  // §13/Part K): PublicationTarget rows are the sole authority. A
+  // Publication-level summary is always derived at read time
+  // (derivePublicationSummary(), packages/shared-equivalent domain
+  // module) from its targets — never cached here, so it can never say
+  // "PUBLISHED" while one target has actually FAILED.
+
+  // Workspace-safe composite FK target for PublicationTarget's own
+  // publication relation below.
+  @@unique([id, workspaceId])
+  @@index([workspaceId, contentItemId])
+  @@map("publications")
+}
+
+model PublicationTarget {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  publicationId String      @map("publication_id") @db.Uuid
+  publication   Publication @relation(fields: [publicationId, workspaceId], references: [id, workspaceId])
+
+  // Denormalized from publication.contentItemId, set once at create and
+  // never changed afterward. Required so the live-target uniqueness
+  // partial index below can be a single-table Postgres index — a
+  // partial unique index cannot reference a joined table's columns, and
+  // this invariant is exactly the kind of thing Module 8's own partial-
+  // unique-index precedent established must be DB-enforced, not just
+  // service-checked.
+  contentItemId String @map("content_item_id") @db.Uuid
+
+  channelAccountId String                   @map("channel_account_id") @db.Uuid
+  channelAccount   PublishingChannelAccount @relation(fields: [channelAccountId, workspaceId], references: [id, workspaceId])
+
+  status PublicationTargetStatus @default(PENDING)
+
+  // Set only once PUBLISHED — the real id/URL the channel's own API
+  // returned, never fabricated (Architecture Checkpoint §14's own "no
+  // public URL invention" decision, carried forward from Module 8's
+  // identical freeze invariant).
+  externalContentId String? @map("external_content_id")
+  externalUrl       String? @map("external_url")
+
+  // Publish-ATTEMPT idempotency (distinct from the live-target
+  // uniqueness index below): guarantees a repeated dispatch of the same
+  // logical attempt — worker retry, scheduler retry, a process crash and
+  // resume — can never race into a duplicate in-flight execution. Phase
+  // 9.1 only reserves this column; no worker exists yet to populate or
+  // consume it.
+  idempotencyKey String @unique @map("idempotency_key")
+
+  retryCount           Int     @default(0) @map("retry_count")
+  // Curated only — never a raw provider error body or stack trace, same
+  // discipline as BackgroundJob.errorMessageSafe.
+  lastErrorCode        String? @map("last_error_code")
+  lastErrorMessageSafe String? @map("last_error_message_safe")
+
+  publishedAt DateTime? @map("published_at")
+  cancelledAt DateTime? @map("cancelled_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  attempts PublishAttempt[]
+
+  // Workspace-safe composite FK target for PublishAttempt's own
+  // publicationTarget relation is NOT needed — PublishAttempt is
+  // operational history reached only via publicationTargetId, same
+  // "no workspace_id, reached only through its parent" precedent as
+  // BackgroundJobHistory (see that model's own doc comment).
+  @@index([workspaceId, contentItemId, status])
+  @@index([workspaceId, channelAccountId, status])
+  @@map("publication_targets")
+}
+
+// Append-only transition history, one row per status change — mirrors
+// BackgroundJobHistory's own shape exactly (fromStatus/toStatus/
+// occurredAt/detail), not a separate "attempt counter" field: the
+// transition sequence itself, ordered by occurredAt, IS the attempt
+// history. Never stores OAuth tokens, authorization headers, raw
+// provider response bodies, or arbitrary stack traces (Part O) — only
+// curated, already-sanitized operational metadata.
+model PublishAttempt {
+  id String @id @default(uuid()) @db.Uuid
+
+  publicationTargetId String            @map("publication_target_id") @db.Uuid
+  publicationTarget   PublicationTarget @relation(fields: [publicationTargetId], references: [id])
+
+  // Nullable — the first-ever transition (PENDING at creation) has no
+  // "from".
+  fromStatus PublicationTargetStatus? @map("from_status")
+  toStatus   PublicationTargetStatus  @map("to_status")
+
+  occurredAt DateTime @default(now()) @map("occurred_at")
+  detail     Json?
+
+  @@index([publicationTargetId])
+  @@map("publish_attempts")
 }
