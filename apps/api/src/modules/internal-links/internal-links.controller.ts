@@ -1,4 +1,4 @@
-import { Body, Controller, HttpCode, HttpStatus, Param, Patch, Post, UnprocessableEntityException, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post, UnprocessableEntityException, UseGuards } from "@nestjs/common";
 import { CurrentWorkspace } from "../../common/decorators/current-workspace.decorator";
 import { RequirePermission } from "../../common/decorators/require-permission.decorator";
 import { SessionGuard } from "../../common/guards/session.guard";
@@ -9,6 +9,7 @@ import { normalizeHumanAnchorText, validateHumanAnchorText } from "./internal-li
 import { RejectInternalLinkDto } from "./dto/reject-internal-link.dto";
 import { UpdateInternalLinkAnchorDto } from "./dto/update-internal-link-anchor.dto";
 import { INTERNAL_LINK_ERRORS } from "./internal-link.errors";
+import { InternalLinkIntelligenceService } from "./internal-link-intelligence.service";
 import { InternalLinksService } from "./internal-links.service";
 
 function serialize(row: { publicId: string; anchorText: string; relevanceScore: number; status: string; reviewedAt: Date | null; rejectionReason: string | null; staleReason: string | null }) {
@@ -32,7 +33,34 @@ function serialize(row: { publicId: string; anchorText: string; relevanceScore: 
 @Controller("api/v1/workspaces/:workspaceId/internal-links")
 @UseGuards(SessionGuard, WorkspaceContextGuard, PermissionGuard)
 export class InternalLinksController {
-  constructor(private readonly internalLinks: InternalLinksService) {}
+  constructor(
+    private readonly internalLinks: InternalLinksService,
+    private readonly intelligence: InternalLinkIntelligenceService,
+  ) {}
+
+  // Module 8 Phase 8.5 — orphan/cluster/workspace link-health
+  // intelligence. All three are read-only, BLOG_VIEW-gated (Part P: no
+  // new permission, SEO_EDIT never required merely to inspect health
+  // data). Static path segments ("orphans", "cluster-health", "summary")
+  // never collide with the :id-scoped PATCH/POST routes below — this
+  // controller has no other GET route at all.
+  @Get("orphans")
+  @RequirePermission(PERMISSIONS.BLOG_VIEW)
+  async orphans(@CurrentWorkspace() workspace: WorkspaceContext) {
+    return { data: await this.intelligence.listOrphans(workspace.id) };
+  }
+
+  @Get("cluster-health")
+  @RequirePermission(PERMISSIONS.BLOG_VIEW)
+  async clusterHealth(@CurrentWorkspace() workspace: WorkspaceContext) {
+    return { data: await this.intelligence.clusterHealth(workspace.id) };
+  }
+
+  @Get("summary")
+  @RequirePermission(PERMISSIONS.BLOG_VIEW)
+  async summary(@CurrentWorkspace() workspace: WorkspaceContext) {
+    return { data: await this.intelligence.workspaceSummary(workspace.id) };
+  }
 
   @Patch(":id")
   @RequirePermission(PERMISSIONS.SEO_EDIT)
