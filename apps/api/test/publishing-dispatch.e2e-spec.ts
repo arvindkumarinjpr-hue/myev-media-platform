@@ -73,9 +73,12 @@ describe("Publishing — Phase 9.3 Dispatch + Scheduling (e2e)", () => {
   // status before cleanup starts closes the race between the Worker's
   // own BackgroundJobHistory inserts and cleanup's deletes entirely,
   // rather than merely narrowing it by reordering/retrying deletes. The
-  // fixture provider registry is empty in the real worker process too
-  // (no real connector exists), so every dispatched job fails fast
-  // (PROVIDER_NOT_CONFIGURED) — this never waits long in practice.
+  // This suite's own fixture ChannelCredential is deliberately garbage
+  // (not real AES-GCM ciphertext), so even against the real, Phase 9.4-
+  // registered WordPressChannelProvider, decryption fails synchronously
+  // before any network call is ever attempted (CREDENTIAL_INVALID) —
+  // every dispatched job still fails fast, this never waits long in
+  // practice.
   async function waitForAllPublishingJobsTerminal(ws: Workspace): Promise<void> {
     const deadline = Date.now() + 10_000;
     while (Date.now() < deadline) {
