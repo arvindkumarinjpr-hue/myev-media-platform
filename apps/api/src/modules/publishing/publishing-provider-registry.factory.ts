@@ -1,5 +1,5 @@
 import { Logger } from "@nestjs/common";
-import { PublishingProviderRegistry, PublishingProviderRegistryBuilder, WordPressChannelProvider, YouTubeChannelProvider } from "@myev/shared";
+import { FacebookChannelProvider, InstagramChannelProvider, PublishingProviderRegistry, PublishingProviderRegistryBuilder, WordPressChannelProvider, YouTubeChannelProvider } from "@myev/shared";
 
 export const PUBLISHING_PROVIDER_REGISTRY = Symbol("PUBLISHING_PROVIDER_REGISTRY");
 
@@ -27,9 +27,13 @@ const logger = new Logger("PublishingProviderRegistryFactory");
  * never registered with an invalid client" convention exactly, rather
  * than WordPress's unconditional pattern.
  *
- * No other real connector exists yet (Facebook/Instagram — later
- * phases). A later phase adds one more `builder.register(new
- * XProvider(...))` line here, never changing this factory's shape.
+ * Module 9 Phase 9.6 adds the two mechanical Meta connectors. Instagram
+ * follows WordPress's unconditional pattern (research finding: no
+ * platform-level app secret is needed at runtime for its resumable
+ * upload path). Facebook follows YouTube's conditional pattern, but
+ * gated on Meta's App id alone (no app secret needed either — no OAuth
+ * exchange happens in this phase; the App id is required only because
+ * Facebook's resumable-upload session endpoint is scoped to `/APP_ID/uploads`).
  *
  * Deliberately NOT moved to `@myev/shared` (unlike the Builder/Registry/
  * provider classes themselves) — this is the per-process wiring layer,
@@ -38,7 +42,7 @@ const logger = new Logger("PublishingProviderRegistryFactory");
  * analogous file, registering the identical provider classes with
  * identical capabilities (Part T: no capability/auth-parsing drift).
  */
-export function buildPublishingProviderRegistry(youtube: { oauthClientId: string; oauthClientSecret: string }): PublishingProviderRegistry {
+export function buildPublishingProviderRegistry(youtube: { oauthClientId: string; oauthClientSecret: string }, meta: { appId: string }): PublishingProviderRegistry {
   const builder = new PublishingProviderRegistryBuilder();
   builder.register(new WordPressChannelProvider());
 
@@ -47,6 +51,15 @@ export function buildPublishingProviderRegistry(youtube: { oauthClientId: string
     logger.log("YouTube provider configured.");
   } else {
     logger.warn("YouTube provider not configured — YOUTUBE_OAUTH_CLIENT_ID/YOUTUBE_OAUTH_CLIENT_SECRET are not set.");
+  }
+
+  builder.register(new InstagramChannelProvider());
+
+  if (meta.appId) {
+    builder.register(new FacebookChannelProvider({ appId: meta.appId }));
+    logger.log("Facebook provider configured.");
+  } else {
+    logger.warn("Facebook provider not configured — META_APP_ID is not set.");
   }
 
   return builder.freeze();

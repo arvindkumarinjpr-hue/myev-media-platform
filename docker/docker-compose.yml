@@ -118,6 +118,10 @@ services:
       # store, never hardcoded.
       YOUTUBE_OAUTH_CLIENT_ID: ""
       YOUTUBE_OAUTH_CLIENT_SECRET: ""
+      # Module 9 Phase 9.6 — Meta's own registered App id (FacebookChannelProvider
+      # only; InstagramChannelProvider needs no platform-level app credential).
+      # Empty by default; set via the deployment's own secret store.
+      META_APP_ID: ""
     depends_on:
       postgres:
         condition: service_healthy
@@ -199,6 +203,10 @@ services:
       # via the deployment's own secret store, never hardcoded.
       YOUTUBE_OAUTH_CLIENT_ID: ""
       YOUTUBE_OAUTH_CLIENT_SECRET: ""
+      # Module 9 Phase 9.6 — Meta's own registered App id (FacebookChannelProvider
+      # only; InstagramChannelProvider needs no platform-level app credential).
+      # Empty by default; set via the deployment's own secret store.
+      META_APP_ID: ""
       WORKER_APPLICATION_VERSION: "0.1.0"
     depends_on:
       postgres:
