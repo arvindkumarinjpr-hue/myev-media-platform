@@ -36,6 +36,10 @@ export interface WorkerConfig extends WorkerCoreConfig {
   // startup — identical convention to apps/api's own.
   publishing: {
     credentialEncryptionKey: string;
+    // Module 9 Phase 9.5 — mirrors apps/api's own identically-named
+    // key exactly (its own doc comment explains why this is a platform
+    // secret, unlike WordPress's per-workspace credentials).
+    youtube: { oauthClientId: string; oauthClientSecret: string };
   };
 }
 
@@ -69,6 +73,7 @@ export default function configuration(): WorkerConfig {
     },
     publishing: {
       credentialEncryptionKey: process.env.PUBLISHING_CREDENTIAL_ENCRYPTION_KEY ?? "",
+      youtube: { oauthClientId: process.env.YOUTUBE_OAUTH_CLIENT_ID ?? "", oauthClientSecret: process.env.YOUTUBE_OAUTH_CLIENT_SECRET ?? "" },
     },
   };
 }

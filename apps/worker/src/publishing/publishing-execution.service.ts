@@ -1,17 +1,77 @@
 import { Injectable } from "@nestjs/common";
 import {
   assertPublicationTargetTransition,
+  isYouTubeUploadCheckpoint,
   PublishingDomainError,
   PublishingProviderPermanentError,
   PublishingProviderRetryableError,
   resolveBlogPublishingContent,
+  type EncryptedCredential,
   type PublishingContentPayload,
+  type PublishingExecutionCallbacks,
   type PublishingPublishInput,
 } from "@myev/shared";
 import { PrismaService } from "@myev/worker-core";
 import type { Prisma, PublicationTargetStatus } from "../../../api/generated/prisma";
+import { PublishingCredentialConfigurationError, PublishingCredentialCryptoService, PublishingCredentialDecryptionError } from "./publishing-credential-crypto.service";
+import { PublishingMediaReaderService } from "./publishing-media-reader.service";
 import { PublishingProviderNotConfiguredError, PublishingProviderResolverService } from "./publishing-provider-resolver.service";
 import { PublishingReadinessService } from "./publishing-readiness.service";
+
+/**
+ * Module 9 Phase 9.5 pre-merge security correction — the ONE checkpoint
+ * envelope shape ever written to `PublishAttempt.detail`'s `PUBLISHING ->
+ * PUBLISHING` rows. `uploadSessionUri` is sensitive capability data (a
+ * bearer can query/resume the upload without separately presenting the
+ * OAuth credential), so the logical checkpoint bag a provider hands to
+ * `saveCheckpoint()` is AES-256-GCM-encrypted (reusing the exact same
+ * shared primitive/keying `ChannelCredential` itself uses — see
+ * `PublishingCredentialCryptoService`) before it is ever persisted.
+ * `checkpointType` is a forward-compatible discriminator, not a version
+ * field (the crypto envelope's own `keyVersion` already covers key
+ * rotation) — a future non-YouTube checkpoint kind would get its own
+ * literal here rather than reusing this one.
+ */
+const YOUTUBE_RESUMABLE_UPLOAD_CHECKPOINT_TYPE = "YOUTUBE_RESUMABLE_UPLOAD";
+
+interface EncryptedCheckpointEnvelope {
+  checkpointType: typeof YOUTUBE_RESUMABLE_UPLOAD_CHECKPOINT_TYPE;
+  encrypted: EncryptedCredential;
+}
+
+function isEncryptedCredentialShape(value: unknown): value is EncryptedCredential {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as Record<string, unknown>).ciphertext === "string" &&
+    typeof (value as Record<string, unknown>).nonce === "string" &&
+    typeof (value as Record<string, unknown>).authTag === "string" &&
+    typeof (value as Record<string, unknown>).keyVersion === "number"
+  );
+}
+
+function isEncryptedCheckpointEnvelope(value: unknown): value is EncryptedCheckpointEnvelope {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as Record<string, unknown>).checkpointType === YOUTUBE_RESUMABLE_UPLOAD_CHECKPOINT_TYPE &&
+    isEncryptedCredentialShape((value as Record<string, unknown>).encrypted)
+  );
+}
+
+/**
+ * The three-way outcome of looking up a target's most recent checkpoint.
+ * "none" (no row at all — a target's first-ever attempt, or a provider
+ * that never checkpoints) is the ONLY case safe to treat as "start a
+ * fresh upload." "unusable" (a row exists but could not be safely
+ * recovered — tampered ciphertext, wrong/rotated key, malformed payload)
+ * must NEVER be silently collapsed into "none": doing so would let this
+ * attempt start a brand-new YouTube upload session while an earlier one
+ * may still be in flight or already completed, creating a duplicate
+ * external video. The caller (`execute()`) hard-fails on "unusable"
+ * before ever invoking the provider.
+ */
+type CheckpointLoadResult = { outcome: "none" } | { outcome: "valid"; detail: Record<string, unknown> } | { outcome: "unusable" };
 
 /** Mechanically extracts `body.blogDraft` off a fetched ContentVersion's opaque Json `body` — the ONE narrowing step `resolveBlogPublishingContent()`'s own doc comment expects its caller to already have done. Never interprets the extracted value further; that is `parseBlogPublishingDraft()`'s (packages/shared) job alone. */
 function extractBlogDraft(body: unknown): unknown {
@@ -45,6 +105,8 @@ export class PublishingExecutionService {
     private readonly prisma: PrismaService,
     private readonly resolver: PublishingProviderResolverService,
     private readonly readiness: PublishingReadinessService,
+    private readonly mediaReaderService: PublishingMediaReaderService,
+    private readonly crypto: PublishingCredentialCryptoService,
   ) {}
 
   /**
@@ -168,16 +230,55 @@ export class PublishingExecutionService {
     // dispatch-layer redelivery, not a domain retry) produces the exact
     // same token.
     const operationToken = `publishing:${target.publicId}:attempt:${retryCount}`;
+    // Module 9 Phase 9.5 — the most recent checkpoint ANY earlier
+    // attempt generation of this SAME target saved (target-scoped, not
+    // attempt-scoped — mirrors WordPress's own reconciliation-marker
+    // scoping exactly, and for the identical reason: a manual retry
+    // mints a new operationToken/generation, but "does an in-progress
+    // upload already exist" is a fact about the target, not the attempt).
+    const checkpointResult = await this.loadPriorCheckpoint(target.id);
+    if (checkpointResult.outcome === "unusable") {
+      // A checkpoint row exists for this target but could not be safely
+      // recovered. Blocking here — before any provider call — is the
+      // whole point: falling through with `priorCheckpoint: undefined`
+      // would look identical to "no checkpoint at all" to the provider,
+      // which would then start a brand-new upload session, risking a
+      // duplicate external video. This requires human intervention (a
+      // key-configuration problem or genuine tampering), not a blind
+      // automatic retry, so it is classified permanent.
+      return this.failTarget(
+        target.id,
+        "PUBLISHING_CHECKPOINT_UNRECOVERABLE",
+        "A prior upload checkpoint exists for this target but could not be safely decrypted or validated; refusing to start a new upload to avoid creating a duplicate.",
+        "permanent",
+      );
+    }
+    const priorCheckpoint = checkpointResult.outcome === "valid" ? checkpointResult.detail : undefined;
     const publishInput: PublishingPublishInput = {
       contentType: contentItem.contentType,
       metadata: readinessResult.metadata,
       artifact: readinessResult.resolvedArtifact ?? undefined,
       content,
       operationToken,
+      priorCheckpoint,
+    };
+
+    // Module 9 Phase 9.5 — the seam a real, multi-request connector
+    // (YouTube's resumable upload; an OAuth refresh) uses to report
+    // state back for persistence, entirely through this process's own
+    // existing Prisma/crypto boundaries — the provider itself never
+    // touches either. mediaReader is only ever constructed for VIDEO;
+    // WordPress (BLOG) never reads it.
+    const callbacks: PublishingExecutionCallbacks = {
+      saveCheckpoint: (detail) => this.saveCheckpoint(target.id, detail),
+      onCredentialRefreshed: (newCredential, tokenExpiresAt) => this.resolver.persistRefreshedCredential(workspaceId, channelAccount.publicId, newCredential, tokenExpiresAt),
+      mediaReader: contentItem.contentType === "VIDEO" ? this.mediaReaderService.createReader(workspaceId) : undefined,
     };
 
     try {
-      const result = await this.resolver.withDecryptedCredential(workspaceId, channelAccount.publicId, (decryptedCredential) => providerContext.provider.publish(publishInput, decryptedCredential));
+      const result = await this.resolver.withDecryptedCredential(workspaceId, channelAccount.publicId, (decryptedCredential) =>
+        providerContext.provider.publish(publishInput, decryptedCredential, callbacks),
+      );
       await this.completeTarget(target.id, result);
       return { kind: "success", externalContentId: result.externalContentId, externalUrl: result.externalUrl };
     } catch (err) {
@@ -210,6 +311,68 @@ export class PublishingExecutionService {
     const version = await this.prisma.contentVersion.findFirst({ where: { id: currentVersionId }, select: { body: true } });
     if (!version) return null;
     return resolveBlogPublishingContent(extractBlogDraft(version.body));
+  }
+
+  /**
+   * Module 9 Phase 9.5 (pre-merge security correction) — reads the most
+   * recent checkpoint any earlier attempt of this target saved (see
+   * `saveCheckpoint`'s own doc comment for the exact row shape this
+   * looks for), decrypting it through the same worker-local crypto
+   * boundary `ChannelCredential` refresh already uses.
+   *
+   * Returns `{ outcome: "none" }` on a target's first-ever attempt, or
+   * for a provider that never checkpoints (WordPress) — no row at all.
+   * Returns `{ outcome: "unusable" }` for EVERY other failure mode —
+   * not our own envelope shape, an unsupported/rotated key version,
+   * tampered ciphertext, or a decrypted payload that doesn't structurally
+   * match a real checkpoint — deliberately without leaking which one
+   * (never a raw crypto-library error, never distinguishing "wrong key"
+   * from "tampered" in what's returned/persisted). The caller MUST treat
+   * "unusable" as a hard, blocking failure — see `execute()`.
+   */
+  private async loadPriorCheckpoint(targetId: string): Promise<CheckpointLoadResult> {
+    const row = await this.prisma.publishAttempt.findFirst({
+      where: { publicationTargetId: targetId, fromStatus: "PUBLISHING", toStatus: "PUBLISHING" },
+      orderBy: { occurredAt: "desc" },
+      select: { detail: true },
+    });
+    if (row?.detail === undefined || row?.detail === null) return { outcome: "none" };
+
+    if (!isEncryptedCheckpointEnvelope(row.detail)) return { outcome: "unusable" };
+
+    let decrypted: Record<string, unknown>;
+    try {
+      decrypted = this.crypto.decrypt(row.detail.encrypted);
+    } catch (err) {
+      if (err instanceof PublishingCredentialDecryptionError || err instanceof PublishingCredentialConfigurationError) {
+        return { outcome: "unusable" };
+      }
+      throw err;
+    }
+
+    if (!isYouTubeUploadCheckpoint(decrypted)) return { outcome: "unusable" };
+    return { outcome: "valid", detail: decrypted };
+  }
+
+  /**
+   * Module 9 Phase 9.5 (pre-merge security correction) — encrypts the
+   * provider-supplied checkpoint bag (AES-256-GCM, via the SAME shared
+   * primitive/worker-local key boundary `ChannelCredential` refresh
+   * already uses — `@myev/shared` itself never reads env/config) and
+   * persists only the resulting `{checkpointType, encrypted}` envelope.
+   * `uploadSessionUri` never touches the database in plaintext.
+   *
+   * Otherwise unchanged from Phase 9.5: still its own `PublishAttempt`
+   * row, deliberately WITHOUT going through
+   * `assertPublicationTargetTransition`/updating `PublicationTarget.status`
+   * at all — a checkpoint is not a lifecycle transition (the target stays
+   * PUBLISHING throughout), it is additional audit-trail state within one
+   * still-in-progress attempt. `fromStatus === toStatus === "PUBLISHING"`
+   * is the one, deliberate marker `loadPriorCheckpoint()` looks for.
+   */
+  private async saveCheckpoint(targetId: string, detail: Record<string, unknown>): Promise<void> {
+    const envelope: EncryptedCheckpointEnvelope = { checkpointType: YOUTUBE_RESUMABLE_UPLOAD_CHECKPOINT_TYPE, encrypted: this.crypto.encrypt(detail) };
+    await this.prisma.publishAttempt.create({ data: { publicationTargetId: targetId, fromStatus: "PUBLISHING", toStatus: "PUBLISHING", detail: envelope as unknown as Prisma.InputJsonValue } });
   }
 
   /** PUBLISHING -> PUBLISHED, with the provider's own (already-safe, no-secrets) result summary recorded on the PublishAttempt row. */

@@ -1,8 +1,14 @@
 import { Injectable, Logger, type OnModuleInit } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { CreateBucketCommand, GetObjectCommand, HeadBucketCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { CreateBucketCommand, GetObjectCommand, HeadBucketCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import type { Readable } from "stream";
 import type { WorkerCoreConfig } from "../config/worker-core-config";
+
+/** Result of `MediaStorageService.headObject()` — just enough to plan a bounded/ranged read; never exposes the underlying S3 SDK's own response type. */
+export interface MediaObjectHead {
+  sizeBytes: number;
+  contentType?: string;
+}
 
 async function streamToBuffer(stream: Readable): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -100,6 +106,43 @@ export class MediaStorageService implements OnModuleInit {
     if (declared > maxBytes) throw new Error(`getBytes: object ${key} is ${declared} bytes, over the ${maxBytes} limit`);
     const buf = await streamToBuffer(res.Body as Readable);
     if (buf.length > maxBytes) throw new Error(`getBytes: object ${key} exceeded the ${maxBytes} limit while streaming`);
+    return buf;
+  }
+
+  /**
+   * Module 9 Phase 9.5 (enabling change, Publishing/YouTube-scoped) —
+   * object size/content-type without reading any bytes. The one thing a
+   * caller needs before planning a chunked/ranged read of a large object
+   * (e.g. a resumable-upload connector) — never buffers the object
+   * itself. `getBytes()` above is unchanged and remains the right choice
+   * for every existing (small/bounded) consumer.
+   */
+  async headObject(key: string, signal?: AbortSignal): Promise<MediaObjectHead> {
+    const res = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }), { abortSignal: signal });
+    if (res.ContentLength === undefined) throw new Error(`headObject: object ${key} reported no Content-Length`);
+    return { sizeBytes: res.ContentLength, contentType: res.ContentType };
+  }
+
+  /**
+   * Module 9 Phase 9.5 (enabling change) — reads exactly one bounded
+   * byte range `[start, end]` (both inclusive, S3/MinIO `Range` header
+   * semantics) via the SAME `GetObjectCommand` `getBytes()` already
+   * uses, generalized from `inspectObjectPrefix`'s own fixed-start-at-0
+   * precedent (apps/api's MinioStorageProvider). Memory usage is bounded
+   * by the caller's own chunk size — this method itself never reads more
+   * than the one requested range into memory, so a caller can read an
+   * arbitrarily large object incrementally (one chunk at a time) without
+   * ever buffering the full object. Throws if the object returns fewer
+   * bytes than the requested range implies (a short/truncated read is
+   * never silently accepted as complete).
+   */
+  async getRange(key: string, start: number, end: number, signal?: AbortSignal): Promise<Buffer> {
+    if (start < 0 || end < start) throw new Error(`getRange: invalid range [${start}, ${end}] for object ${key}`);
+    const res = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key, Range: `bytes=${start}-${end}` }), { abortSignal: signal });
+    if (!res.Body) throw new Error(`getRange: object ${key} has no body`);
+    const buf = await streamToBuffer(res.Body as Readable);
+    const expectedBytes = end - start + 1;
+    if (buf.length !== expectedBytes) throw new Error(`getRange: object ${key} returned ${buf.length} bytes for range [${start}, ${end}], expected ${expectedBytes}`);
     return buf;
   }
 }

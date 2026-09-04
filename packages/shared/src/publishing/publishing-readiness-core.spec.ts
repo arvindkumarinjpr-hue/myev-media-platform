@@ -16,6 +16,8 @@ function baseFacts(overrides: Partial<PublishingReadinessFacts> = {}): Publishin
     videoLatestRenderStatus: null,
     videoOutputMediaAssetPublicId: null,
     videoOutputMediaAssetStatus: null,
+    videoMetaDescription: null,
+    videoTags: null,
     ...overrides,
   };
 }
@@ -197,6 +199,44 @@ describe("derivePublishingReadiness — Video", () => {
   it("rejects an unsupported channel — CHANNEL_NOT_SUPPORTED", () => {
     const result = derivePublishingReadiness(readyVideoFacts(), blogCapabilities());
     expect(result.blockingReasons).toContain("CHANNEL_NOT_SUPPORTED");
+  });
+
+  describe("metadata — Module 9 Phase 9.5: VideoScript preferred over the generic metadata.publishing bag", () => {
+    it("prefers videoMetaDescription/videoTags over metadataDescription/metadataTags for VIDEO", () => {
+      const result = derivePublishingReadiness(
+        readyVideoFacts({ videoMetaDescription: "Real SEO description", videoTags: ["real", "tags"], metadataDescription: "generic bag description", metadataTags: ["generic"] }),
+        videoCapabilities(),
+      );
+      expect(result.metadata.description).toBe("Real SEO description");
+      expect(result.metadata.tags).toEqual(["real", "tags"]);
+    });
+
+    it("falls back to the generic metadata.publishing bag when no VideoScript row/fields exist for VIDEO — preserves the pre-Phase-9.5 mechanism, never silently drops existing description/tags", () => {
+      const result = derivePublishingReadiness(readyVideoFacts({ videoMetaDescription: null, videoTags: null, metadataDescription: "generic bag description", metadataTags: ["generic"] }), videoCapabilities());
+      expect(result.metadata.description).toBe("generic bag description");
+      expect(result.metadata.tags).toEqual(["generic"]);
+    });
+
+    it("is undefined (not REQUIRED_METADATA_MISSING-blocking by itself) when NEITHER VideoScript nor the generic bag has a description, for a channel that doesn't require one", () => {
+      const result = derivePublishingReadiness(readyVideoFacts({ videoMetaDescription: null, metadataDescription: undefined }), videoCapabilities({ requiresDescription: false }));
+      expect(result.metadata.description).toBeUndefined();
+      expect(result.ready).toBe(true);
+    });
+
+    it("title always comes from ContentItem.title, never VideoScript, for VIDEO", () => {
+      const result = derivePublishingReadiness(readyVideoFacts({ contentTitle: "The real content item title" }), videoCapabilities());
+      expect(result.metadata.title).toBe("The real content item title");
+    });
+
+    it("passes through an opaque privacy value from the generic metadata bag unchanged", () => {
+      const result = derivePublishingReadiness(readyVideoFacts({ metadataPrivacy: "PRIVATE" }), videoCapabilities());
+      expect(result.metadata.privacy).toBe("PRIVATE");
+    });
+
+    it("blocks on REQUIRED_METADATA_MISSING when the channel requires a description and VideoScript has none", () => {
+      const result = derivePublishingReadiness(readyVideoFacts({ videoMetaDescription: null }), videoCapabilities({ requiresDescription: true }));
+      expect(result.blockingReasons).toContain("REQUIRED_METADATA_MISSING");
+    });
   });
 });
 
