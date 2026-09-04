@@ -2,6 +2,7 @@ import type { ComponentType, SVGProps } from "react";
 import {
   BlogIcon,
   KnowledgePackIcon,
+  LinkGraphIcon,
   OverviewIcon,
   ProjectIcon,
   ResearchIcon,
@@ -40,6 +41,13 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { label: "Research", segment: "research", icon: ResearchIcon, permission: "RESEARCH_VIEW" },
       { label: "Topic Clusters", segment: "topic-clusters", icon: TopicClusterIcon },
+      // Module 8 Phase 8.6 — workspace-level orphan/cluster/link-health
+      // intelligence (Phase 8.5's read views). BLOG_VIEW, not a new
+      // permission: every endpoint behind this page is a BLOG_VIEW read
+      // (Part P). The per-article recommendation UI lives on the Blog
+      // detail page itself, not here — see BlogPipelineDetail's Internal
+      // linking panel.
+      { label: "Internal Linking", segment: "internal-linking", icon: LinkGraphIcon, permission: "BLOG_VIEW" },
     ],
   },
   {

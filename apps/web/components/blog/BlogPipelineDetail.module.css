@@ -265,13 +265,6 @@
   overflow-x: auto;
 }
 
-/* Internal linking */
-.linkList {
-  list-style: disc;
-  padding-left: var(--space-4);
-  font-size: var(--text-sm);
-}
-
 /* QA */
 .qaList {
   display: flex;
