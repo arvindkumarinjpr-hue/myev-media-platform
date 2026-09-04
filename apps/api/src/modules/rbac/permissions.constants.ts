@@ -59,6 +59,25 @@ export const PERMISSIONS = {
   PUBLISH_CREATE: "PUBLISH_CREATE",
   PUBLISH_EXECUTE: "PUBLISH_EXECUTE",
   PUBLISH_CANCEL: "PUBLISH_CANCEL",
+  // Module 9 Phase 9.1 — "Missing constant identified" (same precedent as
+  // WORKSPACE_ARCHIVE/MEDIA_VIEW/SYSTEM_SCHEDULES_MANAGE above): the
+  // frozen AI_CONTENT_ROLE_PERMISSION_MATRIX_V1.0.md's own role prose
+  // names "Configure Channels" (Administrator, §2) and "Connect Channels"
+  // (Publisher, §7), but its formal "## Publishing" Permission Category
+  // never names a constant for either — only PUBLISH_CREATE/EXECUTE/
+  // CANCEL. Deliberately kept distinct from those three: connecting a
+  // NEW channel account or revoking/rotating an EXISTING shared
+  // credential is a materially different-risk action than scheduling a
+  // publish using an already-connected account. Architecture Checkpoint
+  // §18's own explicit decision assigns this to Owner/Administrator only
+  // — not Publisher — despite the frozen matrix's Publisher-role prose
+  // bullet; a future phase's real connect/manage UI may reconsider
+  // splitting "connect a channel for one's own publish use" from "manage/
+  // revoke a shared credential" if the product wants to honor that
+  // Publisher bullet more literally then. See the Phase 9.1 completion
+  // report for this deviation, stated explicitly rather than resolved
+  // silently either way.
+  PUBLISH_CHANNEL_MANAGE: "PUBLISH_CHANNEL_MANAGE",
 
   ANALYTICS_VIEW: "ANALYTICS_VIEW",
   ANALYTICS_EXPORT: "ANALYTICS_EXPORT",
@@ -152,7 +171,7 @@ export const PERMISSION_CATEGORIES: Record<string, PermissionConstant[]> = {
   Blog: [PERMISSIONS.BLOG_CREATE, PERMISSIONS.BLOG_EDIT, PERMISSIONS.BLOG_REVIEW, PERMISSIONS.BLOG_APPROVE, PERMISSIONS.BLOG_PUBLISH],
   Video: [PERMISSIONS.VIDEO_CREATE, PERMISSIONS.VIDEO_RENDER, PERMISSIONS.VIDEO_EDIT, PERMISSIONS.VIDEO_APPROVE, PERMISSIONS.VIDEO_PUBLISH],
   SEO: [PERMISSIONS.SEO_EDIT, PERMISSIONS.SEO_SCORE, PERMISSIONS.SEO_APPROVE],
-  Publishing: [PERMISSIONS.PUBLISH_CREATE, PERMISSIONS.PUBLISH_EXECUTE, PERMISSIONS.PUBLISH_CANCEL],
+  Publishing: [PERMISSIONS.PUBLISH_CREATE, PERMISSIONS.PUBLISH_EXECUTE, PERMISSIONS.PUBLISH_CANCEL, PERMISSIONS.PUBLISH_CHANNEL_MANAGE],
   Analytics: [PERMISSIONS.ANALYTICS_VIEW, PERMISSIONS.ANALYTICS_EXPORT],
   Media: [PERMISSIONS.MEDIA_VIEW, PERMISSIONS.MEDIA_UPLOAD, PERMISSIONS.MEDIA_MANAGE, PERMISSIONS.MEDIA_DELETE],
   Administration: [
@@ -212,6 +231,10 @@ export const ROLE_PERMISSIONS: Record<string, PermissionConstant[]> = {
     PERMISSIONS.PUBLISH_CREATE,
     PERMISSIONS.PUBLISH_EXECUTE,
     PERMISSIONS.PUBLISH_CANCEL,
+    // Module 9 Phase 9.1: "Configure Channels"/"Manage Publishing" (the
+    // frozen matrix's own §2 prose) — see PUBLISH_CHANNEL_MANAGE's own
+    // doc comment above for the full reasoning.
+    PERMISSIONS.PUBLISH_CHANNEL_MANAGE,
     PERMISSIONS.ANALYTICS_VIEW,
     PERMISSIONS.ANALYTICS_EXPORT,
     PERMISSIONS.USER_MANAGE,
@@ -349,6 +372,13 @@ export const ROLE_PERMISSIONS: Record<string, PermissionConstant[]> = {
     PERMISSIONS.PUBLISH_CREATE,
     PERMISSIONS.PUBLISH_EXECUTE,
     PERMISSIONS.PUBLISH_CANCEL,
+    // Module 9 Phase 9.1 — deliberately NOT PUBLISH_CHANNEL_MANAGE, per
+    // Architecture Checkpoint §18's explicit decision: Publisher may
+    // publish using already-connected accounts without being able to
+    // manage/revoke a shared workspace credential, even though the
+    // frozen AI_CONTENT_ROLE_PERMISSION_MATRIX_V1.0.md's own §7 prose
+    // names "Connect Channels" among this role's permissions. See
+    // PUBLISH_CHANNEL_MANAGE's own doc comment for the full reasoning.
     PERMISSIONS.BLOG_PUBLISH,
     PERMISSIONS.VIDEO_PUBLISH,
     // Module 1D final RBAC map §8: view only.
