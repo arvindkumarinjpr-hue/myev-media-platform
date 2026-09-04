@@ -27,6 +27,16 @@ export interface WorkerConfig extends WorkerCoreConfig {
     anthropic: { apiKey: string; model: string };
     gemini: { apiKey: string; model: string };
   };
+  // Module 9 Phase 9.3 — the same PublishingCredentialCryptoService key
+  // apps/api reads (apps/api/src/config/configuration.ts's own
+  // `publishing.credentialEncryptionKey`), duplicated here because the
+  // two processes read their own config independently (never a shared
+  // ConfigService instance). An empty/malformed value fails lazily
+  // inside the shared encrypt/decrypt primitive itself, never at
+  // startup — identical convention to apps/api's own.
+  publishing: {
+    credentialEncryptionKey: string;
+  };
 }
 
 export default function configuration(): WorkerConfig {
@@ -56,6 +66,9 @@ export default function configuration(): WorkerConfig {
       openai: { apiKey: process.env.OPENAI_API_KEY ?? "", model: process.env.OPENAI_MODEL ?? "gpt-4o" },
       anthropic: { apiKey: process.env.ANTHROPIC_API_KEY ?? "", model: process.env.ANTHROPIC_MODEL ?? "claude-3-5-sonnet-20241022" },
       gemini: { apiKey: process.env.GEMINI_API_KEY ?? "", model: process.env.GEMINI_MODEL ?? "gemini-1.5-pro" },
+    },
+    publishing: {
+      credentialEncryptionKey: process.env.PUBLISHING_CREDENTIAL_ENCRYPTION_KEY ?? "",
     },
   };
 }

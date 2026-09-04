@@ -1,4 +1,4 @@
-import type { PublishingChannelType } from "../../../generated/prisma";
+import type { PublishingChannelType } from "./publishing-types";
 import type { PublishingChannelProvider } from "./publishing-provider.interface";
 
 export class PublishingProviderRegistryValidationError extends Error {
@@ -10,13 +10,14 @@ export class PublishingProviderRegistryValidationError extends Error {
 
 /**
  * Mirrors AIProviderRegistryBuilder's own discipline exactly
- * (packages/shared/src/ai-provider/ai-provider-registry.ts), which
- * itself mirrors QueueRegistryBuilder — the same accumulate-then-freeze
- * pattern reused rather than reinvented: register providers during a
- * single process's own bootstrap, `.freeze()` once, get back an
- * immutable registry. "Immutable" is per-process, same caveat as those
- * two precedents — there is no cross-process shared mutable state, and
- * no runtime provider mutation after startup (Part F).
+ * (ai-provider/ai-provider-registry.ts), which itself mirrors
+ * QueueRegistryBuilder — the same accumulate-then-freeze pattern reused
+ * rather than reinvented: register providers during a single process's
+ * own bootstrap, `.freeze()` once, get back an immutable registry.
+ * "Immutable" is per-process, same caveat as those two precedents —
+ * there is no cross-process shared mutable state, and no runtime
+ * provider mutation after startup. Both apps/api and apps/worker build
+ * and freeze their own independent instance from this same shared class.
  */
 export class PublishingProviderRegistryBuilder {
   private readonly providers = new Map<PublishingChannelType, PublishingChannelProvider>();
@@ -41,7 +42,7 @@ export class PublishingProviderRegistryBuilder {
 export class PublishingProviderRegistry {
   constructor(private readonly providers: ReadonlyMap<PublishingChannelType, PublishingChannelProvider>) {}
 
-  /** Throws rather than returning undefined — every call site needs a real provider or a clean, immediate, typed failure (see PublishingProviderResolverService), never a silent null a few lines further down. */
+  /** Throws rather than returning undefined — every call site needs a real provider or a clean, immediate, typed failure, never a silent null a few lines further down. */
   resolve(channelType: PublishingChannelType): PublishingChannelProvider {
     const provider = this.providers.get(channelType);
     if (!provider) {

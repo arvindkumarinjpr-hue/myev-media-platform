@@ -1,7 +1,7 @@
 /**
- * Module 9 Phase 9.2 — stable, machine-readable readiness reason codes
- * (Part P). Human-readable messages, if ever needed, are derived
- * separately from these codes — never the other way around.
+ * Module 9 Phase 9.2/9.3 — stable, machine-readable readiness reason
+ * codes. Human-readable messages, if ever needed, are derived separately
+ * from these codes — never the other way around.
  */
 export const PUBLISHING_READINESS_REASONS = {
   CONTENT_NOT_APPROVED: "CONTENT_NOT_APPROVED",
@@ -31,7 +31,7 @@ export interface PublishingReadinessMetadata {
 /**
  * The full result of one readiness evaluation. Never persisted — read-
  * only, computed fresh on every call, and creates zero rows/side
- * effects (Part I/Q).
+ * effects.
  */
 export interface PublishingReadinessResult {
   ready: boolean;

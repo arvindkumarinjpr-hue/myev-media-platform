@@ -1,10 +1,8 @@
 import * as crypto from "crypto";
+import { FixturePublishingChannelProvider, PublishingProviderRegistryBuilder, type PublishingConnectionCheckInput, type PublishingConnectionValidationResult } from "@myev/shared";
 import { InternalLinksService } from "../src/modules/internal-links/internal-links.service";
-import { FixturePublishingChannelProvider } from "../src/modules/publishing/fixture-publishing-provider";
 import { PublishingCredentialCryptoService } from "../src/modules/publishing/publishing-credential-crypto.service";
-import { PublishingProviderRegistryBuilder } from "../src/modules/publishing/publishing-provider-registry";
 import { PUBLISHING_PROVIDER_REGISTRY } from "../src/modules/publishing/publishing-provider-registry.factory";
-import type { PublishingConnectionCheckInput, PublishingConnectionValidationResult } from "../src/modules/publishing/publishing-provider.interface";
 import { PublishingProviderResolverService } from "../src/modules/publishing/publishing-provider-resolver.service";
 import { PublishingReadinessService } from "../src/modules/publishing/publishing-readiness.service";
 import { bootstrapE2eApp, createWorkspaceAsOwner, loginAsPlatformOwner, request, teardownE2eApp, type E2eApp } from "./helpers/e2e-app";

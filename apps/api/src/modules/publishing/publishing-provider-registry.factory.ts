@@ -1,4 +1,4 @@
-import { PublishingProviderRegistry, PublishingProviderRegistryBuilder } from "./publishing-provider-registry";
+import { PublishingProviderRegistry, PublishingProviderRegistryBuilder } from "@myev/shared";
 
 export const PUBLISHING_PROVIDER_REGISTRY = Symbol("PUBLISHING_PROVIDER_REGISTRY");
 
@@ -13,6 +13,13 @@ export const PUBLISHING_PROVIDER_REGISTRY = Symbol("PUBLISHING_PROVIDER_REGISTRY
  * boot (Part H). A later phase adds one `if (config...) builder.
  * register(new WordPressProvider(...))` per real connector here, never
  * changing this factory's shape.
+ *
+ * Deliberately NOT moved to `@myev/shared` in Phase 9.3's Milestone A
+ * extraction (unlike the Builder/Registry classes themselves) — this is
+ * the per-process, config-driven wiring layer, mirroring
+ * `ai-provider-client-factory.ts`'s own precedent of being duplicated
+ * per process rather than shared. apps/worker gets its own analogous
+ * file reading its own config.
  */
 export function buildPublishingProviderRegistry(): PublishingProviderRegistry {
   const builder = new PublishingProviderRegistryBuilder();

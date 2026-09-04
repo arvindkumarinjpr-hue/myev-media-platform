@@ -1,0 +1,206 @@
+import { Injectable } from "@nestjs/common";
+import { assertPublicationTargetTransition, PublishingDomainError, PublishingProviderPermanentError, PublishingProviderRetryableError, type PublishingPublishInput } from "@myev/shared";
+import { PrismaService } from "@myev/worker-core";
+import type { Prisma, PublicationTargetStatus } from "../../../api/generated/prisma";
+import { PublishingProviderNotConfiguredError, PublishingProviderResolverService } from "./publishing-provider-resolver.service";
+import { PublishingReadinessService } from "./publishing-readiness.service";
+
+export type PublishingExecutionOutcome =
+  | { kind: "success"; externalContentId: string; externalUrl?: string }
+  | { kind: "retryable"; errorCode: string; message: string }
+  | { kind: "permanent"; errorCode: string; message: string };
+
+/**
+ * Module 9 Phase 9.3 — the worker-local coordinator for one publish
+ * execution attempt against one PublicationTarget. Reuses the shared
+ * lifecycle-transition guard and the shared readiness decision function
+ * (via this process's own thin adapters) rather than re-implementing
+ * either — the only thing genuinely local to this class is the
+ * orchestration order and the append-only PublishAttempt/audit-history
+ * bookkeeping.
+ *
+ * Never talks to a real external channel — only the fixture provider is
+ * registered in this phase. Every state transition follows Phase 9.1's
+ * frozen ALLOWED_TARGET_TRANSITIONS table exactly, via the shared
+ * `assertPublicationTargetTransition` guard — no hidden backdoor status
+ * write exists anywhere in this class.
+ */
+@Injectable()
+export class PublishingExecutionService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly resolver: PublishingProviderResolverService,
+    private readonly readiness: PublishingReadinessService,
+  ) {}
+
+  /**
+   * `workspacePublicId` (not the internal id) — matches the durable job
+   * payload's own field naming (never an internal id crosses the queue
+   * boundary). Resolved to the internal id here, as this class's own
+   * first mechanical step, so every subsequent lookup stays workspace-
+   * scoped exactly like every other service in this codebase — never
+   * trusting the target row's own embedded workspaceId blindly.
+   */
+  async execute(workspacePublicId: string, targetPublicId: string): Promise<PublishingExecutionOutcome> {
+    const workspace = await this.prisma.workspace.findUnique({ where: { publicId: workspacePublicId }, select: { id: true } });
+    if (!workspace) {
+      return { kind: "permanent", errorCode: "PUBLISHING_WORKSPACE_NOT_FOUND", message: "Workspace not found." };
+    }
+    const workspaceId = workspace.id;
+
+    const target = await this.prisma.publicationTarget.findFirst({ where: { workspaceId, publicId: targetPublicId } });
+    if (!target) {
+      return { kind: "permanent", errorCode: "PUBLISHING_TARGET_NOT_FOUND", message: "Publication target not found in this workspace." };
+    }
+
+    let currentStatus: PublicationTargetStatus = target.status;
+    let retryCount = target.retryCount;
+
+    // BullMqWorkerManager's own automatic retry re-invokes this exact
+    // handler for the SAME BullMQ job at a later time — it never
+    // performs any PublicationTarget-specific transition itself (that's
+    // this domain's own concern, not the generic queue framework's).
+    // FAILED -> PUBLISHING is not a legal direct transition (Phase 9.1's
+    // frozen table), so on a redelivery this class performs the
+    // explicit FAILED -> QUEUED "retry preparation" step itself first
+    // (Part O's own recommended model), incrementing retryCount exactly
+    // like a manual retry does — an automatic and a manual retry are
+    // both genuinely new attempt generations.
+    if (currentStatus === "FAILED") {
+      try {
+        assertPublicationTargetTransition(currentStatus, "QUEUED");
+      } catch (err) {
+        if (err instanceof PublishingDomainError) {
+          return { kind: "permanent", errorCode: err.code, message: err.message };
+        }
+        throw err;
+      }
+      await this.prisma.$transaction(async (tx) => {
+        await tx.publicationTarget.update({ where: { id: target.id }, data: { status: "QUEUED", retryCount: { increment: 1 } } });
+        await tx.publishAttempt.create({ data: { publicationTargetId: target.id, fromStatus: "FAILED", toStatus: "QUEUED", detail: { reason: "automatic_retry_preparation" } } });
+      });
+      currentStatus = "QUEUED";
+      retryCount += 1;
+    }
+
+    // Terminal/illegal states (PUBLISHED, CANCELLED, or any status that
+    // cannot legally reach PUBLISHING) are rejected by the exact same
+    // shared domain guard every other Publishing lifecycle write uses —
+    // never a status string comparison hand-rolled here.
+    try {
+      assertPublicationTargetTransition(currentStatus, "PUBLISHING");
+    } catch (err) {
+      if (err instanceof PublishingDomainError) {
+        return { kind: "permanent", errorCode: err.code, message: err.message };
+      }
+      throw err;
+    }
+
+    await this.recordTransition(target.id, currentStatus, "PUBLISHING", { reason: "execution_started" });
+
+    const contentItem = await this.prisma.contentItem.findFirst({ where: { id: target.contentItemId, workspaceId }, select: { publicId: true, contentType: true } });
+    const channelAccount = await this.prisma.publishingChannelAccount.findFirst({ where: { id: target.channelAccountId, workspaceId }, select: { publicId: true } });
+    if (!contentItem || !channelAccount) {
+      return this.failTarget(target.id, "PUBLISHING_TARGET_REFERENCE_MISSING", "The content item or channel account this target refers to no longer exists.", "permanent");
+    }
+
+    // Execution-time readiness (Part O): always recomputed immediately
+    // before any provider call, using the exact same shared decision
+    // function apps/api's own readiness endpoint would use — credentials
+    // may have expired, the account may have been revoked, or the
+    // content may have been archived/deleted since this target was
+    // scheduled/dispatched. If it's not ready, the provider is never
+    // called.
+    const readinessResult = await this.readiness.evaluateReadiness(workspaceId, contentItem.publicId, channelAccount.publicId);
+    if (!readinessResult.ready) {
+      const reason = readinessResult.blockingReasons[0] ?? "NOT_READY";
+      return this.failTarget(target.id, `READINESS_${reason}`, `Execution-time readiness check failed: ${reason}.`, "permanent");
+    }
+
+    let providerContext;
+    try {
+      providerContext = await this.resolver.resolveChannelContext(workspaceId, channelAccount.publicId);
+    } catch (err) {
+      if (err instanceof PublishingProviderNotConfiguredError) {
+        return this.failTarget(target.id, "PUBLISHING_PROVIDER_NOT_CONFIGURED", err.message, "permanent");
+      }
+      throw err;
+    }
+
+    // A stable, per-attempt correlation/idempotency token — deterministic
+    // for THIS attempt generation (retryCount doesn't change again until
+    // a genuinely new retry), passed straight through to the provider so
+    // a future real connector can reconcile a provider-succeeded-but-DB-
+    // failed race before ever retrying (Part W). Never random — a
+    // redelivered BullMQ attempt for the SAME generation (a transient
+    // dispatch-layer redelivery, not a domain retry) produces the exact
+    // same token.
+    const operationToken = `publishing:${target.publicId}:attempt:${retryCount}`;
+    const publishInput: PublishingPublishInput = {
+      contentType: contentItem.contentType,
+      metadata: readinessResult.metadata,
+      artifact: readinessResult.resolvedArtifact ?? undefined,
+      operationToken,
+    };
+
+    try {
+      const result = await this.resolver.withDecryptedCredential(workspaceId, channelAccount.publicId, (decryptedCredential) => providerContext.provider.publish(publishInput, decryptedCredential));
+      await this.completeTarget(target.id, result);
+      return { kind: "success", externalContentId: result.externalContentId, externalUrl: result.externalUrl };
+    } catch (err) {
+      if (err instanceof PublishingProviderPermanentError) {
+        await this.failTarget(target.id, err.errorCode, err.message, "permanent");
+        return { kind: "permanent", errorCode: err.errorCode, message: err.message };
+      }
+      if (err instanceof PublishingProviderRetryableError) {
+        await this.failTarget(target.id, err.errorCode, err.message, "retryable");
+        return { kind: "retryable", errorCode: err.errorCode, message: err.message };
+      }
+      // An unclassified error from the provider (or from credential
+      // decryption) is treated as retryable — never permanently failing
+      // a target over a genuinely transient/unknown fault — but its
+      // message is never persisted verbatim (see failTarget's own doc
+      // comment on sanitization).
+      await this.failTarget(target.id, "PUBLISHING_PROVIDER_UNKNOWN_ERROR", "The provider call failed unexpectedly.", "retryable");
+      return { kind: "retryable", errorCode: "PUBLISHING_PROVIDER_UNKNOWN_ERROR", message: "The provider call failed unexpectedly." };
+    }
+  }
+
+  /** PUBLISHING -> PUBLISHED, with the provider's own (already-safe, no-secrets) result summary recorded on the PublishAttempt row. */
+  private async completeTarget(targetId: string, result: { externalContentId: string; externalUrl?: string }): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.publicationTarget.update({
+        where: { id: targetId },
+        data: { status: "PUBLISHED", publishedAt: new Date(), externalContentId: result.externalContentId, externalUrl: result.externalUrl ?? null },
+      });
+      await tx.publishAttempt.create({
+        data: { publicationTargetId: targetId, fromStatus: "PUBLISHING", toStatus: "PUBLISHED", detail: { externalContentId: result.externalContentId, externalUrl: result.externalUrl ?? null } as Prisma.InputJsonValue },
+      });
+    });
+  }
+
+  /**
+   * PUBLISHING -> FAILED. `errorCode`/`message` are always our own
+   * curated strings (a shared domain-error code, a provider's own typed
+   * errorCode, or one of this class's own fixed literals) — never a raw
+   * caught exception's `.message`/`.stack`, so no provider secret or
+   * internal detail can ever reach `PublicationTarget.lastErrorMessageSafe`
+   * or the PublishAttempt's `detail` JSON.
+   */
+  private async failTarget(targetId: string, errorCode: string, message: string, classification: "retryable" | "permanent"): Promise<PublishingExecutionOutcome> {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.publicationTarget.update({ where: { id: targetId }, data: { status: "FAILED", lastErrorCode: errorCode, lastErrorMessageSafe: message } });
+      await tx.publishAttempt.create({
+        data: { publicationTargetId: targetId, fromStatus: "PUBLISHING", toStatus: "FAILED", detail: { errorCode, classification } as Prisma.InputJsonValue },
+      });
+    });
+    return { kind: classification, errorCode, message };
+  }
+
+  private async recordTransition(targetId: string, fromStatus: PublicationTargetStatus, toStatus: "PUBLISHING", detail: Record<string, unknown>): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.publicationTarget.update({ where: { id: targetId }, data: { status: toStatus } });
+      await tx.publishAttempt.create({ data: { publicationTargetId: targetId, fromStatus, toStatus, detail: detail as Prisma.InputJsonValue } });
+    });
+  }
+}

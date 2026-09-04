@@ -209,7 +209,9 @@ jobs:
       # (shares the Postgres/Redis service containers above).
       # Module 3 Phase 3.3: AI added so the same background Worker started
       # below also executes ai.execute.v1 jobs during the API E2E suite.
-      WORKER_QUEUES: SYSTEM,AI
+      # Module 9 Phase 9.3: PUBLISHING added so the same Worker also
+      # executes publishing.execute.v1/publishing.dispatch.v1 jobs.
+      WORKER_QUEUES: SYSTEM,AI,PUBLISHING
       WORKER_APPLICATION_VERSION: ci-e2e
     steps:
       - uses: actions/checkout@v4
@@ -331,11 +333,11 @@ jobs:
           # already more than enough to distinguish this attempt's own
           # heartbeat row from any earlier step's leftover rows.
           START_TIME_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          # The general worker — SYSTEM + AI only. The MEDIA queue (media
-          # generation + video render, incl. the golden-path render job)
-          # is handled by the separate render-worker started in the next
-          # step; this process has no media/render code path at all.
-          WORKER_QUEUES=SYSTEM,AI \
+          # The general worker — SYSTEM + AI + PUBLISHING. The MEDIA queue
+          # (media generation + video render, incl. the golden-path render
+          # job) is handled by the separate render-worker started in the
+          # next step; this process has no media/render code path at all.
+          WORKER_QUEUES=SYSTEM,AI,PUBLISHING \
           nohup pnpm exec ts-node --transpile-only src/main.ts > /tmp/worker.log 2>&1 &
           WORKER_PID=$!
           disown

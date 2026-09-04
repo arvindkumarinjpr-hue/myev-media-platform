@@ -1,16 +1,10 @@
-import { HttpException, Injectable, NotFoundException } from "@nestjs/common";
-import {
-  derivePublishingReadiness,
-  isPublishingCredentialExpired,
-  type PublishingChannelCapabilities,
-  type PublishingConnectionValidationResult,
-  type PublishingReadinessFacts,
-  type PublishingReadinessResult,
-} from "@myev/shared";
-import type { ContentType } from "../../../generated/prisma";
-import { PrismaService } from "../../prisma/prisma.service";
-import { PublishingProviderResolverService, type ResolvedPublishingChannelContext } from "./publishing-provider-resolver.service";
-import { PUBLISHING_ERRORS } from "./publishing.errors";
+import { Injectable } from "@nestjs/common";
+import { derivePublishingReadiness, isPublishingCredentialExpired, type PublishingChannelCapabilities, type PublishingReadinessFacts, type PublishingReadinessResult } from "@myev/shared";
+import { PrismaService } from "@myev/worker-core";
+import type { ContentType } from "../../../api/generated/prisma";
+import { PublishingProviderNotConfiguredError, PublishingProviderResolverService, type ResolvedPublishingChannelContext } from "./publishing-provider-resolver.service";
+
+export class PublishingContentItemNotFoundError extends Error {}
 
 interface ContentItemForReadiness {
   id: string;
@@ -21,28 +15,14 @@ interface ContentItemForReadiness {
   metadata: unknown;
 }
 
-/** True iff `err` is one of this module's own typed HTTP exceptions carrying the given `{ code }` payload — never inspects a raw Prisma/crypto error. */
-function isPublishingErrorCode(err: unknown, code: string): boolean {
-  if (!(err instanceof HttpException)) return false;
-  const response = err.getResponse();
-  return typeof response === "object" && response !== null && (response as Record<string, unknown>).code === code;
-}
-
 /**
- * Module 9 Phase 9.2/9.3 — the apps/api thin adapter over `@myev/shared`'s
- * `derivePublishingReadiness()` (Phase 9.3 Milestone A extraction). This
- * class's only remaining job is the mechanical part: fetch ContentItem/
- * BlogArticle/VideoRenderJob/MediaAsset facts via its own PrismaService,
- * resolve the channel/provider/connection-health facts via
- * PublishingProviderResolverService, assemble the plain
- * `PublishingReadinessFacts` object, and hand it to the shared pure
- * decision function — never re-implementing any part of the decision
- * tree itself. apps/worker's own equivalent adapter performs the exact
- * same mechanical steps against its own PrismaService and calls the
- * identical shared function.
- *
- * Purely a read: creates zero Publication/PublicationTarget/
- * PublishAttempt/BackgroundJob/ScheduledJob rows and mutates nothing.
+ * Module 9 Phase 9.3 — this worker process's own thin adapter over
+ * `@myev/shared`'s `derivePublishingReadiness()`, mirroring apps/api's
+ * identically-named service exactly. Fetches the same facts via its own
+ * (worker-core) PrismaService and hands them to the identical shared
+ * decision function — the execution-time readiness re-check (Part O)
+ * this phase's execution service performs immediately before ever
+ * calling a provider.
  */
 @Injectable()
 export class PublishingReadinessService {
@@ -56,9 +36,7 @@ export class PublishingReadinessService {
       where: { workspaceId, publicId: contentItemPublicId },
       select: { id: true, contentType: true, status: true, deletedAt: true, title: true, metadata: true },
     });
-    if (!contentItem) {
-      throw new NotFoundException({ code: PUBLISHING_ERRORS.PUBLISHING_CONTENT_ITEM_NOT_FOUND, message: "Content item not found." });
-    }
+    if (!contentItem) throw new PublishingContentItemNotFoundError("Content item not found.");
 
     const { channelContext, capabilities } = await this.resolveChannelForReadiness(workspaceId, channelAccountPublicId);
     const baseFacts = this.buildBaseFacts(contentItem);
@@ -81,16 +59,6 @@ export class PublishingReadinessService {
     return derivePublishingReadiness(facts, capabilities);
   }
 
-  /**
-   * Resolving the channel account itself not existing in this workspace
-   * is a hard failure (the caller asked about a target that doesn't
-   * exist), same convention as every other workspace-scoped lookup. A
-   * channel type with no registered provider is different: readiness
-   * must *prove* "provider-not-configured behavior" as part of its own
-   * graceful result, never a crash — so that one specific outcome is
-   * caught here and folded into `capabilities: null` instead of
-   * propagating as an exception.
-   */
   private async resolveChannelForReadiness(
     workspaceId: string,
     channelAccountPublicId: string,
@@ -99,19 +67,17 @@ export class PublishingReadinessService {
       const channelContext = await this.resolver.resolveChannelContext(workspaceId, channelAccountPublicId);
       return { channelContext, capabilities: channelContext.provider.getCapabilities() };
     } catch (err) {
-      if (isPublishingErrorCode(err, PUBLISHING_ERRORS.PUBLISHING_PROVIDER_NOT_CONFIGURED)) {
+      if (err instanceof PublishingProviderNotConfiguredError) {
         return { channelContext: null, capabilities: null };
       }
+      // PublishingChannelAccountNotFoundError (the target doesn't exist
+      // in this workspace) and anything unexpected both propagate — a
+      // hard failure, same convention as apps/api's own resolver.
       throw err;
     }
   }
 
-  /** Mirrors `isPublishingCredentialExpired`'s own doc comment: skip the decrypt-and-call-provider step entirely for an already-known-expired credential — the shared decision function re-derives the same CREDENTIAL_EXPIRED classification from `channelTokenExpiresAt` regardless, so this is a security/performance optimization only, never a behavior fork. */
-  private async buildConnectionHealthResult(
-    workspaceId: string,
-    channelAccountPublicId: string,
-    channelContext: ResolvedPublishingChannelContext,
-  ): Promise<PublishingConnectionValidationResult | null> {
+  private async buildConnectionHealthResult(workspaceId: string, channelAccountPublicId: string, channelContext: ResolvedPublishingChannelContext) {
     if (channelContext.connectionStatus !== "CONNECTED" || isPublishingCredentialExpired(channelContext.tokenExpiresAt)) {
       return null;
     }

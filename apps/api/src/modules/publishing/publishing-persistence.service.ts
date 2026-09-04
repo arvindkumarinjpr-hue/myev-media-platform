@@ -1,9 +1,10 @@
 import { randomUUID } from "crypto";
 import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { assertContentPublishEligible, assertPublicationTargetTransition, computeNextOccurrence } from "@myev/shared";
 import { Prisma, type Publication, type PublicationTarget, type PublicationTargetStatus } from "../../../generated/prisma";
 import { PrismaService } from "../../prisma/prisma.service";
 import { AuditService } from "../audit/audit.service";
-import { assertContentPublishEligible, assertPublicationTargetTransition } from "./publishing-domain";
+import { translatePublishingDomainError } from "./publishing-error-translation";
 import { PUBLISHING_ERRORS } from "./publishing.errors";
 
 const UNIQUE_CONSTRAINT_VIOLATION = "P2002";
@@ -15,6 +16,22 @@ const UNIQUE_CONSTRAINT_VIOLATION = "P2002";
 // raw Prisma/Postgres error.
 function isLiveTargetConflict(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === UNIQUE_CONSTRAINT_VIOLATION;
+}
+
+/**
+ * ScheduledJob's own model is cron/recurring by design (Module 1F
+ * Milestone 7) — there is no "fire once at this exact instant" field and
+ * Part U forbids new scheduler infrastructure. A standard 5-field cron
+ * expression with every field pinned to `date`'s own UTC minute/hour/
+ * day/month naturally fires once at exactly that instant and would only
+ * recur on the same date/time next year — PublishingDispatchService (the
+ * apps/worker `publishing.dispatch.v1` handler) disables the row
+ * immediately after its first successful dispatch, so "next year" never
+ * actually happens in practice. Always UTC — Publishing never exposes a
+ * per-schedule timezone choice in this phase.
+ */
+function toOneOffUtcCronExpression(date: Date): string {
+  return `${date.getUTCMinutes()} ${date.getUTCHours()} ${date.getUTCDate()} ${date.getUTCMonth() + 1} *`;
 }
 
 interface CreatePublicationInput {
@@ -76,12 +93,16 @@ export class PublishingPersistenceService {
         latestVideoRenderJobStatus = latestRenderJob?.status ?? null;
       }
 
-      assertContentPublishEligible({
-        contentType: contentItem.contentType,
-        status: contentItem.status,
-        deletedAt: contentItem.deletedAt,
-        latestVideoRenderJobStatus,
-      });
+      try {
+        assertContentPublishEligible({
+          contentType: contentItem.contentType,
+          status: contentItem.status,
+          deletedAt: contentItem.deletedAt,
+          latestVideoRenderJobStatus,
+        });
+      } catch (error) {
+        translatePublishingDomainError(error);
+      }
 
       const channelAccounts = await tx.publishingChannelAccount.findMany({
         where: { workspaceId, publicId: { in: input.channelAccountPublicIds } },
@@ -100,6 +121,8 @@ export class PublishingPersistenceService {
         },
       });
 
+      const workspace = input.scheduledFor ? await tx.workspace.findUniqueOrThrow({ where: { id: workspaceId }, select: { publicId: true } }) : null;
+
       const targets: PublicationTarget[] = [];
       for (const account of channelAccounts) {
         try {
@@ -117,7 +140,34 @@ export class PublishingPersistenceService {
               idempotencyKey: `publish:${publication.publicId}:${account.publicId}:${randomUUID()}`,
             },
           });
-          targets.push(target);
+
+          if (input.scheduledFor && workspace) {
+            // PENDING -> SCHEDULED, plus the ScheduledJob that will
+            // dispatch it — see toOneOffUtcCronExpression's own doc
+            // comment for why a cron model is used for a one-off date.
+            try {
+              assertPublicationTargetTransition(target.status, "SCHEDULED");
+            } catch (error) {
+              translatePublishingDomainError(error);
+            }
+            const cronExpression = toOneOffUtcCronExpression(input.scheduledFor);
+            await tx.scheduledJob.create({
+              data: {
+                workspaceId,
+                jobType: "publishing.dispatch.v1",
+                payloadMetadata: { workspacePublicId: workspace.publicId, publicationTargetPublicId: target.publicId },
+                cronExpression,
+                timezone: "UTC",
+                nextRunAt: computeNextOccurrence(cronExpression, "UTC", new Date()),
+                createdById: actorUserId,
+              },
+            });
+            const scheduled = await tx.publicationTarget.update({ where: { id: target.id }, data: { status: "SCHEDULED" } });
+            await tx.publishAttempt.create({ data: { publicationTargetId: target.id, fromStatus: "PENDING", toStatus: "SCHEDULED", detail: { scheduledFor: input.scheduledFor.toISOString() } as Prisma.InputJsonValue } });
+            targets.push(scheduled);
+          } else {
+            targets.push(target);
+          }
         } catch (error) {
           if (isLiveTargetConflict(error)) {
             throw new ConflictException({
@@ -150,7 +200,11 @@ export class PublishingPersistenceService {
         throw new NotFoundException({ code: PUBLISHING_ERRORS.PUBLISHING_TARGET_NOT_FOUND, message: "Publication target not found." });
       }
 
-      assertPublicationTargetTransition(target.status, toStatus);
+      try {
+        assertPublicationTargetTransition(target.status, toStatus);
+      } catch (error) {
+        translatePublishingDomainError(error);
+      }
 
       const updated = await tx.publicationTarget.update({
         where: { id: target.id },
