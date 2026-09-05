@@ -13,7 +13,11 @@ import { PublishingDomainError } from "@myev/shared";
  */
 export function translatePublishingDomainError(error: unknown): never {
   if (error instanceof PublishingDomainError) {
-    if (error.code === "PUBLISHING_TARGET_INVALID_TRANSITION") {
+    // Module 9 Phase 9.7 — both reconciliation guards are, like
+    // PUBLISHING_TARGET_INVALID_TRANSITION, "this action doesn't apply
+    // to the target's current state" rather than a request-validation
+    // problem — Conflict (409), not Unprocessable Entity (422).
+    if (error.code === "PUBLISHING_TARGET_INVALID_TRANSITION" || error.code === "PUBLISHING_RECONCILIATION_REQUIRED" || error.code === "PUBLISHING_RECONCILIATION_NOT_APPLICABLE") {
       throw new ConflictException({ code: error.code, message: error.message });
     }
     throw new UnprocessableEntityException({ code: error.code, message: error.message });

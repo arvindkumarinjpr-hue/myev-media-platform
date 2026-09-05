@@ -111,6 +111,7 @@ export * from "./publishing/providers/youtube-oauth-client";
 export * from "./publishing/providers/youtube-channel-provider";
 export * from "./publishing/providers/youtube-test-fixture-server";
 export * from "./publishing/providers/meta-graph-client";
+export * from "./publishing/providers/meta-oauth-client";
 export * from "./publishing/providers/meta-credential";
 export * from "./publishing/providers/facebook-channel-provider";
 export * from "./publishing/providers/instagram-channel-provider";

@@ -5,6 +5,9 @@ export const PUBLISHING_DOMAIN_ERROR_CODES = {
   PUBLISHING_CONTENT_NOT_ELIGIBLE: "PUBLISHING_CONTENT_NOT_ELIGIBLE",
   PUBLISHING_VIDEO_RENDER_NOT_READY: "PUBLISHING_VIDEO_RENDER_NOT_READY",
   PUBLISHING_TARGET_INVALID_TRANSITION: "PUBLISHING_TARGET_INVALID_TRANSITION",
+  // Module 9 Phase 9.7 — see isReconciliationRequired's own doc comment.
+  PUBLISHING_RECONCILIATION_REQUIRED: "PUBLISHING_RECONCILIATION_REQUIRED",
+  PUBLISHING_RECONCILIATION_NOT_APPLICABLE: "PUBLISHING_RECONCILIATION_NOT_APPLICABLE",
 } as const;
 
 /**
@@ -96,6 +99,70 @@ const ALLOWED_TARGET_TRANSITIONS: Record<PublicationTargetStatus, PublicationTar
 export function assertPublicationTargetTransition(from: PublicationTargetStatus, to: PublicationTargetStatus): void {
   if (!ALLOWED_TARGET_TRANSITIONS[from].includes(to)) {
     throw new PublishingDomainError(PUBLISHING_DOMAIN_ERROR_CODES.PUBLISHING_TARGET_INVALID_TRANSITION, `Cannot transition a publication target from "${from}" to "${to}".`);
+  }
+}
+
+/**
+ * Module 9 Phase 9.7 — the errorCodes a Phase 9.6 connector throws
+ * ONLY when it could not safely determine whether an external publish
+ * actually succeeded (Facebook's non-idempotent page-post-create call
+ * with an unknown outcome; Instagram's PUBLISHED-but-unrecoverable-id
+ * race) — see FacebookChannelProvider/InstagramChannelProvider's own
+ * doc comments. Neither code is ever thrown for an ordinary failure.
+ *
+ * Migration-checkpoint finding (Part AH): representing "external outcome
+ * unknown" does NOT require a new PublicationTargetStatus enum value.
+ * `PublicationTarget.lastErrorCode` (an existing, already-populated
+ * column) already distinguishes this specific case from every ordinary
+ * FAILED target with total precision — these two codes are exclusively
+ * used for exactly this scenario, never reused for anything else. This
+ * mirrors Publication's own "no persisted aggregate status, always
+ * derived at read time" precedent: reconciliation-required is a DERIVED
+ * fact (status === FAILED AND lastErrorCode is one of these two), not a
+ * new stored state.
+ */
+export const RECONCILIATION_REQUIRED_ERROR_CODES = ["FACEBOOK_PUBLISH_OUTCOME_UNKNOWN", "INSTAGRAM_PUBLISHED_ID_UNRECOVERABLE"] as const;
+
+/** True only for a FAILED target whose last failure is one of the known ambiguous-external-outcome cases — see RECONCILIATION_REQUIRED_ERROR_CODES's own doc comment. */
+export function isReconciliationRequired(status: PublicationTargetStatus, lastErrorCode: string | null | undefined): boolean {
+  return status === "FAILED" && !!lastErrorCode && (RECONCILIATION_REQUIRED_ERROR_CODES as readonly string[]).includes(lastErrorCode);
+}
+
+/**
+ * Guards BOTH manual-reconciliation actions (mark externally published;
+ * confirm not published) — a target may only be acted on this way while
+ * it is genuinely in the ambiguous state `isReconciliationRequired()`
+ * describes. Throws PUBLISHING_RECONCILIATION_NOT_APPLICABLE otherwise
+ * (a distinct code from PUBLISHING_TARGET_INVALID_TRANSITION — this
+ * isn't a status-transition-table violation, it's "there is nothing to
+ * reconcile here").
+ */
+export function assertReconciliationEligible(status: PublicationTargetStatus, lastErrorCode: string | null | undefined): void {
+  if (!isReconciliationRequired(status, lastErrorCode)) {
+    throw new PublishingDomainError(
+      PUBLISHING_DOMAIN_ERROR_CODES.PUBLISHING_RECONCILIATION_NOT_APPLICABLE,
+      `Target is not awaiting manual reconciliation (status="${status}", lastErrorCode="${lastErrorCode ?? "none"}").`,
+    );
+  }
+}
+
+/**
+ * The ordinary retry path (FAILED -> QUEUED via `assertPublicationTargetTransition`)
+ * remains structurally legal for a reconciliation-required target — the
+ * transition TABLE has no way to know about `lastErrorCode`, by design
+ * (it only ever sees statuses). This is the SEPARATE guard every retry
+ * call site must run first (Part Y: "Ambiguous Facebook/Instagram: NO
+ * ordinary retry until reconciliation resolves uncertainty"). Throws
+ * PUBLISHING_RECONCILIATION_REQUIRED — distinct from the plain
+ * transition-invalid code, so a caller can render "resolve the pending
+ * reconciliation first" rather than a generic lifecycle error.
+ */
+export function assertOrdinaryRetryAllowed(status: PublicationTargetStatus, lastErrorCode: string | null | undefined): void {
+  if (isReconciliationRequired(status, lastErrorCode)) {
+    throw new PublishingDomainError(
+      PUBLISHING_DOMAIN_ERROR_CODES.PUBLISHING_RECONCILIATION_REQUIRED,
+      "This target's last attempt had an ambiguous external outcome and requires manual reconciliation before it can be retried.",
+    );
   }
 }
 
