@@ -219,6 +219,16 @@ enum VideoTargetPlatform {
   LANDSCAPE_PRESENTATION
 }
 
+// Module 10 Phase 10.1 — Social Media Automation Architecture Checkpoint
+// §4/§26: v1 executable platforms only. LinkedIn is architecture-ready but
+// deferred (no Module 9 connector exists to hand off to yet) and
+// deliberately NOT a value here — adding it later is a pure additive enum
+// change, same precedent as VideoTargetPlatform growing over time.
+enum SocialPlatform {
+  FACEBOOK
+  INSTAGRAM
+}
+
 enum ContentReviewAction {
   SUBMITTED
   APPROVED
@@ -672,6 +682,7 @@ model Workspace {
   seoReports                SeoReport[]
   blogArticles              BlogArticle[]
   videoScripts              VideoScript[]
+  socialPosts               SocialPost[]
   internalLinks             InternalLink[]
   publishingChannelAccounts PublishingChannelAccount[]
   channelCredentials        ChannelCredential[]
@@ -1047,6 +1058,13 @@ model ContentItem {
   seoReports            SeoReport[]
   blogArticle           BlogArticle?
   videoScript           VideoScript?
+  // Module 10 Phase 10.1: this item AS a social post (0 or 1, when its
+  // own contentType is SOCIAL_POST), and every social post repurposed
+  // FROM this item (0 or many, when this item is itself an eligible
+  // BLOG/VIDEO source) — two distinct named relations, same pattern as
+  // internalLinksAsSource/internalLinksAsTarget above.
+  socialPost            SocialPost?  @relation("SocialPostItem")
+  socialPostsSourcedHere SocialPost[] @relation("SocialPostSource")
   // Module 8 Phase 8.1: an item can appear as either side of an
   // InternalLink — two distinct named relations, same pattern as
   // BlogArticle.createdBy/updatedBy both pointing at User.
@@ -2458,6 +2476,61 @@ model VideoScript {
   @@unique([contentItemId, workspaceId])
   @@index([workspaceId])
   @@map("video_scripts")
+}
+
+// ---------------------------------------------------------------------------
+// Module 10 Phase 10.1 — Social Media Automation: Domain + Persistence
+// Foundation. 1:1 extension where content_type = SOCIAL_POST, same pattern
+// as BlogArticle/VideoScript (AI_CONTENT_DATABASE_AND_ENTITY_DESIGN_V1.0.md
+// §5.4: "newsletters, social_posts — same 1:1-extension pattern,
+// platform-specific fields only"). Deliberately holds NO caption/hashtags/
+// CTA columns (Architecture Checkpoint §26/Phase 10.1 Part D) — that
+// content is Module 10's own future generation output and belongs in
+// ContentVersion.body (opaque JSON), exactly mirroring how Blog's real
+// draft text lives in content_versions.body, not in blog_articles itself.
+model SocialPost {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  // 1:1 with a SOCIAL_POST content item, in the SAME workspace —
+  // workspace-safe composite FK, same pattern as BlogArticle/VideoScript.
+  // The content_type = SOCIAL_POST constraint is a service-layer rule
+  // (Phase 10.1), not expressible as a single FK.
+  contentItemId String      @unique @map("content_item_id") @db.Uuid
+  contentItem   ContentItem @relation("SocialPostItem", fields: [contentItemId, workspaceId], references: [id, workspaceId])
+
+  // The APPROVED Blog/Video this social post was repurposed from — a
+  // DIFFERENT content item than contentItemId above, in the SAME
+  // workspace. Workspace-safe composite FK, same pattern as
+  // ContentItem.featuredMediaAssetId. Source eligibility (must be BLOG or
+  // VIDEO, must be APPROVED, must not be a SOCIAL_POST itself) is a
+  // service-layer rule (Architecture Checkpoint §5/§13, Phase 10.1 Part
+  // G) — not expressible as a single FK/CHECK constraint, since it
+  // depends on the referenced row's own contentType/status at write time.
+  sourceContentItemId String      @map("source_content_item_id") @db.Uuid
+  sourceContentItem   ContentItem @relation("SocialPostSource", fields: [sourceContentItemId, workspaceId], references: [id, workspaceId])
+
+  platform SocialPlatform
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // `contentItemId` alone is already @unique (the real 1:1 guarantee);
+  // Prisma additionally requires the composite declared so it recognises
+  // the to-one shape of the workspace-safe (contentItemId, workspaceId)
+  // relation — same pattern as BlogArticle/VideoScript.
+  @@unique([contentItemId, workspaceId])
+  @@index([workspaceId])
+  // Phase 10.1 Part D: "indexes appropriate for contentItemId/
+  // sourceContentItemId/platform lookups" — "show every social post
+  // repurposed from this Blog/Video" and "show every Facebook post in
+  // this workspace" are both real, expected queries.
+  @@index([sourceContentItemId])
+  @@index([workspaceId, platform])
+  @@map("social_posts")
 }
 
 // ---------------------------------------------------------------------------

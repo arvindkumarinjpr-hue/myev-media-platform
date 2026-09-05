@@ -56,6 +56,20 @@ export const PERMISSIONS = {
   SEO_SCORE: "SEO_SCORE",
   SEO_APPROVE: "SEO_APPROVE",
 
+  // Module 10 Phase 10.1 — Social Media Automation. Mirrors BLOG_*/VIDEO_*
+  // exactly (same 4-action shape ContentPermissionResolver's ACTION_PERMISSIONS
+  // already expects); the reserved SOCIAL_POST ContentType (Module 1E
+  // Engineering Plan §6: "reserved for a later module that will add their
+  // own permission constants and family mapping") is that later module.
+  // Deliberately NOT reusing PUBLISH_* (those gate channel-account
+  // management/execution, a different concern) or BLOG_*/VIDEO_* (a
+  // different content type). See Architecture Checkpoint §20/Phase 10.1
+  // Part B for the exact frozen role assignments.
+  SOCIAL_CREATE: "SOCIAL_CREATE",
+  SOCIAL_VIEW: "SOCIAL_VIEW",
+  SOCIAL_EDIT: "SOCIAL_EDIT",
+  SOCIAL_APPROVE: "SOCIAL_APPROVE",
+
   PUBLISH_CREATE: "PUBLISH_CREATE",
   PUBLISH_EXECUTE: "PUBLISH_EXECUTE",
   PUBLISH_CANCEL: "PUBLISH_CANCEL",
@@ -171,6 +185,7 @@ export const PERMISSION_CATEGORIES: Record<string, PermissionConstant[]> = {
   Blog: [PERMISSIONS.BLOG_CREATE, PERMISSIONS.BLOG_EDIT, PERMISSIONS.BLOG_REVIEW, PERMISSIONS.BLOG_APPROVE, PERMISSIONS.BLOG_PUBLISH],
   Video: [PERMISSIONS.VIDEO_CREATE, PERMISSIONS.VIDEO_RENDER, PERMISSIONS.VIDEO_EDIT, PERMISSIONS.VIDEO_APPROVE, PERMISSIONS.VIDEO_PUBLISH],
   SEO: [PERMISSIONS.SEO_EDIT, PERMISSIONS.SEO_SCORE, PERMISSIONS.SEO_APPROVE],
+  Social: [PERMISSIONS.SOCIAL_CREATE, PERMISSIONS.SOCIAL_VIEW, PERMISSIONS.SOCIAL_EDIT, PERMISSIONS.SOCIAL_APPROVE],
   Publishing: [PERMISSIONS.PUBLISH_CREATE, PERMISSIONS.PUBLISH_EXECUTE, PERMISSIONS.PUBLISH_CANCEL, PERMISSIONS.PUBLISH_CHANNEL_MANAGE],
   Analytics: [PERMISSIONS.ANALYTICS_VIEW, PERMISSIONS.ANALYTICS_EXPORT],
   Media: [PERMISSIONS.MEDIA_VIEW, PERMISSIONS.MEDIA_UPLOAD, PERMISSIONS.MEDIA_MANAGE, PERMISSIONS.MEDIA_DELETE],
@@ -228,6 +243,12 @@ export const ROLE_PERMISSIONS: Record<string, PermissionConstant[]> = {
     PERMISSIONS.SEO_EDIT,
     PERMISSIONS.SEO_SCORE,
     PERMISSIONS.SEO_APPROVE,
+    // Module 10 Phase 10.1 — Architecture Checkpoint §20 frozen role
+    // matrix: Administrator gets the full Social footprint.
+    PERMISSIONS.SOCIAL_CREATE,
+    PERMISSIONS.SOCIAL_VIEW,
+    PERMISSIONS.SOCIAL_EDIT,
+    PERMISSIONS.SOCIAL_APPROVE,
     PERMISSIONS.PUBLISH_CREATE,
     PERMISSIONS.PUBLISH_EXECUTE,
     PERMISSIONS.PUBLISH_CANCEL,
@@ -297,6 +318,13 @@ export const ROLE_PERMISSIONS: Record<string, PermissionConstant[]> = {
     PERMISSIONS.VIDEO_CREATE,
     PERMISSIONS.VIDEO_EDIT,
     PERMISSIONS.VIDEO_APPROVE,
+    // Module 10 Phase 10.1 — Architecture Checkpoint §20 frozen role
+    // matrix: Content Manager gets the full Social footprint, same as
+    // its existing Blog/Video create/edit/approve authority.
+    PERMISSIONS.SOCIAL_CREATE,
+    PERMISSIONS.SOCIAL_VIEW,
+    PERMISSIONS.SOCIAL_EDIT,
+    PERMISSIONS.SOCIAL_APPROVE,
     PERMISSIONS.PUBLISH_CREATE,
     PERMISSIONS.ANALYTICS_VIEW,
     // Module 1D final RBAC map §8: full media footprint.
@@ -323,6 +351,13 @@ export const ROLE_PERMISSIONS: Record<string, PermissionConstant[]> = {
     PERMISSIONS.RESEARCH_VIEW,
     PERMISSIONS.BLOG_CREATE,
     PERMISSIONS.BLOG_EDIT,
+    // Module 10 Phase 10.1 — Architecture Checkpoint §20 frozen role
+    // matrix ("Writer": CREATE/VIEW/EDIT, no APPROVE) — the closest real
+    // role name is "Content Writer", the only writer-tier role that
+    // exists in this catalog.
+    PERMISSIONS.SOCIAL_CREATE,
+    PERMISSIONS.SOCIAL_VIEW,
+    PERMISSIONS.SOCIAL_EDIT,
     PERMISSIONS.KP_VIEW,
     // Module 1D final RBAC map §8: view + upload only — no manage/delete,
     // and no "own uploads only" exception (the current RBAC model has no
@@ -348,6 +383,10 @@ export const ROLE_PERMISSIONS: Record<string, PermissionConstant[]> = {
     // video), no series management.
     PERMISSIONS.BLOG_VIEW,
     PERMISSIONS.VIDEO_VIEW,
+    // Module 10 Phase 10.1 — Architecture Checkpoint §20 frozen role
+    // matrix: SEO Specialist gets read-only Social visibility, no
+    // create/edit/approve authority.
+    PERMISSIONS.SOCIAL_VIEW,
     // Module 5 Phase 5.1 final RBAC map: FR-PLAN-002's own user story is
     // written from the SEO Specialist's perspective ("As an SEO
     // Specialist, I want topics grouped into clusters...") — the one role
@@ -387,6 +426,13 @@ export const ROLE_PERMISSIONS: Record<string, PermissionConstant[]> = {
     // no series management.
     PERMISSIONS.BLOG_VIEW,
     PERMISSIONS.VIDEO_VIEW,
+    // Module 10 Phase 10.1 — Architecture Checkpoint §20 frozen role
+    // matrix: Publisher gets read-only Social visibility only (can see
+    // what it will eventually be asked to publish) — deliberately NOT
+    // create/edit/approve, mirroring the same "Publisher must not gain
+    // authority outside its own publish/execute concern" boundary
+    // PUBLISH_CHANNEL_MANAGE's own exclusion already established.
+    PERMISSIONS.SOCIAL_VIEW,
   ],
   Analyst: [
     PERMISSIONS.ANALYTICS_VIEW,
