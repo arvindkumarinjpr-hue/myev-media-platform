@@ -683,6 +683,7 @@ model Workspace {
   blogArticles              BlogArticle[]
   videoScripts              VideoScript[]
   socialPosts               SocialPost[]
+  socialVersionGenerations  SocialVersionGeneration[]
   internalLinks             InternalLink[]
   publishingChannelAccounts PublishingChannelAccount[]
   channelCredentials        ChannelCredential[]
@@ -1123,6 +1124,11 @@ model ContentVersion {
   // Module 10 Phase 10.2 — every SocialPost generated FROM this exact
   // version (see SocialPost.sourceContentVersionId's own doc comment).
   socialPostsSourcedFromVersion SocialPost[]
+
+  // Module 10 Phase 10.3 — present only when THIS version (of a
+  // SOCIAL_POST item) was itself AI-generated (see SocialVersionGeneration's
+  // own doc comment). Absent for a human-edited version.
+  socialVersionGeneration SocialVersionGeneration?
 
   @@unique([contentItemId, versionNumber])
   @@unique([id, contentItemId])
@@ -1901,13 +1907,13 @@ model AiJob {
   // actually promotes one via topic_clusters.
   keywordClusters KeywordCluster[]
 
-  // Module 10 Phase 10.2 — the SocialPost row(s) this job's own validated
-  // output generated the caption/hashtags for (see SocialPost.
-  // captionAiJobId/hashtagAiJobId's own doc comment). Two separate
+  // Module 10 Phase 10.3 — the SocialVersionGeneration row(s) this job's
+  // own validated output produced the caption/hashtags for (see
+  // SocialVersionGeneration's own doc comment). Two separate
   // back-relations because a job can only ever be ONE of "the caption
-  // job" or "the hashtag job" for a given SocialPost, never both.
-  socialPostCaptionGenerations SocialPost[] @relation("SocialPostCaptionAiJob")
-  socialPostHashtagGenerations SocialPost[] @relation("SocialPostHashtagAiJob")
+  // job" or "the hashtag job" for a given generation, never both.
+  socialVersionCaptionGenerations SocialVersionGeneration[] @relation("SocialVersionCaptionAiJob")
+  socialVersionHashtagGenerations SocialVersionGeneration[] @relation("SocialVersionHashtagAiJob")
 
   @@index([workspaceId])
   @@index([status])
@@ -2543,25 +2549,17 @@ model SocialPost {
   sourceContentVersionId String         @map("source_content_version_id") @db.Uuid
   sourceContentVersion   ContentVersion @relation(fields: [sourceContentVersionId, sourceContentItemId], references: [id, contentItemId])
 
-  // Generation provenance — the two real ai_jobs rows (SocialCaptionAgent,
-  // then HashtagAgent) whose validated output this row's own
-  // ContentVersion v1 body was built from (SocialGenerationService's own
-  // synchronous, no-placeholder create-after-generate flow — see
-  // social-domain.ts's doc comment). Two separate FKs, not one shared
-  // "generatedByAiJobId", because they really are two distinct AiJob
-  // executions — the same precision KeywordCluster.sourceAiJobId already
-  // establishes for a single-job case, extended here since Social's own
-  // v1 generation genuinely runs two agents. Workspace-safety is implicit:
-  // both jobs are looked up via AgentExecutorService against this same
-  // request's own workspaceId before this row is ever written.
-  captionAiJobId String @map("caption_ai_job_id") @db.Uuid
-  captionAiJob   AiJob  @relation("SocialPostCaptionAiJob", fields: [captionAiJobId], references: [id])
-
-  hashtagAiJobId String @map("hashtag_ai_job_id") @db.Uuid
-  hashtagAiJob   AiJob  @relation("SocialPostHashtagAiJob", fields: [hashtagAiJobId], references: [id])
-
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Module 10 Phase 10.3 — per-version generation provenance now lives on
+  // SocialVersionGeneration (one row per ContentVersion), NOT here. Phase
+  // 10.2's original captionAiJobId/hashtagAiJobId columns assumed exactly
+  // one generation ever; regeneration (Phase 10.3) makes that false —
+  // overwriting a mutable "latest job id" on this single 1:1 row would
+  // destroy every earlier version's own provenance the instant a second
+  // generation ran. See SocialVersionGeneration's own doc comment.
+  versionGenerations SocialVersionGeneration[]
 
   // `contentItemId` alone is already @unique (the real 1:1 guarantee);
   // Prisma additionally requires the composite declared so it recognises
@@ -2575,11 +2573,67 @@ model SocialPost {
   // this workspace" are both real, expected queries.
   @@index([sourceContentItemId])
   @@index([workspaceId, platform])
-  // Phase 10.2 additions.
+  // Phase 10.2 addition.
   @@index([sourceContentVersionId])
+  @@map("social_posts")
+}
+
+// Module 10 Phase 10.3 — one row per SOCIAL_POST ContentVersion that was
+// AI-generated (create-from-source's v1, or a later regeneration), never
+// mutated after creation. Corrects Phase 10.2's original design, which
+// stored captionAiJobId/hashtagAiJobId directly on SocialPost (a true 1:1
+// with its ContentItem) — fine for exactly one generation, but
+// regeneration would have forced overwriting those two columns, silently
+// destroying every earlier version's own provenance. A human edit
+// (createVersion via the generic ContentItemsService, no AI involved)
+// creates a ContentVersion with NO row here — this table means
+// specifically "this version was AI-generated, here is exactly which two
+// ai_jobs runs produced it."
+model SocialVersionGeneration {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  socialPostId String     @map("social_post_id") @db.Uuid
+  socialPost   SocialPost @relation(fields: [socialPostId], references: [id])
+
+  // The owning SOCIAL_POST content item — stored directly (not solely
+  // derived via socialPostId's own join) so the composite FK to
+  // content_versions(id, content_item_id) below can enforce that this
+  // version really belongs to this social post's own item, the same
+  // workspace-safe-composite discipline SocialPost.sourceContentVersionId
+  // already established.
+  contentItemId String @map("content_item_id") @db.Uuid
+
+  // At most one generation record per version: a version is either the
+  // direct result of one generation call, or it doesn't have one (a human
+  // edit). Never "regenerated in place" — regeneration always produces a
+  // NEW ContentVersion (and thus a new row here), the prior version and
+  // its own generation record stay untouched forever. The real 1:1
+  // guarantee is @@unique([contentVersionId, contentItemId]) below (the
+  // exact tuple the composite FK to content_versions uses) — mirrors
+  // SocialPost.@@unique([contentItemId, workspaceId])'s own identical
+  // "Prisma requires the composite relation's fields declared unique
+  // together" pattern.
+  contentVersionId String         @map("content_version_id") @db.Uuid
+  contentVersion   ContentVersion @relation(fields: [contentVersionId, contentItemId], references: [id, contentItemId])
+
+  captionAiJobId String @map("caption_ai_job_id") @db.Uuid
+  captionAiJob   AiJob  @relation("SocialVersionCaptionAiJob", fields: [captionAiJobId], references: [id])
+
+  hashtagAiJobId String @map("hashtag_ai_job_id") @db.Uuid
+  hashtagAiJob   AiJob  @relation("SocialVersionHashtagAiJob", fields: [hashtagAiJobId], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([contentVersionId, contentItemId])
+  @@index([workspaceId])
+  @@index([socialPostId])
   @@index([captionAiJobId])
   @@index([hashtagAiJobId])
-  @@map("social_posts")
+  @@map("social_version_generations")
 }
 
 // ---------------------------------------------------------------------------

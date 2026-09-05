@@ -83,29 +83,6 @@ describe("Social Media domain + persistence foundation (e2e)", () => {
     return { id, publicId, versionId };
   }
 
-  /**
-   * Module 10 Phase 10.2 addition — social_posts now carries real FK-level
-   * generation provenance (sourceContentVersionId, captionAiJobId,
-   * hashtagAiJobId), so this file's own pre-existing schema-invariant
-   * fixtures need a real, minimal AiJob row to satisfy those NOT NULL FKs.
-   * These tests are about the 1:1/workspace-FK invariants, not real
-   * generation, so a single fixture AiJob (backed by a minimal, directly-
-   * created KnowledgePack — the same "test data, not product flow"
-   * technique this file's own doc comment already establishes) stands in
-   * for both captionAiJobId and hashtagAiJobId where a test doesn't care
-   * about distinguishing them.
-   */
-  async function createFixtureAiJobId(workspaceId: string): Promise<string> {
-    const packId = randomUUID();
-    await ctx.prisma.knowledgePack.create({
-      data: { id: packId, publicId: randomUUID(), name: "Fixture Pack", workspaceId, lineageRootId: packId, createdById: ownerUserId },
-    });
-    const job = await ctx.prisma.aiJob.create({
-      data: { publicId: randomUUID(), workspaceId, agentName: "fixture-agent", agentVersion: 1, triggeringModule: "test-fixture", knowledgePackId: packId, inputPayload: {}, status: "COMPLETED", correlationId: randomUUID(), createdById: ownerUserId },
-    });
-    return job.id;
-  }
-
   describe("SOCIAL_POST recognized as a real, RBAC-gated content type (Part K #1, #5, #6)", () => {
     it("Owner (SOCIAL_VIEW) can query ?contentType=SOCIAL_POST — 200, not rejected as unsupported", async () => {
       const res = await request(ctx.app.getHttpServer()).get(`/api/v1/workspaces/${ws.publicId}/content-items?contentType=SOCIAL_POST`).set(auth(ownerToken)).expect(200);
@@ -162,14 +139,13 @@ describe("Social Media domain + persistence foundation (e2e)", () => {
     it("enforces ContentItem <-> SocialPost 1:1 — a second SocialPost row for the same contentItemId is rejected", async () => {
       const source = await createContentItem({ contentType: "BLOG", status: "APPROVED" });
       const socialItem = await createContentItem({ contentType: "SOCIAL_POST", status: "DRAFT" });
-      const aiJobId = await createFixtureAiJobId(ws.id);
       await ctx.prisma.socialPost.create({
-        data: { id: randomUUID(), publicId: randomUUID(), workspaceId: ws.id, contentItemId: socialItem.id, sourceContentItemId: source.id, sourceContentVersionId: source.versionId, captionAiJobId: aiJobId, hashtagAiJobId: aiJobId, platform: "FACEBOOK" },
+        data: { id: randomUUID(), publicId: randomUUID(), workspaceId: ws.id, contentItemId: socialItem.id, sourceContentItemId: source.id, sourceContentVersionId: source.versionId, platform: "FACEBOOK" },
       });
 
       await expect(
         ctx.prisma.socialPost.create({
-          data: { id: randomUUID(), publicId: randomUUID(), workspaceId: ws.id, contentItemId: socialItem.id, sourceContentItemId: source.id, sourceContentVersionId: source.versionId, captionAiJobId: aiJobId, hashtagAiJobId: aiJobId, platform: "INSTAGRAM" },
+          data: { id: randomUUID(), publicId: randomUUID(), workspaceId: ws.id, contentItemId: socialItem.id, sourceContentItemId: source.id, sourceContentVersionId: source.versionId, platform: "INSTAGRAM" },
         }),
       ).rejects.toThrow();
     });
@@ -179,11 +155,10 @@ describe("Social Media domain + persistence foundation (e2e)", () => {
       const otherWsRow = await ctx.prisma.workspace.findUniqueOrThrow({ where: { publicId: otherWs.publicId }, select: { id: true } });
       const otherWorkspaceSource = await createContentItemInWorkspace(otherWsRow.id, { contentType: "BLOG", status: "APPROVED", title: "Other workspace source" });
       const socialItem = await createContentItem({ contentType: "SOCIAL_POST", status: "DRAFT" });
-      const aiJobId = await createFixtureAiJobId(ws.id);
 
       await expect(
         ctx.prisma.socialPost.create({
-          data: { id: randomUUID(), publicId: randomUUID(), workspaceId: ws.id, contentItemId: socialItem.id, sourceContentItemId: otherWorkspaceSource.id, sourceContentVersionId: otherWorkspaceSource.versionId, captionAiJobId: aiJobId, hashtagAiJobId: aiJobId, platform: "FACEBOOK" },
+          data: { id: randomUUID(), publicId: randomUUID(), workspaceId: ws.id, contentItemId: socialItem.id, sourceContentItemId: otherWorkspaceSource.id, sourceContentVersionId: otherWorkspaceSource.versionId, platform: "FACEBOOK" },
         }),
       ).rejects.toThrow();
     });
@@ -193,11 +168,10 @@ describe("Social Media domain + persistence foundation (e2e)", () => {
       const otherWs = await createWorkspaceAsOwner(ctx, ownerToken);
       const otherWsRow = await ctx.prisma.workspace.findUniqueOrThrow({ where: { publicId: otherWs.publicId }, select: { id: true } });
       const otherWorkspaceItem = await createContentItemInWorkspace(otherWsRow.id, { contentType: "SOCIAL_POST", status: "DRAFT", title: "Other workspace social item" });
-      const aiJobId = await createFixtureAiJobId(ws.id);
 
       await expect(
         ctx.prisma.socialPost.create({
-          data: { id: randomUUID(), publicId: randomUUID(), workspaceId: ws.id, contentItemId: otherWorkspaceItem.id, sourceContentItemId: source.id, sourceContentVersionId: source.versionId, captionAiJobId: aiJobId, hashtagAiJobId: aiJobId, platform: "FACEBOOK" },
+          data: { id: randomUUID(), publicId: randomUUID(), workspaceId: ws.id, contentItemId: otherWorkspaceItem.id, sourceContentItemId: source.id, sourceContentVersionId: source.versionId, platform: "FACEBOOK" },
         }),
       ).rejects.toThrow();
     });
@@ -205,9 +179,8 @@ describe("Social Media domain + persistence foundation (e2e)", () => {
     it("a real Approved Video can be the source of a real Facebook social post row — the happy path the schema exists to support", async () => {
       const source = await createContentItem({ contentType: "VIDEO", status: "APPROVED" });
       const socialItem = await createContentItem({ contentType: "SOCIAL_POST", status: "DRAFT" });
-      const aiJobId = await createFixtureAiJobId(ws.id);
       const row = await ctx.prisma.socialPost.create({
-        data: { id: randomUUID(), publicId: randomUUID(), workspaceId: ws.id, contentItemId: socialItem.id, sourceContentItemId: source.id, sourceContentVersionId: source.versionId, captionAiJobId: aiJobId, hashtagAiJobId: aiJobId, platform: "FACEBOOK" },
+        data: { id: randomUUID(), publicId: randomUUID(), workspaceId: ws.id, contentItemId: socialItem.id, sourceContentItemId: source.id, sourceContentVersionId: source.versionId, platform: "FACEBOOK" },
       });
       expect(row.platform).toBe("FACEBOOK");
       expect(row.sourceContentItemId).toBe(source.id);

@@ -20,6 +20,7 @@ import { AuditService } from "../src/modules/audit/audit.service";
 import { KnowledgePacksService } from "../src/modules/knowledge-packs/knowledge-packs.service";
 import { ContentPermissionResolver } from "../src/modules/content/content-permission.resolver";
 import { ContentBodyValidator } from "../src/modules/content/content-body-validator";
+import { ContentItemsService } from "../src/modules/content/content-items.service";
 import { SocialGenerationService } from "../src/modules/social/social-generation.service";
 import {
   addActiveMemberWithRole,
@@ -78,6 +79,7 @@ describe("Social Media AI Generation Foundation (e2e)", () => {
   let audit: AuditService;
   let permissions: ContentPermissionResolver;
   let bodyValidator: ContentBodyValidator;
+  let contentItems: ContentItemsService;
   let ownerUserId: string;
 
   interface Workspace {
@@ -93,6 +95,7 @@ describe("Social Media AI Generation Foundation (e2e)", () => {
     audit = ctx.app.get(AuditService);
     permissions = ctx.app.get(ContentPermissionResolver);
     bodyValidator = ctx.app.get(ContentBodyValidator);
+    contentItems = ctx.app.get(ContentItemsService);
     ownerUserId = (await ctx.prisma.user.findUniqueOrThrow({ where: { publicId: owner.publicId } })).id;
   });
 
@@ -164,7 +167,7 @@ describe("Social Media AI Generation Foundation (e2e)", () => {
     const providerRegistry = providerBuilder.freeze();
 
     const executor = new AgentExecutorService(agentRegistry, providerRegistry, knowledgePacks, ctx.prisma, audit);
-    const service = new SocialGenerationService(ctx.prisma, audit, executor, permissions, bodyValidator);
+    const service = new SocialGenerationService(ctx.prisma, audit, executor, permissions, bodyValidator, contentItems);
     return { service, providerRegistry, agentRegistry };
   }
 
@@ -389,7 +392,7 @@ describe("Social Media AI Generation Foundation (e2e)", () => {
     expect(JSON.stringify(body)).not.toMatch(/pending_generation|placeholder|queue.?status|job.?status/i);
   });
 
-  it("generation provenance is captured — captionAiJobId/hashtagAiJobId reference real, correctly-named ai_jobs rows (#21)", async () => {
+  it("generation provenance is captured — SocialVersionGeneration references real, correctly-named ai_jobs rows (#21, updated Phase 10.3: provenance moved from SocialPost to a per-version record — see SocialVersionGeneration's own doc comment)", async () => {
     const ws = await createWorkspace();
     const pack = await createActivePack(ws);
     const source = await createSourceItem(ws.id, { contentType: "BLOG", status: "APPROVED" });
@@ -401,8 +404,9 @@ describe("Social Media AI Generation Foundation (e2e)", () => {
 
     const item = await ctx.prisma.contentItem.findFirstOrThrow({ where: { publicId: result.publicId as string } });
     const socialPost = await ctx.prisma.socialPost.findFirstOrThrow({ where: { contentItemId: item.id } });
-    const captionJob = await ctx.prisma.aiJob.findFirstOrThrow({ where: { id: socialPost.captionAiJobId } });
-    const hashtagJob = await ctx.prisma.aiJob.findFirstOrThrow({ where: { id: socialPost.hashtagAiJobId } });
+    const generation = await ctx.prisma.socialVersionGeneration.findFirstOrThrow({ where: { socialPostId: socialPost.id } });
+    const captionJob = await ctx.prisma.aiJob.findFirstOrThrow({ where: { id: generation.captionAiJobId } });
+    const hashtagJob = await ctx.prisma.aiJob.findFirstOrThrow({ where: { id: generation.hashtagAiJobId } });
 
     expect(captionJob.agentName).toBe("social-caption-agent");
     expect(captionJob.status).toBe("COMPLETED");

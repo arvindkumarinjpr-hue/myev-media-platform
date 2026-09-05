@@ -5,7 +5,7 @@ import { Prisma, type ContentItemStatus, type ContentReviewAction } from "../../
 import { PrismaService } from "../../prisma/prisma.service";
 import { AuditService } from "../audit/audit.service";
 import type { AppConfig } from "../../config/configuration";
-import { ContentPermissionResolver, isSupportedContentType, type ContentPermissionAction } from "./content-permission.resolver";
+import { ContentPermissionResolver, isSupportedContentType, type ContentPermissionAction, type SupportedContentType } from "./content-permission.resolver";
 import { ContentBodyValidator } from "./content-body-validator";
 import { isSeriesProjectCompatible } from "./content-series-compatibility.util";
 import type { CreateContentItemDto } from "./dto/create-content-item.dto";
@@ -86,7 +86,11 @@ const CONTENT_ITEM_COLUMNS = `
 // (defensive — unreachable in practice, since nothing in this module ever
 // produces them).
 const ARCHIVABLE_STATUSES: ContentItemStatus[] = ["DRAFT", "IN_PROGRESS", "REVIEW", "APPROVED"];
-const EDITABLE_STATUSES: ContentItemStatus[] = ["DRAFT", "IN_PROGRESS"];
+// Exported (Module 10 Phase 10.3) so a pipeline-specific caller (e.g.
+// SocialGenerationService.regenerate) can cheaply pre-check editability
+// BEFORE spending an AI call, rather than discovering CONTENT_ITEM_NOT_
+// EDITABLE only after createVersion() itself runs its own identical check.
+export const EDITABLE_STATUSES: ContentItemStatus[] = ["DRAFT", "IN_PROGRESS"];
 
 // Minimal projections — only the columns the locking logic below actually
 // needs, unlike CONTENT_ITEM_COLUMNS above which serves every read site.
@@ -347,8 +351,12 @@ export class ContentItemsService {
   ): Promise<ContentItemWithPublicRefs> {
     const item = await this.resolveForAction(workspace.id, actor, itemPublicId, "edit");
     // item.contentType is guaranteed supported — create() gates it and
-    // nothing in this module ever produces an unsupported-type row.
-    this.bodyValidator.validate(item.contentType as "BLOG" | "VIDEO", dto.body);
+    // nothing in this module ever produces an unsupported-type row. Cast
+    // to the real SupportedContentType union (was stale-narrowed to just
+    // "BLOG" | "VIDEO" before Module 10 Phase 10.1 widened it) — harmless
+    // at runtime either way since validate() always dispatched on the
+    // real string, but the old cast no longer reflected reality.
+    this.bodyValidator.validate(item.contentType as SupportedContentType, dto.body);
 
     return this.prisma.$transaction(async (tx) => {
       const locked = await this.lockItemOrThrow(tx, item.id);

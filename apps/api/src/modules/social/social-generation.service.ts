@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
 import { HASHTAG_AGENT_V1, SOCIAL_CAPTION_AGENT_V1, normalizeHashtags, type HashtagAgentOutput, type SocialCaptionAgentOutput } from "@myev/shared";
 import type { Prisma } from "../../../generated/prisma";
 import { PrismaService } from "../../prisma/prisma.service";
@@ -7,11 +7,13 @@ import { AuditService } from "../audit/audit.service";
 import { AgentExecutorService } from "../ai-agents/agent-executor.service";
 import { ContentBodyValidator } from "../content/content-body-validator";
 import { ContentPermissionResolver } from "../content/content-permission.resolver";
-import type { ContentActor } from "../content/content-items.service";
+import { ContentItemsService, EDITABLE_STATUSES, type ContentActor } from "../content/content-items.service";
 import { assertSocialSourceEligible, SocialDomainError, SOCIAL_DOMAIN_ERRORS } from "./social-domain";
 import type { CreateSocialPostDto } from "./dto/create-social-post.dto";
+import type { RegenerateSocialPostDto } from "./dto/regenerate-social-post.dto";
 
 interface RequestContext {
+  ipAddress?: string;
   correlationId: string;
 }
 
@@ -52,6 +54,7 @@ export class SocialGenerationService {
     private readonly agentExecutor: AgentExecutorService,
     private readonly permissions: ContentPermissionResolver,
     private readonly bodyValidator: ContentBodyValidator,
+    private readonly contentItems: ContentItemsService,
   ) {}
 
   async createFromSource(workspace: { id: string }, actor: ContentActor, dto: CreateSocialPostDto, ctx: RequestContext): Promise<Record<string, unknown>> {
@@ -154,15 +157,31 @@ export class SocialGenerationService {
 
       const updated = await tx.contentItem.update({ where: { id: itemId }, data: { currentVersionId: version.id } });
 
+      const socialPostId = randomUUID();
       await tx.socialPost.create({
         data: {
-          id: randomUUID(),
+          id: socialPostId,
           publicId: randomUUID(),
           workspaceId: workspace.id,
           contentItemId: itemId,
           sourceContentItemId: source.id,
           sourceContentVersionId: currentVersion.id,
           platform: dto.platform,
+        },
+      });
+
+      // Module 10 Phase 10.3 — per-version generation provenance (see
+      // SocialVersionGeneration's own doc comment for why this replaced
+      // Phase 10.2's original captionAiJobId/hashtagAiJobId columns on
+      // SocialPost itself).
+      await tx.socialVersionGeneration.create({
+        data: {
+          id: randomUUID(),
+          publicId: randomUUID(),
+          workspaceId: workspace.id,
+          socialPostId,
+          contentItemId: itemId,
+          contentVersionId: version.id,
           captionAiJobId: captionResult.aiJobId!,
           hashtagAiJobId: hashtagResult.aiJobId!,
         },
@@ -181,7 +200,122 @@ export class SocialGenerationService {
       return updated;
     });
 
-    return { publicId: item.publicId, title: item.title, status: item.status, contentType: item.contentType, platform: dto.platform, sourceContentItemPublicId: source.publicId };
+    // DRAFT -> IN_PROGRESS, mirroring Blog's own create()-then-start()
+    // sequence exactly (BlogService.create()'s own comment: "Module 1E
+    // owns item + version-1 creation and the DRAFT->IN_PROGRESS
+    // transition"). Without this, submitForReview() would 409 forever —
+    // it only accepts IN_PROGRESS, never DRAFT.
+    const started = await this.contentItems.start(workspace, actor, item.publicId, ctx);
+
+    return { publicId: started.publicId, title: started.title, status: started.status, contentType: started.contentType, platform: dto.platform, sourceContentItemPublicId: source.publicId };
+  }
+
+  /**
+   * Module 10 Phase 10.3 Part F/G — regenerates a SocialPost's caption +
+   * hashtags using the EXACT source/platform already pinned on this
+   * SocialPost row (Part G: "must not silently switch to source version
+   * Y later" — this reads sourceContentItemId/sourceContentVersionId from
+   * the SocialPost row itself, never re-resolving to the source's current
+   * version). Same generate-then-persist discipline as createFromSource:
+   * both agents must succeed before anything is written. The actual
+   * version write reuses ContentItemsService.createVersion() UNCHANGED
+   * (Part E: this is what makes "cannot edit an APPROVED/REVIEW item"
+   * true here too, with zero Social-specific status logic — createVersion
+   * throws CONTENT_ITEM_NOT_EDITABLE for those statuses already). The
+   * follow-up SocialVersionGeneration write is a second, non-atomic step
+   * (matching Blog's own established multi-statement create+start+
+   * metadata-update precedent) — acceptable since it is provenance
+   * metadata, not the load-bearing 1:1 invariant Phase 10.2's create path
+   * had to protect atomically.
+   */
+  async regenerate(workspace: { id: string }, actor: ContentActor, itemPublicId: string, dto: RegenerateSocialPostDto, ctx: RequestContext): Promise<Record<string, unknown>> {
+    const allowed = await this.permissions.can(actor.publicId, workspace.id, "edit", "SOCIAL_POST");
+    if (!allowed) {
+      throw new ForbiddenException({ code: "PERMISSION_DENIED", message: "Missing required permission to edit SOCIAL_POST content." });
+    }
+
+    const item = await this.prisma.contentItem.findFirst({
+      where: { publicId: itemPublicId, workspaceId: workspace.id, contentType: "SOCIAL_POST", deletedAt: null },
+      select: { id: true, publicId: true, status: true },
+    });
+    if (!item) {
+      throw new NotFoundException({ code: "CONTENT_ITEM_NOT_FOUND", message: "Content item not found." });
+    }
+    // Pre-check before spending any AI call — createVersion() enforces
+    // this identically, but only after two provider calls would already
+    // have run otherwise.
+    if (!EDITABLE_STATUSES.includes(item.status)) {
+      throw new ConflictException({ code: "CONTENT_ITEM_NOT_EDITABLE", message: `Cannot regenerate while status is ${item.status}.` });
+    }
+
+    const socialPost = await this.prisma.socialPost.findFirst({ where: { contentItemId: item.id, workspaceId: workspace.id } });
+    if (!socialPost) {
+      throw new NotFoundException({ code: "CONTENT_ITEM_NOT_FOUND", message: "Content item not found." });
+    }
+
+    const source = await this.prisma.contentItem.findFirstOrThrow({ where: { id: socialPost.sourceContentItemId }, select: { title: true, contentType: true } });
+    // The PINNED version, never source's own currentVersionId — Part G.
+    const pinnedVersion = await this.prisma.contentVersion.findFirstOrThrow({ where: { id: socialPost.sourceContentVersionId } });
+    const sourceBody = pinnedVersion.body as Record<string, unknown>;
+    const sourceSummary = (source.contentType === "BLOG" ? (sourceBody.content as string) : (sourceBody.script as string)) ?? "";
+
+    const captionResult = await this.agentExecutor.execute(
+      {
+        agentIdentifier: SOCIAL_CAPTION_AGENT_V1.identifier,
+        agentVersion: SOCIAL_CAPTION_AGENT_V1.version,
+        workspaceId: workspace.id,
+        knowledgePackVersionId: dto.knowledgePackVersionId,
+        input: { sourceContentType: source.contentType, sourceTitle: source.title, sourceSummary, platform: socialPost.platform },
+        correlationId: `${ctx.correlationId}-caption`,
+        requestedByUserId: actor.internalId,
+      },
+      "social-generation",
+    );
+    if (captionResult.status !== "COMPLETED" || !captionResult.output || typeof captionResult.output === "string") {
+      throw new UnprocessableEntityException({ code: "SOCIAL_CAPTION_GENERATION_FAILED", message: "Caption regeneration failed — no new version was created.", details: captionResult.failure });
+    }
+    const captionOutput = captionResult.output as unknown as SocialCaptionAgentOutput;
+
+    const hashtagResult = await this.agentExecutor.execute(
+      {
+        agentIdentifier: HASHTAG_AGENT_V1.identifier,
+        agentVersion: HASHTAG_AGENT_V1.version,
+        workspaceId: workspace.id,
+        knowledgePackVersionId: dto.knowledgePackVersionId,
+        input: { sourceSummary, caption: captionOutput.caption, platform: socialPost.platform },
+        correlationId: `${ctx.correlationId}-hashtags`,
+        requestedByUserId: actor.internalId,
+      },
+      "social-generation",
+    );
+    if (hashtagResult.status !== "COMPLETED" || !hashtagResult.output || typeof hashtagResult.output === "string") {
+      throw new UnprocessableEntityException({ code: "SOCIAL_HASHTAG_GENERATION_FAILED", message: "Hashtag regeneration failed — no new version was created.", details: hashtagResult.failure });
+    }
+    const hashtagOutput = hashtagResult.output as unknown as HashtagAgentOutput;
+    const hashtags = normalizeHashtags(hashtagOutput.hashtags);
+    if (hashtags.length === 0) {
+      throw new UnprocessableEntityException({ code: "SOCIAL_HASHTAG_GENERATION_EMPTY", message: "Hashtag regeneration produced no usable hashtags — no new version was created." });
+    }
+
+    const body: Record<string, unknown> = { caption: captionOutput.caption, hashtags, ...(captionOutput.ctaObjective ? { ctaObjective: captionOutput.ctaObjective } : {}) };
+    this.bodyValidator.validate("SOCIAL_POST", body);
+
+    const updated = await this.contentItems.createVersion(workspace, actor, itemPublicId, { body }, ctx);
+
+    await this.prisma.socialVersionGeneration.create({
+      data: {
+        id: randomUUID(),
+        publicId: randomUUID(),
+        workspaceId: workspace.id,
+        socialPostId: socialPost.id,
+        contentItemId: item.id,
+        contentVersionId: updated.currentVersionId!,
+        captionAiJobId: captionResult.aiJobId!,
+        hashtagAiJobId: hashtagResult.aiJobId!,
+      },
+    });
+
+    return { publicId: updated.publicId, status: updated.status, currentVersionId: updated.currentVersionId };
   }
 
   private assertEligible(source: SourceContentRow, targetWorkspaceId: string): void {

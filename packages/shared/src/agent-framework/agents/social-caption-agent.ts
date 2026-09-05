@@ -76,6 +76,16 @@ function buildPrompt(input: SocialCaptionAgentInput, context: AgentContext): { p
 const URL_PATTERN = /https?:\/\/|www\./i;
 
 /**
+ * Module 10 Phase 10.3 — exported so the human-edit path (SocialService.edit,
+ * apps/api) enforces the IDENTICAL "no destination URL in ctaObjective"
+ * rule this agent's own postProcessOutput enforces below, from one shared
+ * definition rather than two that could drift.
+ */
+export function containsUrl(value: string): boolean {
+  return URL_PATTERN.test(value);
+}
+
+/**
  * Deterministic structural check the class-validator decorators can't
  * express: ctaObjective must never be (or contain) a URL — the checkpoint's
  * own "No fabricated destination URL" rule, enforced the same way
@@ -83,7 +93,7 @@ const URL_PATTERN = /https?:\/\/|www\./i;
  * constraint (throw => job fails safely, never "repaired").
  */
 function postProcessOutput(output: SocialCaptionAgentOutput): SocialCaptionAgentOutput {
-  if (output.ctaObjective && URL_PATTERN.test(output.ctaObjective)) {
+  if (output.ctaObjective && containsUrl(output.ctaObjective)) {
     throw new Error("SocialCaptionAgent ctaObjective must not contain a URL — no destination link exists at generation time.");
   }
   return output;
