@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { PublishFlow } from "./PublishFlow";
 import { SessionProvider } from "../../contexts/session-context";
 import { mockResponse } from "../../lib/test-mock-response";
-import { account, publication, testWorkspace } from "./publishingTestFixtures";
+import { account, testWorkspace } from "./publishingTestFixtures";
 
 const push = jest.fn();
 jest.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
@@ -16,8 +16,14 @@ function renderFlow() {
   );
 }
 
-const blogList = [{ publicId: "blog-approved", title: "EV Tax Credits Explained", status: "APPROVED" }, { publicId: "blog-draft", title: "Draft blog", status: "DRAFT" }];
-const videoList = [{ publicId: "video-approved", title: "Home EV charging", status: "APPROVED" }];
+// Phase 9.8 staging-UAT defect fix — the server already filters to
+// APPROVED-only Blog/Video content (see PublishingQueryService.
+// listPublishableContent()); this mock returns exactly what that
+// endpoint returns, never a raw unfiltered Blog/Video list.
+const contentCandidates = [
+  { publicId: "blog-approved", title: "EV Tax Credits Explained", contentType: "BLOG" },
+  { publicId: "video-approved", title: "Home EV charging", contentType: "VIDEO" },
+];
 
 function baseFetchMock(overrides: Record<string, (url: string, init?: RequestInit) => Response | Promise<Response> | undefined> = {}) {
   return jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -29,8 +35,7 @@ function baseFetchMock(overrides: Record<string, (url: string, init?: RequestIni
         if (result) return result;
       }
     }
-    if (url.includes("/workspaces/ws-1/blog")) return mockResponse({ data: blogList });
-    if (url.includes("/workspaces/ws-1/video")) return mockResponse({ data: videoList });
+    if (url.includes("/publications/content-candidates")) return mockResponse({ data: contentCandidates });
     if (url.includes("/publishing/accounts")) return mockResponse({ data: [account({ publicId: "acct-video", channelType: "YOUTUBE", displayName: "MYEV Channel" })] });
     return mockResponse({ code: "NOT_FOUND", message: `not mocked: ${method} ${url}` }, 404);
   });
@@ -39,12 +44,11 @@ function baseFetchMock(overrides: Record<string, (url: string, init?: RequestIni
 describe("PublishFlow", () => {
   afterEach(() => jest.restoreAllMocks());
 
-  it("lists only Approved content across both Blog and Video, and only accounts eligible for the chosen content type", async () => {
+  it("lists Approved content exactly as the server returns it, and only accounts eligible for the chosen content type", async () => {
     jest.spyOn(global, "fetch").mockImplementation(baseFetchMock() as unknown as typeof fetch);
     renderFlow();
 
     await waitFor(() => expect(screen.getByText("EV Tax Credits Explained")).toBeInTheDocument());
-    expect(screen.queryByText("Draft blog")).not.toBeInTheDocument();
     expect(screen.getByText("Home EV charging")).toBeInTheDocument();
 
     // select the VIDEO item (second radio) so the YOUTUBE test account is eligible
@@ -92,7 +96,7 @@ describe("PublishFlow", () => {
     const fetchMock = baseFetchMock({
       "/publications/readiness": () => mockResponse({ data: { ready: true, blockingReasons: [], warnings: [], resolvedArtifact: null, metadata: {} } }),
       "/publishing/publications": (url, init) => {
-        if ((init?.method ?? "GET").toUpperCase() === "POST") return mockResponse({ data: publication({ publicId: "pub-new" }) });
+        if ((init?.method ?? "GET").toUpperCase() === "POST") return mockResponse({ data: { publicId: "pub-new" } });
         return undefined;
       },
     });
@@ -119,7 +123,7 @@ describe("PublishFlow", () => {
     await userEvent.click(screen.getByRole("button", { name: "Publish" }));
 
     await waitFor(() => expect(push).toHaveBeenCalledWith("/workspaces/ws-1/publishing/publications/pub-new"));
-    const createCall = fetchMock.mock.calls.find((c) => c[0].toString().includes("/publishing/publications") && (c[1] as RequestInit)?.method === "POST")!;
+    const createCall = fetchMock.mock.calls.find((c) => c[0].toString().includes("/publishing/publications") && !c[0].toString().includes("content-candidates") && (c[1] as RequestInit)?.method === "POST")!;
     const body = JSON.parse((createCall[1] as RequestInit).body as string);
     expect(body).toEqual({ contentItemPublicId: "video-approved", channelAccountPublicIds: ["acct-video"] });
   });

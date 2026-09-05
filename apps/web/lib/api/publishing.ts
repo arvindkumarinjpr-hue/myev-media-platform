@@ -1,5 +1,5 @@
 import { apiClient } from "../api-client";
-import type { MetaDiscoveredPage, PublicationListItemView, PublishingAccountView, PublishingReadinessResult, SafeAttemptView } from "../types";
+import type { MetaDiscoveredPage, PublicationListItemView, PublishableContentView, PublishingAccountView, PublishingReadinessResult, SafeAttemptView } from "../types";
 
 const accountsBase = (workspaceId: string) => `workspaces/${workspaceId}/publishing/accounts`;
 const oauthBase = (workspaceId: string) => `workspaces/${workspaceId}/publishing/oauth`;
@@ -52,6 +52,15 @@ export const publishingApi = {
     finalizeMeta: (workspaceId: string, input: MetaFinalizeSelectionInput) => apiClient.post<PublishingAccountView[]>(`${oauthBase(workspaceId)}/meta/finalize`, input),
   },
   publications: {
+    /**
+     * Phase 9.8 staging-UAT defect fix — every APPROVED Blog/Video
+     * content item the caller can view, regardless of whether it went
+     * through the Module 6/7 pipeline (see PublishingQueryService.
+     * listPublishableContent()'s own doc comment). Replaces PublishFlow's
+     * old blogApi.list()+videoApi.list() merge, which silently excluded
+     * real Approved content with no pipeline metadata.
+     */
+    contentCandidates: (workspaceId: string) => apiClient.get<PublishableContentView[]>(`${publicationsBase(workspaceId)}/content-candidates`),
     list: (workspaceId: string, filters: { status?: string; channelType?: string; contentType?: string } = {}) => {
       const query = new URLSearchParams(Object.entries(filters).filter(([, v]) => !!v) as [string, string][]).toString();
       return apiClient.get<PublicationListItemView[]>(`${publicationsBase(workspaceId)}${query ? `?${query}` : ""}`);

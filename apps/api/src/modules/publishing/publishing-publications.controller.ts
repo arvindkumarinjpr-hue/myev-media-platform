@@ -1,9 +1,10 @@
 import { Body, Controller, Get, Param, Post, Query, Req, UseGuards } from "@nestjs/common";
 import type { Request } from "express";
+import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { CurrentWorkspace } from "../../common/decorators/current-workspace.decorator";
 import { RequirePermission } from "../../common/decorators/require-permission.decorator";
 import { PermissionGuard } from "../../common/guards/permission.guard";
-import { SessionGuard } from "../../common/guards/session.guard";
+import { SessionGuard, type AuthenticatedRequest } from "../../common/guards/session.guard";
 import { WorkspaceContextGuard, type WorkspaceContext } from "../../common/guards/workspace-context.guard";
 import { PERMISSIONS } from "../rbac/permissions.constants";
 import { CreatePublicationDto } from "./dto/create-publication.dto";
@@ -43,6 +44,18 @@ export class PublishingPublicationsController {
   @RequirePermission(PERMISSIONS.PUBLISH_CREATE)
   async previewReadiness(@CurrentWorkspace() workspace: WorkspaceContext, @Query("contentItemId") contentItemId: string, @Query("channelAccountId") channelAccountId: string) {
     return { data: await this.readiness.evaluateReadiness(workspace.id, contentItemId, channelAccountId) };
+  }
+
+  /**
+   * Staging UAT defect fix (Phase 9.8) — every APPROVED Blog/Video content
+   * item the caller can view, for the publish flow's "select content"
+   * step. Registered before the `:publicationId` route below so
+   * "content-candidates" is never swallowed as a publication id.
+   */
+  @Get("content-candidates")
+  @RequirePermission(PERMISSIONS.PUBLISH_CREATE)
+  async contentCandidates(@CurrentUser() user: AuthenticatedRequest["user"], @CurrentWorkspace() workspace: WorkspaceContext) {
+    return { data: await this.query.listPublishableContent(workspace.id, { publicId: user.sub, internalId: workspace.userInternalId }) };
   }
 
   @Get()
