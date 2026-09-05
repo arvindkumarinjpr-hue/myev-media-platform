@@ -5,6 +5,7 @@ import {
   LinkGraphIcon,
   OverviewIcon,
   ProjectIcon,
+  PublishingIcon,
   ResearchIcon,
   TopicClusterIcon,
   VideoIcon,
@@ -70,6 +71,17 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { label: "Knowledge Packs", segment: "knowledge-packs", icon: KnowledgePackIcon, permission: "KP_VIEW" },
       { label: "Projects", segment: "projects", icon: ProjectIcon, permission: "PROJECT_VIEW" },
+    ],
+  },
+  {
+    title: "Publishing",
+    items: [
+      // Module 9 Phase 9.7 — PUBLISH_CREATE (not PUBLISH_CHANNEL_MANAGE):
+      // every role that can create a publication needs to see this page;
+      // account management itself is further gated inside the page by
+      // PUBLISH_CHANNEL_MANAGE (see PublishingAccountsController's own
+      // doc comment for why "view" and "manage" are deliberately split).
+      { label: "Publishing", segment: "publishing", icon: PublishingIcon, permission: "PUBLISH_CREATE" },
     ],
   },
 ];
