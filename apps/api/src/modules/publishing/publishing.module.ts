@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from "@nestjs/config";
 import type { AppConfig } from "../../config/configuration";
 import { AuthModule } from "../auth/auth.module";
 import { BackgroundJobsModule } from "../background-jobs/background-jobs.module";
+import { ContentModule } from "../content/content.module";
 import { PublishingAccountHealthService } from "./publishing-account-health.service";
 import { PublishingAccountsController } from "./publishing-accounts.controller";
 import { PublishingAccountsService } from "./publishing-accounts.service";
@@ -31,13 +32,22 @@ import { PublishingReconciliationService } from "./publishing-reconciliation.ser
  * `@Global()` — no explicit import needed, same as every other module
  * that injects AuditService.
  *
+ * Phase 9.8 staging UAT defect fix — ContentModule import: Publishing's
+ * "select content" step needs "every APPROVED Blog/Video content item",
+ * a different question from Blog's/Video's own list() ("items that went
+ * through MY pipeline"). Reusing BlogService.list()/videoApi.list()
+ * silently excluded real Approved content that never had Module 6/7
+ * pipeline metadata (e.g. Module 8's own UAT fixture blogs) — see
+ * PublishingQueryService.listPublishableContent(), which queries
+ * ContentItemsService.list() directly instead.
+ *
  * PUBLISHING_PROVIDER_REGISTRY defaults to the real production registry
  * — never the fixture provider. E2E tests override it via NestJS's own
  * overrideProvider, the identical pattern RESEARCH_SOURCE_PROVIDER/
  * AiProviderRegistryModule already established.
  */
 @Module({
-  imports: [BackgroundJobsModule, ConfigModule, AuthModule],
+  imports: [BackgroundJobsModule, ConfigModule, AuthModule, ContentModule],
   controllers: [PublishingAccountsController, PublishingOAuthStartController, PublishingOAuthCallbackController, PublishingPublicationsController],
   providers: [
     PublishingCredentialCryptoService,

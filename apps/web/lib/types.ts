@@ -952,3 +952,12 @@ export interface MetaDiscoveredPage {
   instagramAccountType?: string;
   instagramEligible: boolean;
 }
+
+// Module 9 Phase 9.8 staging-UAT defect fix — every APPROVED Blog/Video
+// content item the caller can view, regardless of pipeline metadata (see
+// PublishingQueryService.listPublishableContent()'s own doc comment).
+export interface PublishableContentView {
+  publicId: string;
+  title: string;
+  contentType: "BLOG" | "VIDEO";
+}

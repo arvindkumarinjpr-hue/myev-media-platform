@@ -2,8 +2,18 @@ import { Injectable, NotFoundException } from "@nestjs/common";
 import { derivePublicationSummary, type PublicationSummary } from "@myev/shared";
 import { Prisma } from "../../../generated/prisma";
 import { PrismaService } from "../../prisma/prisma.service";
+import { ContentItemsService, type ContentActor } from "../content/content-items.service";
 import { PublishingReconciliationService } from "./publishing-reconciliation.service";
 import { PUBLISHING_ERRORS } from "./publishing.errors";
+
+/** Publishing only ever supports these two content types (Part D/H of the Phase 9.7 authorization) — never invented, matches CHANNEL_SUPPORTED_CONTENT_TYPES on the frontend. */
+const PUBLISHABLE_CONTENT_TYPES = ["BLOG", "VIDEO"] as const;
+
+export interface PublishableContentView {
+  publicId: string;
+  title: string;
+  contentType: "BLOG" | "VIDEO";
+}
 
 const PUBLICATION_WITH_TARGETS = Prisma.validator<Prisma.PublicationDefaultArgs>()({
   include: {
@@ -82,7 +92,30 @@ export class PublishingQueryService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly reconciliation: PublishingReconciliationService,
+    private readonly contentItems: ContentItemsService,
   ) {}
+
+  /**
+   * Staging UAT defect fix (Phase 9.8) — the publish flow's "select
+   * content" step needs every APPROVED Blog/Video content item in the
+   * workspace, not just the ones that happen to carry Module 6/7 pipeline
+   * metadata. Queries ContentItemsService.list() directly (the same
+   * generic, RBAC-enforced, workspace-isolated primitive
+   * BlogService.list()/VideoService.list() already call internally)
+   * rather than reusing their own pipeline-scoped list() methods, which
+   * deliberately filter to `readPipelineState(metadata) !== null` for
+   * THEIR OWN pipeline-management UIs — a real Approved item created
+   * outside that pipeline (e.g. Module 8's own UAT fixture content) is
+   * correctly excluded there, but must not be invisible to Publishing.
+   */
+  async listPublishableContent(workspaceId: string, actor: ContentActor): Promise<PublishableContentView[]> {
+    const items = await this.contentItems.list({ id: workspaceId }, actor, { status: "APPROVED" });
+    return items
+      .filter((item): item is typeof item & { contentType: (typeof PUBLISHABLE_CONTENT_TYPES)[number] } =>
+        (PUBLISHABLE_CONTENT_TYPES as readonly string[]).includes(item.contentType),
+      )
+      .map((item) => ({ publicId: item.publicId, title: item.title, contentType: item.contentType }));
+  }
 
   async listPublications(workspaceId: string, filters: { status?: string; channelType?: string; contentType?: string } = {}): Promise<PublicationListItemView[]> {
     const publications = await this.prisma.publication.findMany({

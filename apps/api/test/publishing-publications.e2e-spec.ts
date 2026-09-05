@@ -105,6 +105,80 @@ describe("Publishing publications + reconciliation (e2e)", () => {
     return { id: row.id, publicId };
   }
 
+  /**
+   * Staging UAT defect (Phase 9.8): the "select content" step of the
+   * publish wizard silently excluded a real, Approved Blog because it
+   * had no Module 6 pipeline metadata bag (e.g. content approved outside
+   * the Blog pipeline, exactly like `createApprovedBlog()` above already
+   * produces — the identical shape as the real Module 8 UAT fixture blog
+   * that triggered this). GET .../publications/content-candidates fixes
+   * this by querying ContentItemsService.list() directly instead of
+   * reusing BlogService.list()/VideoService.list()'s own pipeline-scoped
+   * filter.
+   */
+  describe("GET .../publications/content-candidates (Phase 9.8 defect fix)", () => {
+    it("returns an APPROVED Blog even with no blogPipeline metadata — the exact real-world defect scenario", async () => {
+      const item = await createApprovedBlog("No-pipeline-metadata approved fixture");
+      const metadata = (await ctx.prisma.contentItem.findUniqueOrThrow({ where: { id: item.id }, select: { metadata: true } })).metadata;
+      expect(metadata && typeof metadata === "object" ? (metadata as Record<string, unknown>).blogPipeline : undefined).toBeUndefined();
+
+      const res = await request(ctx.app.getHttpServer()).get(`/api/v1/workspaces/${ws.publicId}/publishing/publications/content-candidates`).set(auth()).expect(200);
+      const found = (res.body.data as Array<{ publicId: string; title: string; contentType: string }>).find((c) => c.publicId === item.publicId);
+      expect(found).toEqual({ publicId: item.publicId, title: "No-pipeline-metadata approved fixture", contentType: "BLOG" });
+    });
+
+    it("does not return a non-Approved content item", async () => {
+      const res = await request(ctx.app.getHttpServer())
+        .post(`/api/v1/workspaces/${ws.publicId}/content-items`)
+        .set(auth())
+        .send({ contentType: "BLOG", title: "Still in progress — must not appear", body: { content: "x" } })
+        .expect(201);
+      const draftPublicId = res.body.data.publicId;
+
+      const candidates = await request(ctx.app.getHttpServer()).get(`/api/v1/workspaces/${ws.publicId}/publishing/publications/content-candidates`).set(auth()).expect(200);
+      expect((candidates.body.data as Array<{ publicId: string }>).some((c) => c.publicId === draftPublicId)).toBe(false);
+    });
+
+    it("does not return an Approved item from a different workspace — workspace isolation", async () => {
+      // Not torn down afterward — no e2e file in this suite deletes a
+      // workspace it created (Test.createTestingModule's DB is throwaway
+      // per CI run); mirrors that established convention.
+      const otherWs = await createWorkspaceAsOwner(ctx, ownerToken);
+      const createRes = await request(ctx.app.getHttpServer())
+        .post(`/api/v1/workspaces/${otherWs.publicId}/content-items`)
+        .set({ Authorization: `Bearer ${ownerToken}`, "X-Workspace-Id": otherWs.publicId })
+        .send({ contentType: "BLOG", title: "Approved in another workspace", body: { content: "x" } })
+        .expect(201);
+      const otherPublicId = createRes.body.data.publicId;
+      const otherItemRow = await ctx.prisma.contentItem.findUniqueOrThrow({ where: { publicId: otherPublicId }, select: { id: true } });
+      await ctx.prisma.contentItem.update({ where: { id: otherItemRow.id }, data: { status: "APPROVED" } });
+
+      const candidates = await request(ctx.app.getHttpServer()).get(`/api/v1/workspaces/${ws.publicId}/publishing/publications/content-candidates`).set(auth()).expect(200);
+      expect((candidates.body.data as Array<{ publicId: string }>).some((c) => c.publicId === otherPublicId)).toBe(false);
+    });
+
+    it("does not return a deleted content item, even if it was Approved before deletion", async () => {
+      const item = await createApprovedBlog("Approved then deleted — must not appear");
+      await request(ctx.app.getHttpServer()).delete(`/api/v1/workspaces/${ws.publicId}/content-items/${item.publicId}`).set(auth()).expect(200);
+
+      const candidates = await request(ctx.app.getHttpServer()).get(`/api/v1/workspaces/${ws.publicId}/publishing/publications/content-candidates`).set(auth()).expect(200);
+      expect((candidates.body.data as Array<{ publicId: string }>).some((c) => c.publicId === item.publicId)).toBe(false);
+    });
+
+    it("requires authentication — no session, no data", async () => {
+      await request(ctx.app.getHttpServer()).get(`/api/v1/workspaces/${ws.publicId}/publishing/publications/content-candidates`).expect(401);
+    });
+
+    it("returns an empty array, not an error, when a workspace genuinely has no eligible content", async () => {
+      const freshWs = await createWorkspaceAsOwner(ctx, ownerToken);
+      const res = await request(ctx.app.getHttpServer())
+        .get(`/api/v1/workspaces/${freshWs.publicId}/publishing/publications/content-candidates`)
+        .set({ Authorization: `Bearer ${ownerToken}`, "X-Workspace-Id": freshWs.publicId })
+        .expect(200);
+      expect(res.body.data).toEqual([]);
+    });
+  });
+
   it("readiness preview reports Ready for an approved blog + a connected WordPress account", async () => {
     const item = await createApprovedBlog("Ready readiness fixture", true);
     const res = await request(ctx.app.getHttpServer())

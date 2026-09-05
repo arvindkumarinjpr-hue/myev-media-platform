@@ -2,11 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { blogApi } from "../../lib/api/blog";
-import { videoApi } from "../../lib/api/video";
 import { publishingApi } from "../../lib/api/publishing";
 import { ApiError, friendlyMessage } from "../../lib/errors";
-import type { PublishingAccountView, PublishingReadinessResult } from "../../lib/types";
+import type { PublishableContentView, PublishingAccountView, PublishingReadinessResult } from "../../lib/types";
 import { Alert } from "../ui/Alert";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
@@ -18,11 +16,7 @@ import { Stepper } from "../ui/Stepper";
 import { CHANNEL_LABEL, CHANNEL_SUPPORTED_CONTENT_TYPES, readinessReasonLabel } from "./publishingLabels";
 import styles from "./PublishFlow.module.css";
 
-interface ContentOption {
-  publicId: string;
-  title: string;
-  contentType: "BLOG" | "VIDEO";
-}
+type ContentOption = PublishableContentView;
 
 const STEPS = [
   { id: "content", label: "Select content" },
@@ -35,15 +29,20 @@ const STEPS = [
 /**
  * Module 9 Phase 9.7 (Parts G/S/T/U) — the multi-step publication
  * creation flow: select content → select accounts → readiness preview →
- * publish now/schedule → review → submit. There is no generic
- * content-items list API in this repository (only blogApi.list() and
- * videoApi.list() separately), so this component merges the two client
- * side rather than inventing a new backend endpoint for a read-only,
- * already-cheap listing. Channel-specific "options" (title/description/
- * caption/privacy) are NOT user-editable here: publishing-readiness.
- * service.ts already resolves them from the content item itself and
- * CreatePublicationInput has no such fields — inventing UI for fields
- * the API does not accept would be dishonest.
+ * publish now/schedule → review → submit. Channel-specific "options"
+ * (title/description/caption/privacy) are NOT user-editable here:
+ * publishing-readiness.service.ts already resolves them from the content
+ * item itself and CreatePublicationInput has no such fields — inventing
+ * UI for fields the API does not accept would be dishonest.
+ *
+ * Phase 9.8 staging-UAT defect fix: "select content" used to merge
+ * blogApi.list()+videoApi.list() client side, which silently excluded
+ * any real Approved item without Module 6/7 pipeline metadata (the
+ * pipeline-scoped list() methods those endpoints serve deliberately
+ * filter to "went through my own pipeline" — correct for their own UIs,
+ * wrong for "what can Publishing publish"). Now uses
+ * publishingApi.publications.contentCandidates(), a dedicated endpoint
+ * querying the underlying generic content-item list directly.
  */
 export function PublishFlow({ workspaceId }: { workspaceId: string }) {
   const router = useRouter();
@@ -69,14 +68,9 @@ export function PublishFlow({ workspaceId }: { workspaceId: string }) {
 
   useEffect(() => {
     setContentError(null);
-    Promise.all([blogApi.list(workspaceId), videoApi.list(workspaceId)])
-      .then(([blogs, videos]) => {
-        const options: ContentOption[] = [
-          ...blogs.filter((b) => b.status === "APPROVED").map((b) => ({ publicId: b.publicId, title: b.title, contentType: "BLOG" as const })),
-          ...videos.filter((v) => v.status === "APPROVED").map((v) => ({ publicId: v.publicId, title: v.title, contentType: "VIDEO" as const })),
-        ];
-        setContent(options);
-      })
+    publishingApi.publications
+      .contentCandidates(workspaceId)
+      .then(setContent)
       .catch((err) => setContentError(friendlyMessage(err)));
   }, [workspaceId]);
 
