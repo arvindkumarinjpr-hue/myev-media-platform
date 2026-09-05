@@ -7,18 +7,22 @@ import type { ContentType } from "../../../generated/prisma";
  * Module 1E Engineering Plan §6 (RBAC): the `ContentType` enum has 6
  * values (BLOG/VIDEO/SHORT/REEL/NEWSLETTER/SOCIAL_POST — AI_CONTENT_
  * DATABASE_AND_ENTITY_DESIGN_V1.0.md §content_items) but only 2 permission
- * families exist (BLOG_*, VIDEO_*). Module 1E deliberately supports only
- * BLOG and VIDEO; the other 4 are reserved for a later module that will
- * add their own permission constants and family mapping. Callers must
- * reject unsupported content types before reaching authorization —
- * `isSupportedContentType` is the single source of truth for that check.
+ * families existed at the time (BLOG_*, VIDEO_*). Module 1E deliberately
+ * supported only BLOG and VIDEO; the other 4 were reserved for a later
+ * module that would add its own permission constants and family mapping.
+ *
+ * Module 10 Phase 10.1 is that later module for SOCIAL_POST (SOCIAL_*,
+ * see permissions.constants.ts). SHORT/REEL/NEWSLETTER remain reserved
+ * and unsupported — `isSupportedContentType` stays the single source of
+ * truth callers must check before reaching authorization, and it still
+ * denies those three by default (no code path anywhere grants them).
  */
-export type SupportedContentType = "BLOG" | "VIDEO";
+export type SupportedContentType = "BLOG" | "VIDEO" | "SOCIAL_POST";
 
-export const SUPPORTED_CONTENT_TYPES: readonly SupportedContentType[] = ["BLOG", "VIDEO"];
+export const SUPPORTED_CONTENT_TYPES: readonly SupportedContentType[] = ["BLOG", "VIDEO", "SOCIAL_POST"];
 
 export function isSupportedContentType(contentType: ContentType): contentType is SupportedContentType {
-  return contentType === "BLOG" || contentType === "VIDEO";
+  return contentType === "BLOG" || contentType === "VIDEO" || contentType === "SOCIAL_POST";
 }
 
 /**
@@ -41,10 +45,10 @@ export function isSupportedContentType(contentType: ContentType): contentType is
 export type ContentPermissionAction = "create" | "view" | "edit" | "approve";
 
 const ACTION_PERMISSIONS: Record<ContentPermissionAction, Record<SupportedContentType, PermissionConstant>> = {
-  create: { BLOG: PERMISSIONS.BLOG_CREATE, VIDEO: PERMISSIONS.VIDEO_CREATE },
-  view: { BLOG: PERMISSIONS.BLOG_VIEW, VIDEO: PERMISSIONS.VIDEO_VIEW },
-  edit: { BLOG: PERMISSIONS.BLOG_EDIT, VIDEO: PERMISSIONS.VIDEO_EDIT },
-  approve: { BLOG: PERMISSIONS.BLOG_APPROVE, VIDEO: PERMISSIONS.VIDEO_APPROVE },
+  create: { BLOG: PERMISSIONS.BLOG_CREATE, VIDEO: PERMISSIONS.VIDEO_CREATE, SOCIAL_POST: PERMISSIONS.SOCIAL_CREATE },
+  view: { BLOG: PERMISSIONS.BLOG_VIEW, VIDEO: PERMISSIONS.VIDEO_VIEW, SOCIAL_POST: PERMISSIONS.SOCIAL_VIEW },
+  edit: { BLOG: PERMISSIONS.BLOG_EDIT, VIDEO: PERMISSIONS.VIDEO_EDIT, SOCIAL_POST: PERMISSIONS.SOCIAL_EDIT },
+  approve: { BLOG: PERMISSIONS.BLOG_APPROVE, VIDEO: PERMISSIONS.VIDEO_APPROVE, SOCIAL_POST: PERMISSIONS.SOCIAL_APPROVE },
 };
 
 /**

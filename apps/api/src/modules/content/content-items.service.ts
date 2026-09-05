@@ -444,7 +444,15 @@ export class ContentItemsService {
     //    Module 1E VIDEO content item — the type the generic editorial-
     //    lifecycle e2e tests deliberately exercise — is NOT sealed and
     //    keeps working through this route unchanged.
-    options?: { viaBlogPipeline?: boolean; viaVideoPipeline?: boolean },
+    //  - SOCIAL_POST: sealed unconditionally (Module 10 Phase 10.1 Part
+    //    F) — every SOCIAL_POST item exists only because Module 10's own
+    //    domain service created it (mirrors BLOG's reasoning exactly:
+    //    there is no "plain Module 1E SOCIAL_POST" concept to leave
+    //    unsealed, unlike VIDEO). `viaSocialPipeline` is never set by
+    //    anything in Phase 10.1 — Module 10's own pipeline service, which
+    //    will pass it, does not exist yet — so this seal is real
+    //    protection from day one, not a placeholder.
+    options?: { viaBlogPipeline?: boolean; viaVideoPipeline?: boolean; viaSocialPipeline?: boolean },
   ): Promise<ContentItemWithPublicRefs> {
     const item = await this.resolveForAction(workspace.id, actor, itemPublicId, "edit");
     if (item.contentType === "BLOG" && !options?.viaBlogPipeline) {
@@ -452,6 +460,13 @@ export class ContentItemsService {
         code: "CONTENT_ITEM_BLOG_REVIEW_VIA_PIPELINE",
         message:
           "A blog article must be submitted for review through the Blog pipeline (POST /api/v1/workspaces/:workspaceId/blog/:itemId/submit-for-review), which enforces the Module 6 quality gates.",
+      });
+    }
+    if (item.contentType === "SOCIAL_POST" && !options?.viaSocialPipeline) {
+      throw new ConflictException({
+        code: "CONTENT_ITEM_SOCIAL_REVIEW_VIA_PIPELINE",
+        message:
+          "A social post must be submitted for review through the Social Media pipeline (POST /api/v1/workspaces/:workspaceId/social-posts/:itemId/submit-for-review), which enforces Module 10's own quality gates.",
       });
     }
     if (item.contentType === "VIDEO" && this.isVideoPipelineItem(item.metadata) && !options?.viaVideoPipeline) {
