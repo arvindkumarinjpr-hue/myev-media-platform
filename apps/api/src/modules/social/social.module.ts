@@ -4,6 +4,7 @@ import { AiAgentsModule } from "../ai-agents/ai-agents.module";
 import { ContentModule } from "../content/content.module";
 import { SocialController } from "./social.controller";
 import { SocialGenerationService } from "./social-generation.service";
+import { SocialService } from "./social.service";
 
 /**
  * Module 10 Phase 10.2 — Social Media Generation.
@@ -17,7 +18,7 @@ import { SocialGenerationService } from "./social-generation.service";
 @Module({
   imports: [AuthModule, AiAgentsModule, ContentModule],
   controllers: [SocialController],
-  providers: [SocialGenerationService],
-  exports: [SocialGenerationService],
+  providers: [SocialGenerationService, SocialService],
+  exports: [SocialGenerationService, SocialService],
 })
 export class SocialModule {}

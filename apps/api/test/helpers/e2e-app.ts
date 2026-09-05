@@ -141,6 +141,10 @@ export async function teardownE2eApp({ app, redis, prisma }: E2eApp): Promise<vo
       // Platform Owner while the acting/tracked test user only owns the
       // content items within it (same reasoning the surrounding OR:
       // [{workspaceId}, {createdById}] scoping above already documents).
+      // Module 10 Phase 10.3: social_version_generations.social_post_id
+      // RESTRICT-references social_posts — must go first for the same
+      // reason as social_posts itself going before content_items.
+      await tx.socialVersionGeneration.deleteMany({ where: { OR: [{ contentItemId: { in: testContentItemIds } }, { socialPost: { sourceContentItemId: { in: testContentItemIds } } }] } });
       await tx.socialPost.deleteMany({ where: { OR: [{ contentItemId: { in: testContentItemIds } }, { sourceContentItemId: { in: testContentItemIds } }] } });
       await tx.contentReviewEvent.deleteMany({ where: { contentItemId: { in: testContentItemIds } } });
       await tx.mediaAsset.updateMany({ where: { contentItemId: { in: testContentItemIds } }, data: { contentItemId: null } });
@@ -179,6 +183,14 @@ export async function teardownE2eApp({ app, redis, prisma }: E2eApp): Promise<vo
     await tx.workspaceSlugReservation.deleteMany({ where: { workspaceId: { in: testWorkspaceIds } } });
     await tx.workspace.deleteMany({ where: { id: { in: testWorkspaceIds } } });
   });
+  // content_review_events.actor_id RESTRICT-references users — a tracked
+  // test user acting as a reviewer/approver on a content item owned by
+  // the (untracked) seeded Platform Owner writes a review event the main
+  // transaction's own contentItemId-scoped sweep above never catches
+  // (that item is in neither testWorkspaceIds nor testContentItemIds,
+  // since it belongs to the owner). Scoped by actorId here instead,
+  // independent of which item the event is about.
+  await prisma.contentReviewEvent.deleteMany({ where: { actorId: { in: testUserIds } } });
   await prisma.userActionToken.deleteMany({ where: { userId: { in: testUserIds } } });
   await prisma.userPasswordHistory.deleteMany({ where: { userId: { in: testUserIds } } });
   await prisma.userSession.deleteMany({ where: { userId: { in: testUserIds } } });
