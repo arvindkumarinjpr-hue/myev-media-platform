@@ -28,9 +28,19 @@ export interface AppConfig {
     publicEndpoint?: string;
   };
   smtp: {
+    // Module 9 Phase 9.8 — selects which EmailModule provider is wired:
+    // "mailpit" (default, local/test — no auth, no TLS) or "smtp" (a real
+    // authenticated provider, e.g. staging/production). See
+    // EmailModule/email-provider.factory.ts.
+    provider: "mailpit" | "smtp";
     host: string;
     port: number;
     fromAddress: string;
+    // Only meaningful for provider "smtp" (implicit TLS, e.g. port 465).
+    secure: boolean;
+    // Only meaningful for provider "smtp" — absent entirely for Mailpit.
+    user?: string;
+    password?: string;
   };
   appUrl: string;
   auth: {
@@ -250,9 +260,13 @@ export default (): AppConfig => ({
     publicEndpoint: process.env.STORAGE_PUBLIC_ENDPOINT || undefined,
   },
   smtp: {
+    provider: process.env.EMAIL_PROVIDER === "smtp" ? "smtp" : "mailpit",
     host: process.env.SMTP_HOST ?? "mailpit",
     port: parseInt(process.env.SMTP_PORT ?? "1025", 10),
     fromAddress: process.env.SMTP_FROM_ADDRESS ?? "no-reply@myevmedia.com",
+    secure: process.env.SMTP_SECURE === "true",
+    user: process.env.SMTP_USER || undefined,
+    password: process.env.SMTP_PASSWORD || undefined,
   },
   appUrl: process.env.APP_URL ?? "http://localhost:3100",
   auth: {
