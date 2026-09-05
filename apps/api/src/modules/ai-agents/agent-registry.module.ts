@@ -4,7 +4,9 @@ import {
   BLOG_BRIEF_AGENT_V1,
   BLOG_DRAFT_AGENT_V1,
   BLOG_OUTLINE_AGENT_V1,
+  HASHTAG_AGENT_V1,
   RESEARCH_AGENT_V1,
+  SOCIAL_CAPTION_AGENT_V1,
   SEO_METADATA_AGENT_V1,
   TEST_ECHO_AGENT_V1,
   TEST_FLAKY_AGENT_V1,
@@ -60,6 +62,18 @@ export const AGENT_REGISTRY = Symbol("AGENT_REGISTRY");
         builder.register(VIDEO_SEO_METADATA_AGENT_V1);
         builder.register(THUMBNAIL_CONCEPT_AGENT_V1);
         builder.register(VIDEO_RECOMMENDATIONS_AGENT_V1);
+        // Module 10 Phase 10.2 — the Social pipeline's two text agents.
+        // Registered identically here and in apps/worker's own
+        // agent-registry.module.ts (same @myev/shared objects) —
+        // api-worker-agent-registry-sync.e2e-spec.ts proves the two
+        // source files stay synchronized, even though Phase 10.2 only
+        // ever calls these through apps/api's synchronous
+        // AgentExecutorService (see social-domain.ts's own doc comment
+        // for why), not the durable ai.execute.v1 queue apps/worker
+        // executes — the future durable-async caller reuses this
+        // registration unchanged once that decision is made.
+        builder.register(SOCIAL_CAPTION_AGENT_V1);
+        builder.register(HASHTAG_AGENT_V1);
         builder.register(TEST_ECHO_AGENT_V1);
         // Module 3 Phase 3.3 test-only fixtures — apps/api's own
         // AGENT_REGISTRY must know about these too (AiJobSubmissionService

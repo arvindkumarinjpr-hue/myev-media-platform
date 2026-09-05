@@ -4,7 +4,9 @@ import {
   BLOG_BRIEF_AGENT_V1,
   BLOG_DRAFT_AGENT_V1,
   BLOG_OUTLINE_AGENT_V1,
+  HASHTAG_AGENT_V1,
   RESEARCH_AGENT_V1,
+  SOCIAL_CAPTION_AGENT_V1,
   SEO_METADATA_AGENT_V1,
   TEST_ECHO_AGENT_V1,
   TEST_FLAKY_AGENT_V1,
@@ -57,6 +59,12 @@ export const AGENT_REGISTRY = Symbol("AGENT_REGISTRY");
         builder.register(VIDEO_SEO_METADATA_AGENT_V1);
         builder.register(THUMBNAIL_CONCEPT_AGENT_V1);
         builder.register(VIDEO_RECOMMENDATIONS_AGENT_V1);
+        // Module 10 Phase 10.2 — registered identically to apps/api's
+        // AgentRegistryModule (same @myev/shared objects), even though
+        // apps/api only ever calls these synchronously today — see
+        // apps/api's own agent-registry.module.ts doc comment.
+        builder.register(SOCIAL_CAPTION_AGENT_V1);
+        builder.register(HASHTAG_AGENT_V1);
         builder.register(TEST_ECHO_AGENT_V1);
         // Module 3 Phase 3.3 test-only fixtures — see
         // ai-provider-registry.module.ts's own doc comment.

@@ -132,6 +132,16 @@ export async function teardownE2eApp({ app, redis, prisma }: E2eApp): Promise<vo
         where: { id: { in: testContentItemIds } },
         data: { currentVersionId: null, featuredMediaAssetId: null, seriesId: null, deletedAt: new Date() },
       });
+      // Module 10 Phase 10.1/10.2: social_posts is the 1:1 SOCIAL_POST
+      // content-item extension, with TWO separate RESTRICT composite FKs
+      // into content_items (contentItemId AND sourceContentItemId — a
+      // social post's own item AND the Blog/Video it was generated
+      // from). Scoped by testContentItemIds (not testWorkspaceIds alone)
+      // because the workspace itself may be owned by the real seeded
+      // Platform Owner while the acting/tracked test user only owns the
+      // content items within it (same reasoning the surrounding OR:
+      // [{workspaceId}, {createdById}] scoping above already documents).
+      await tx.socialPost.deleteMany({ where: { OR: [{ contentItemId: { in: testContentItemIds } }, { sourceContentItemId: { in: testContentItemIds } }] } });
       await tx.contentReviewEvent.deleteMany({ where: { contentItemId: { in: testContentItemIds } } });
       await tx.mediaAsset.updateMany({ where: { contentItemId: { in: testContentItemIds } }, data: { contentItemId: null } });
       await tx.contentVersion.deleteMany({ where: { contentItemId: { in: testContentItemIds } } });

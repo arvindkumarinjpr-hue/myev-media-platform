@@ -1120,6 +1120,10 @@ model ContentVersion {
   currentForItem ContentItem?         @relation("ContentItemCurrentVersion")
   reviewEvents   ContentReviewEvent[]
 
+  // Module 10 Phase 10.2 — every SocialPost generated FROM this exact
+  // version (see SocialPost.sourceContentVersionId's own doc comment).
+  socialPostsSourcedFromVersion SocialPost[]
+
   @@unique([contentItemId, versionNumber])
   @@unique([id, contentItemId])
   @@index([contentItemId])
@@ -1897,6 +1901,14 @@ model AiJob {
   // actually promotes one via topic_clusters.
   keywordClusters KeywordCluster[]
 
+  // Module 10 Phase 10.2 — the SocialPost row(s) this job's own validated
+  // output generated the caption/hashtags for (see SocialPost.
+  // captionAiJobId/hashtagAiJobId's own doc comment). Two separate
+  // back-relations because a job can only ever be ONE of "the caption
+  // job" or "the hashtag job" for a given SocialPost, never both.
+  socialPostCaptionGenerations SocialPost[] @relation("SocialPostCaptionAiJob")
+  socialPostHashtagGenerations SocialPost[] @relation("SocialPostHashtagAiJob")
+
   @@index([workspaceId])
   @@index([status])
   @@index([status, createdAt])
@@ -2515,6 +2527,39 @@ model SocialPost {
 
   platform SocialPlatform
 
+  // Module 10 Phase 10.2 addition — the EXACT source ContentVersion this
+  // social post was generated from, never re-resolved to "whatever is
+  // currentVersionId now" (same non-substitution discipline as
+  // AiJob.knowledgePackId). A Blog/Video's approved content can gain a
+  // later version after this social post already exists (an edit always
+  // inserts a new immutable version — see content_versions' own model
+  // comment) — without this column there would be no way to tell which
+  // version a given caption/hashtags actually reflect. The composite FK
+  // to (id, contentItemId) reuses ContentVersion's own existing
+  // @@unique([id, contentItemId]) to additionally guarantee this version
+  // really belongs to sourceContentItemId — which is itself already
+  // workspace-verified via its own FK above, so this stays workspace-safe
+  // without ContentVersion needing its own workspaceId column.
+  sourceContentVersionId String         @map("source_content_version_id") @db.Uuid
+  sourceContentVersion   ContentVersion @relation(fields: [sourceContentVersionId, sourceContentItemId], references: [id, contentItemId])
+
+  // Generation provenance — the two real ai_jobs rows (SocialCaptionAgent,
+  // then HashtagAgent) whose validated output this row's own
+  // ContentVersion v1 body was built from (SocialGenerationService's own
+  // synchronous, no-placeholder create-after-generate flow — see
+  // social-domain.ts's doc comment). Two separate FKs, not one shared
+  // "generatedByAiJobId", because they really are two distinct AiJob
+  // executions — the same precision KeywordCluster.sourceAiJobId already
+  // establishes for a single-job case, extended here since Social's own
+  // v1 generation genuinely runs two agents. Workspace-safety is implicit:
+  // both jobs are looked up via AgentExecutorService against this same
+  // request's own workspaceId before this row is ever written.
+  captionAiJobId String @map("caption_ai_job_id") @db.Uuid
+  captionAiJob   AiJob  @relation("SocialPostCaptionAiJob", fields: [captionAiJobId], references: [id])
+
+  hashtagAiJobId String @map("hashtag_ai_job_id") @db.Uuid
+  hashtagAiJob   AiJob  @relation("SocialPostHashtagAiJob", fields: [hashtagAiJobId], references: [id])
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -2530,6 +2575,10 @@ model SocialPost {
   // this workspace" are both real, expected queries.
   @@index([sourceContentItemId])
   @@index([workspaceId, platform])
+  // Phase 10.2 additions.
+  @@index([sourceContentVersionId])
+  @@index([captionAiJobId])
+  @@index([hashtagAiJobId])
   @@map("social_posts")
 }
 

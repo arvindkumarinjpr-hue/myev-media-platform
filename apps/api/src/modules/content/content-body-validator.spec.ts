@@ -27,6 +27,17 @@ describe("ContentBodyValidator", () => {
     expect(() => validator.validate("VIDEO", { script: "INT. OFFICE - DAY" })).not.toThrow();
   });
 
+  it("accepts a minimal valid SOCIAL_POST body (Module 10 Phase 10.2)", () => {
+    const validator = makeValidator();
+    expect(() => validator.validate("SOCIAL_POST", { caption: "Charging at home is easier than you think.", hashtags: ["#ev"] })).not.toThrow();
+  });
+
+  it("rejects a SOCIAL_POST body missing caption — a script/content field does not satisfy it", () => {
+    const validator = makeValidator();
+    expect(() => validator.validate("SOCIAL_POST", { script: "wrong field for social" })).toThrow(BadRequestException);
+    expect(() => validator.validate("SOCIAL_POST", { content: "wrong field for social" })).toThrow(BadRequestException);
+  });
+
   it("rejects a non-object top-level body", () => {
     const validator = makeValidator();
     expect(() => validator.validate("BLOG", "just a string")).toThrow(BadRequestException);

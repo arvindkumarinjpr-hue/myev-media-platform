@@ -53,6 +53,8 @@ export * from "./agent-framework/agents/video-scene-planner-agent";
 export * from "./agent-framework/agents/video-seo-metadata-agent";
 export * from "./agent-framework/agents/thumbnail-concept-agent";
 export * from "./agent-framework/agents/video-recommendations-agent";
+export * from "./agent-framework/agents/social-caption-agent";
+export * from "./agent-framework/agents/hashtag-agent";
 export * from "./queue/jobs/ai-execute";
 export * from "./queue/jobs/media-image-generate";
 export * from "./queue/jobs/media-tts";
