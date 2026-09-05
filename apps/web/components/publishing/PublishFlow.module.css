@@ -1,0 +1,107 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.back {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  text-decoration: none;
+}
+
+.back:hover {
+  text-decoration: underline;
+}
+
+.stepBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.optionCard {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  background: var(--color-surface);
+}
+
+.optionCard:has(input:checked) {
+  border-color: var(--color-brand, var(--color-text-strong));
+}
+
+.optionBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  flex: 1;
+}
+
+.optionTitle {
+  font-weight: 600;
+}
+
+.readinessCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.reason {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-danger, #b91c1c);
+}
+
+.warning {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.reviewBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.reviewList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.reviewList div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.reviewList dt {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-text-muted);
+}
+
+.reviewList dd {
+  font-size: var(--text-md);
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}

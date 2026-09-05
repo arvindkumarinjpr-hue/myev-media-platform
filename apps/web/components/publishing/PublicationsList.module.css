@@ -1,0 +1,57 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.headerActions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.summaryCards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: var(--space-3);
+}
+
+.summaryCardBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.summaryValue {
+  font-size: var(--text-xl);
+  font-weight: 700;
+}
+
+.summaryLabel {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.filters {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.channelBadges {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.channelBadge {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+}
+
+.channelBadgeLabel {
+  color: var(--color-text-muted);
+  min-width: 5rem;
+}

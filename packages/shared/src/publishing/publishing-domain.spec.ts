@@ -1,4 +1,13 @@
-import { assertContentPublishEligible, assertPublicationTargetTransition, derivePublicationSummary, isPublicationTargetLive } from "./publishing-domain";
+import {
+  assertContentPublishEligible,
+  assertOrdinaryRetryAllowed,
+  assertPublicationTargetTransition,
+  assertReconciliationEligible,
+  derivePublicationSummary,
+  isPublicationTargetLive,
+  isReconciliationRequired,
+} from "./publishing-domain";
+import { PublishingDomainError } from "./publishing-domain-error";
 
 describe("assertContentPublishEligible", () => {
   it("passes for an APPROVED, non-deleted Blog", () => {
@@ -115,5 +124,65 @@ describe("derivePublicationSummary", () => {
     expect(summary.hasPartialFailure).toBe(false);
     expect(summary.isFullyTerminal).toBe(true);
     expect(summary.cancelledCount).toBe(2);
+  });
+});
+
+describe("Module 9 Phase 9.7 — manual reconciliation domain guards", () => {
+  describe("isReconciliationRequired", () => {
+    it.each(["FACEBOOK_PUBLISH_OUTCOME_UNKNOWN", "INSTAGRAM_PUBLISHED_ID_UNRECOVERABLE"] as const)("is true for a FAILED target with %s", (code) => {
+      expect(isReconciliationRequired("FAILED", code)).toBe(true);
+    });
+
+    it("is false for an ordinary FAILED target with an unrelated error code", () => {
+      expect(isReconciliationRequired("FAILED", "YOUTUBE_UNAUTHORIZED")).toBe(false);
+    });
+
+    it("is false for a FAILED target with no error code at all", () => {
+      expect(isReconciliationRequired("FAILED", null)).toBe(false);
+      expect(isReconciliationRequired("FAILED", undefined)).toBe(false);
+    });
+
+    it("is false for a non-FAILED status even with a matching error code (defensive — should never occur in practice)", () => {
+      expect(isReconciliationRequired("PUBLISHED", "FACEBOOK_PUBLISH_OUTCOME_UNKNOWN")).toBe(false);
+    });
+  });
+
+  describe("assertReconciliationEligible", () => {
+    it("passes silently for a genuinely reconciliation-required target", () => {
+      expect(() => assertReconciliationEligible("FAILED", "INSTAGRAM_PUBLISHED_ID_UNRECOVERABLE")).not.toThrow();
+    });
+
+    it("throws PUBLISHING_RECONCILIATION_NOT_APPLICABLE for an ordinary FAILED target", () => {
+      expect(() => assertReconciliationEligible("FAILED", "YOUTUBE_UNAUTHORIZED")).toThrow(PublishingDomainError);
+      try {
+        assertReconciliationEligible("FAILED", "YOUTUBE_UNAUTHORIZED");
+      } catch (err) {
+        expect((err as PublishingDomainError).code).toBe("PUBLISHING_RECONCILIATION_NOT_APPLICABLE");
+      }
+    });
+
+    it("throws for a PUBLISHED target (nothing to reconcile)", () => {
+      expect(() => assertReconciliationEligible("PUBLISHED", null)).toThrow(PublishingDomainError);
+    });
+  });
+
+  describe("assertOrdinaryRetryAllowed", () => {
+    it("passes silently for an ordinary FAILED target", () => {
+      expect(() => assertOrdinaryRetryAllowed("FAILED", "YOUTUBE_UNAUTHORIZED")).not.toThrow();
+      expect(() => assertOrdinaryRetryAllowed("FAILED", null)).not.toThrow();
+    });
+
+    it("blocks ordinary retry with PUBLISHING_RECONCILIATION_REQUIRED for an ambiguous-outcome target", () => {
+      expect(() => assertOrdinaryRetryAllowed("FAILED", "FACEBOOK_PUBLISH_OUTCOME_UNKNOWN")).toThrow(PublishingDomainError);
+      try {
+        assertOrdinaryRetryAllowed("FAILED", "FACEBOOK_PUBLISH_OUTCOME_UNKNOWN");
+      } catch (err) {
+        expect((err as PublishingDomainError).code).toBe("PUBLISHING_RECONCILIATION_REQUIRED");
+      }
+    });
+
+    it("never blocks a non-FAILED status regardless of lastErrorCode (defensive)", () => {
+      expect(() => assertOrdinaryRetryAllowed("QUEUED", "FACEBOOK_PUBLISH_OUTCOME_UNKNOWN")).not.toThrow();
+    });
   });
 });

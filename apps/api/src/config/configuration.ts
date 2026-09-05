@@ -195,7 +195,32 @@ export interface AppConfig {
     // token exchange happens in this phase). InstagramChannelProvider
     // needs no platform-level app credential at all — always registered,
     // like WordPress.
-    meta: { appId: string };
+    meta: { appId: string; appSecret: string };
+    // Module 9 Phase 9.7 — the exact, pre-registered redirect URI each
+    // provider's own OAuth console has on file. Deliberately explicit,
+    // operator-configured full URLs (never derived/guessed from `appUrl`
+    // or any other config) — both Google and Meta reject a redirect_uri
+    // that doesn't byte-match what's registered, and this app's own
+    // public API origin may differ from its frontend origin depending on
+    // deployment topology. Empty means that provider's OAuth connect
+    // flow is not offered (same "gracefully degrade, never crash at
+    // boot" convention as every other optional provider config here).
+    oauth: {
+      youtubeRedirectUri: string;
+      metaRedirectUri: string;
+      // Test-only endpoint overrides — unset (undefined) in every real
+      // deployment. Mirrors the exact override convention every Phase
+      // 9.5/9.6 provider/oauth-client already exposes for its own tests
+      // (tokenEndpoint/apiBaseUrl/dialogBaseUrl/graphBaseUrl) — without
+      // these, PublishingOAuthService's own callback/exchange logic
+      // could only ever be tested against real, live Google/Meta
+      // endpoints, which e2e tests never do anywhere in this codebase.
+      youtubeTokenEndpoint?: string;
+      youtubeAuthorizationEndpoint?: string;
+      youtubeApiBaseUrl?: string;
+      metaDialogBaseUrl?: string;
+      metaGraphBaseUrl?: string;
+    };
   };
 }
 
@@ -330,6 +355,15 @@ export default (): AppConfig => ({
   publishing: {
     credentialEncryptionKey: process.env.PUBLISHING_CREDENTIAL_ENCRYPTION_KEY ?? "",
     youtube: { oauthClientId: process.env.YOUTUBE_OAUTH_CLIENT_ID ?? "", oauthClientSecret: process.env.YOUTUBE_OAUTH_CLIENT_SECRET ?? "" },
-    meta: { appId: process.env.META_APP_ID ?? "" },
+    meta: { appId: process.env.META_APP_ID ?? "", appSecret: process.env.META_APP_SECRET ?? "" },
+    oauth: {
+      youtubeRedirectUri: process.env.YOUTUBE_OAUTH_REDIRECT_URI ?? "",
+      metaRedirectUri: process.env.META_OAUTH_REDIRECT_URI ?? "",
+      youtubeTokenEndpoint: process.env.YOUTUBE_OAUTH_TOKEN_ENDPOINT_OVERRIDE || undefined,
+      youtubeAuthorizationEndpoint: process.env.YOUTUBE_OAUTH_AUTHORIZATION_ENDPOINT_OVERRIDE || undefined,
+      youtubeApiBaseUrl: process.env.YOUTUBE_OAUTH_API_BASE_URL_OVERRIDE || undefined,
+      metaDialogBaseUrl: process.env.META_OAUTH_DIALOG_BASE_URL_OVERRIDE || undefined,
+      metaGraphBaseUrl: process.env.META_OAUTH_GRAPH_BASE_URL_OVERRIDE || undefined,
+    },
   },
 });

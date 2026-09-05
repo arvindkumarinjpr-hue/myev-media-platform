@@ -854,3 +854,101 @@ export interface WorkspaceLinkHealthSummary {
   clustersEvaluated: number;
   clustersWithOrphans: number;
 }
+
+// ---------------------------------------------------------------------
+// Module 9 Phase 9.7 — Publishing account management + publication API.
+// Mirrors apps/api's own view/DTO shapes exactly (publishing-accounts.
+// service.ts's PublishingAccountView, publishing-query.service.ts's
+// PublicationListItemView/PublicationTargetView/SafeAttemptView).
+// ---------------------------------------------------------------------
+
+export type PublishingChannelType = "WORDPRESS" | "YOUTUBE" | "FACEBOOK" | "INSTAGRAM";
+export type PublishingConnectionStatus = "CONNECTED" | "EXPIRED" | "REVOKED" | "ERROR";
+export type PublicationTargetStatus = "PENDING" | "SCHEDULED" | "QUEUED" | "PUBLISHING" | "PUBLISHED" | "FAILED" | "CANCELLED";
+
+export interface PublishingAccountView {
+  publicId: string;
+  channelType: PublishingChannelType;
+  displayName: string;
+  externalAccountId: string;
+  connectionStatus: PublishingConnectionStatus;
+  tokenExpiresAt: string | null;
+  lastVerifiedAt: string | null;
+  disconnectedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type PublishingReadinessReasonCode = string;
+
+export interface PublishingReadinessMetadata {
+  title?: string;
+  description?: string;
+  tags?: string[];
+  caption?: string;
+  privacy?: string;
+}
+
+export interface PublishingReadinessResult {
+  ready: boolean;
+  blockingReasons: PublishingReadinessReasonCode[];
+  warnings: PublishingReadinessReasonCode[];
+  resolvedArtifact: { mediaAssetPublicId: string } | null;
+  metadata: PublishingReadinessMetadata;
+}
+
+export interface PublicationTargetView {
+  publicId: string;
+  channelAccountPublicId: string;
+  channelType: PublishingChannelType;
+  channelDisplayName: string;
+  status: PublicationTargetStatus;
+  scheduledFor: string | null;
+  publishedAt: string | null;
+  cancelledAt: string | null;
+  externalContentId: string | null;
+  externalUrl: string | null;
+  lastErrorCode: string | null;
+  lastErrorMessageSafe: string | null;
+  retryCount: number;
+  reconciliationRequired: boolean;
+}
+
+export interface PublicationSummary {
+  totalTargets: number;
+  publishedCount: number;
+  failedCount: number;
+  cancelledCount: number;
+  liveCount: number;
+  isFullyPublished: boolean;
+  hasPartialFailure: boolean;
+  isFullyTerminal: boolean;
+}
+
+export interface PublicationListItemView {
+  publicId: string;
+  contentItemPublicId: string;
+  contentTitle: string;
+  contentType: "BLOG" | "VIDEO";
+  requestedAt: string;
+  scheduledFor: string | null;
+  summary: PublicationSummary;
+  targets: PublicationTargetView[];
+}
+
+export interface SafeAttemptView {
+  attemptNumber: number;
+  occurredAt: string;
+  fromStatus: PublicationTargetStatus | null;
+  toStatus: PublicationTargetStatus;
+  detail: Record<string, string | number | boolean> | null;
+}
+
+export interface MetaDiscoveredPage {
+  pageId: string;
+  pageName: string;
+  instagramBusinessAccountId?: string;
+  instagramUsername?: string;
+  instagramAccountType?: string;
+  instagramEligible: boolean;
+}

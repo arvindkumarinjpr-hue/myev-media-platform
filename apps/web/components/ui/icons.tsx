@@ -313,3 +313,12 @@ export function XCircleIcon(props: IconProps) {
     </Base>
   );
 }
+
+export function PublishingIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M21 3 3 10.5l7.5 3L14 21l7-18Z" />
+      <path d="M10.5 13.5 21 3" />
+    </Base>
+  );
+}

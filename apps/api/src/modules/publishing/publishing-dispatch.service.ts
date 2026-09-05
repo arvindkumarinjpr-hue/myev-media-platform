@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
-import { assertPublicationTargetTransition } from "@myev/shared";
+import { assertOrdinaryRetryAllowed, assertPublicationTargetTransition } from "@myev/shared";
 import type { BackgroundJob, PublicationTarget } from "../../../generated/prisma";
 import { BackgroundJobsService } from "../background-jobs/background-jobs.service";
 import { PrismaService } from "../../prisma/prisma.service";
@@ -60,6 +60,20 @@ export class PublishingDispatchService {
       const target = await tx.publicationTarget.findFirst({ where: { workspaceId, publicId: targetPublicId } });
       if (!target) {
         throw new NotFoundException({ code: PUBLISHING_ERRORS.PUBLISHING_TARGET_NOT_FOUND, message: "Publication target not found." });
+      }
+
+      // Module 9 Phase 9.7 (Part Y) — checked BEFORE the ordinary
+      // transition guard: a target whose last attempt had an ambiguous
+      // external outcome (Facebook's non-idempotent publish call;
+      // Instagram's unrecoverable-id race — see @myev/shared's
+      // RECONCILIATION_REQUIRED_ERROR_CODES) must never be blindly
+      // retried — only PublishingReconciliationService's own explicit
+      // "confirm not published" action may clear this and re-enter this
+      // exact same QUEUED transition.
+      try {
+        assertOrdinaryRetryAllowed(target.status, target.lastErrorCode);
+      } catch (error) {
+        translatePublishingDomainError(error);
       }
 
       try {
