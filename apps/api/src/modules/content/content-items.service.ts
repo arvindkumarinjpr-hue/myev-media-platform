@@ -430,6 +430,33 @@ export class ContentItemsService {
     return !!bag && typeof bag === "object" && !Array.isArray(bag);
   }
 
+  /**
+   * Module 10 Phase 10.4 — materializes the approved SOCIAL_POST caption
+   * into metadata.publishing.caption, safely merged (Part G: every
+   * unrelated existing metadata key — including a sibling `publishing`
+   * sub-key's own OTHER fields like description/tags/privacy, which no
+   * Social flow ever writes but another integration might — is preserved,
+   * never replaced wholesale). Composition is deterministic string
+   * concatenation only (Part E): the approved caption, then a blank line,
+   * then space-joined hashtags — never ctaObjective, never source
+   * metadata, never AI job ids, never workflow state. No AI call.
+   */
+  private async buildSocialApprovalMetadataUpdate(tx: Prisma.TransactionClient, itemId: string, currentVersionId: string): Promise<Record<string, unknown>> {
+    const [row, version] = await Promise.all([
+      tx.contentItem.findUniqueOrThrow({ where: { id: itemId }, select: { metadata: true } }),
+      tx.contentVersion.findUniqueOrThrow({ where: { id: currentVersionId }, select: { body: true } }),
+    ]);
+    const existingMetadata = (row.metadata as Record<string, unknown> | null) ?? {};
+    const existingPublishing = (existingMetadata.publishing as Record<string, unknown> | undefined) ?? {};
+
+    const body = version.body as Record<string, unknown>;
+    const caption = typeof body.caption === "string" ? body.caption : "";
+    const hashtags = Array.isArray(body.hashtags) ? body.hashtags.filter((h): h is string => typeof h === "string") : [];
+    const composedCaption = hashtags.length > 0 ? `${caption}\n\n${hashtags.join(" ")}` : caption;
+
+    return { ...existingMetadata, publishing: { ...existingPublishing, caption: composedCaption } };
+  }
+
   async submitForReview(
     workspace: { id: string },
     actor: ContentActor,
@@ -537,7 +564,26 @@ export class ContentItemsService {
         throw new ConflictException({ code: "CONTENT_ITEM_HAS_NO_VERSION", message: "Content item has no current version." });
       }
 
-      const updated = await tx.contentItem.update({ where: { id: locked.id }, data: { status: "APPROVED" }, include: WITH_PUBLIC_REFS });
+      // Module 10 Phase 10.4 — additive, content-type-gated hook (same
+      // shape as isVideoPipelineItem()'s own inline check just above:
+      // importing from the Social module here would create a
+      // ContentModule <-> SocialModule import cycle, so the tiny
+      // composition logic is inlined rather than imported). Approving a
+      // SOCIAL_POST atomically materializes the approved caption into the
+      // EXISTING generic metadata.publishing.caption pass-through seam
+      // publishing-readiness-core.ts already reads for every content
+      // type — Module 9 needs zero changes to consume it. Blog/Video
+      // approval is completely unaffected: this branch never runs for
+      // them, and the same $transaction/update call they already share
+      // is reused unchanged, not forked.
+      const metadataUpdate =
+        locked.contentType === "SOCIAL_POST" ? await this.buildSocialApprovalMetadataUpdate(tx, locked.id, locked.currentVersionId) : undefined;
+
+      const updated = await tx.contentItem.update({
+        where: { id: locked.id },
+        data: { status: "APPROVED", ...(metadataUpdate !== undefined ? { metadata: metadataUpdate as Prisma.InputJsonValue } : {}) },
+        include: WITH_PUBLIC_REFS,
+      });
       await this.createReviewEvent(tx, {
         workspaceId: workspace.id,
         contentItemId: locked.id,

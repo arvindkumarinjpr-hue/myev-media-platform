@@ -6,13 +6,23 @@ import { ContentItemsService, type ContentActor } from "../content/content-items
 import { PublishingReconciliationService } from "./publishing-reconciliation.service";
 import { PUBLISHING_ERRORS } from "./publishing.errors";
 
-/** Publishing only ever supports these two content types (Part D/H of the Phase 9.7 authorization) — never invented, matches CHANNEL_SUPPORTED_CONTENT_TYPES on the frontend. */
-const PUBLISHABLE_CONTENT_TYPES = ["BLOG", "VIDEO"] as const;
+/**
+ * Publishing candidate types (Part D/H of the Phase 9.7 authorization,
+ * extended by Module 10 Phase 10.4 Part I). SOCIAL_POST is listable as a
+ * candidate here — this is the "what content could I attempt to publish"
+ * query only, independent of whether any configured channel account can
+ * currently ACCEPT it (that is `derivePublishingReadiness`'s own,
+ * separate `capabilities.supportedContentTypes` check — see Phase 10.4's
+ * own completion report for why FACEBOOK/INSTAGRAM capabilities are
+ * deliberately NOT extended in this phase). SHORT/REEL/NEWSLETTER remain
+ * unsupported, matching the frontend's own CHANNEL_SUPPORTED_CONTENT_TYPES.
+ */
+const PUBLISHABLE_CONTENT_TYPES = ["BLOG", "VIDEO", "SOCIAL_POST"] as const;
 
 export interface PublishableContentView {
   publicId: string;
   title: string;
-  contentType: "BLOG" | "VIDEO";
+  contentType: "BLOG" | "VIDEO" | "SOCIAL_POST";
 }
 
 const PUBLICATION_WITH_TARGETS = Prisma.validator<Prisma.PublicationDefaultArgs>()({

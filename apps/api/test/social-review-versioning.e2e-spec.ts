@@ -528,9 +528,15 @@ describe("Social review + versioning workflow (e2e)", () => {
   });
 
   // ---------------------------------------------------------------------
-  // No Module 9 write (Part Q #31)
+  // Module 9 write (Part Q #31 as originally scoped to Phase 10.3 — this
+  // boundary intentionally moved in Module 10 Phase 10.4, which added the
+  // approval -> metadata.publishing.caption handoff. This test now only
+  // proves approval itself still succeeds; the full handoff behavior
+  // (composition, hashtag normalization, ctaObjective exclusion, metadata
+  // merge safety, no-auto-Publication) is comprehensively covered in
+  // test/publishing-social-handoff.e2e-spec.ts, not duplicated here.
   // ---------------------------------------------------------------------
-  it("writes no metadata.publishing.caption anywhere in this phase (#31)", async () => {
+  it("approval still succeeds (metadata.publishing.caption handoff is Phase 10.4's own concern — see publishing-social-handoff.e2e-spec.ts)", async () => {
     const ws = await createWorkspace();
     const pack = await createActivePack(ws);
     const source = await createSourceItem(ws.id);
@@ -539,7 +545,6 @@ describe("Social review + versioning workflow (e2e)", () => {
     await request(ctx.app.getHttpServer()).post(`/api/v1/workspaces/${ws.publicId}/social-posts/${itemPublicId}/approve`).set(auth(ownerAccessToken, ws.publicId)).send({}).expect(200);
 
     const item = await ctx.prisma.contentItem.findFirstOrThrow({ where: { publicId: itemPublicId } });
-    const metadata = (item.metadata as Record<string, unknown> | null) ?? {};
-    expect((metadata as { publishing?: unknown }).publishing).toBeUndefined();
+    expect(item.status).toBe("APPROVED");
   });
 });
