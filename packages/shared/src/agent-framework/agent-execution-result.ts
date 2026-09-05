@@ -25,6 +25,18 @@ export interface AgentExecutionResult {
   /** Present only when status === "FAILED" or "TIMED_OUT". */
   failure?: AgentExecutionFailure;
 
+  /**
+   * Module 10 Phase 10.2 — the underlying ai_jobs row's own id/publicId,
+   * present whenever the request reached Queued state (i.e. whenever a
+   * row was actually created — absent only for a rejectedBeforeQueued
+   * failure). The first real caller needing FK-level provenance to the
+   * exact job that produced a piece of generated content (SocialPost's
+   * captionAiJobId/hashtagAiJobId) — every prior caller only needed
+   * status/output, never the row's own identity.
+   */
+  aiJobId?: string;
+  aiJobPublicId?: string;
+
   knowledgePackVersionUsed: string;
   agentIdentifierUsed: string;
   agentVersionUsed: number;

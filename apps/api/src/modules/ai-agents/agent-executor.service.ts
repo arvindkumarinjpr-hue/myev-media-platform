@@ -174,6 +174,8 @@ export class AgentExecutorService {
           agentIdentifierUsed: definition.identifier,
           agentVersionUsed: definition.version,
           correlationId: request.correlationId,
+          aiJobId: job.id,
+          aiJobPublicId: job.publicId,
         };
       }
       throw err;
@@ -239,6 +241,8 @@ export class AgentExecutorService {
         agentIdentifierUsed: definition.identifier,
         agentVersionUsed: definition.version,
         correlationId: request.correlationId,
+        aiJobId: job.id,
+        aiJobPublicId: job.publicId,
       };
     } catch (err) {
       clearTimeout(timeout);
@@ -266,6 +270,8 @@ export class AgentExecutorService {
         agentIdentifierUsed: definition.identifier,
         agentVersionUsed: definition.version,
         correlationId: request.correlationId,
+        aiJobId: job.id,
+        aiJobPublicId: job.publicId,
       };
     }
   }

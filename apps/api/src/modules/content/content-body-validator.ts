@@ -101,9 +101,12 @@ export class ContentBodyValidator {
    * work with, not a full schema. BLOG mirrors blog_articles' eventual
    * body text; VIDEO mirrors video_scripts.script_body (AI_CONTENT_
    * DATABASE_AND_ENTITY_DESIGN_V1.0.md §content_items extension tables).
+   * SOCIAL_POST mirrors social_posts' own caption field (Module 10 Phase
+   * 10.2) — added as its own branch, not folded into VIDEO's "script"
+   * fallback, now that a third supported content type exists.
    */
   private validateShape(contentType: SupportedContentType, body: Record<string, unknown>): void {
-    const field = contentType === "BLOG" ? "content" : "script";
+    const field = contentType === "BLOG" ? "content" : contentType === "SOCIAL_POST" ? "caption" : "script";
     const value = body[field];
     if (typeof value !== "string" || value.trim().length === 0) {
       throw new BadRequestException({
