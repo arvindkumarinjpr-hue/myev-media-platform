@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { publishingApi } from "../../lib/api/publishing";
 import { ApiError, friendlyMessage } from "../../lib/errors";
 import type { PublishableContentView, PublishingAccountView, PublishingReadinessResult } from "../../lib/types";
@@ -13,7 +13,7 @@ import { ErrorBanner, LoadingState, EmptyState } from "../ui/Feedback";
 import { Input } from "../ui/Input";
 import { PageHeader } from "../ui/PageHeader";
 import { Stepper } from "../ui/Stepper";
-import { CHANNEL_LABEL, CHANNEL_SUPPORTED_CONTENT_TYPES, readinessReasonLabel } from "./publishingLabels";
+import { CHANNEL_LABEL, CHANNEL_SUPPORTED_CONTENT_TYPES, CONTENT_TYPE_LABEL, readinessReasonLabel } from "./publishingLabels";
 import styles from "./PublishFlow.module.css";
 
 type ContentOption = PublishableContentView;
@@ -46,6 +46,15 @@ const STEPS = [
  */
 export function PublishFlow({ workspaceId }: { workspaceId: string }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  // Module 10 Phase 10.6 (Part O) — an APPROVED SocialPost's "Send to
+  // Publishing" action deep-links here with its own contentItemId so the
+  // operator doesn't have to re-find it in the list below. Frontend-only:
+  // once the real candidate list loads, a matching id is preselected and
+  // the flow jumps straight to account selection — Module 9's own
+  // eligibility/readiness checks remain the sole authority on whether it
+  // can actually be published.
+  const preselectContentItemId = searchParams.get("contentItemId");
   const [step, setStep] = useState(0);
 
   const [content, setContent] = useState<ContentOption[] | null>(null);
@@ -70,8 +79,21 @@ export function PublishFlow({ workspaceId }: { workspaceId: string }) {
     setContentError(null);
     publishingApi.publications
       .contentCandidates(workspaceId)
-      .then(setContent)
+      .then((items) => {
+        setContent(items);
+        if (preselectContentItemId) {
+          const match = items.find((i) => i.publicId === preselectContentItemId);
+          if (match) {
+            setSelectedContent(match);
+            setStep(1);
+          }
+        }
+      })
       .catch((err) => setContentError(friendlyMessage(err)));
+    // preselectContentItemId is read once on mount — the flow's own step/
+    // selection state takes over after that, exactly like every other step
+    // transition in this component (never re-derived from the URL again).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId]);
 
   useEffect(() => {
@@ -191,7 +213,7 @@ export function PublishFlow({ workspaceId }: { workspaceId: string }) {
           {accounts !== null && eligibleAccounts.length === 0 && (
             <EmptyState
               title="No connected accounts support this content type"
-              description={`Connect a channel account that supports ${selectedContent.contentType === "BLOG" ? "Blog" : "Video"} content first.`}
+              description={`Connect a channel account that supports ${CONTENT_TYPE_LABEL[selectedContent.contentType]} content first.`}
               action={
                 <Button href={`/workspaces/${workspaceId}/publishing/accounts`} variant="secondary">
                   Channel Accounts

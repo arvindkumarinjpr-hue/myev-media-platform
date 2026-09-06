@@ -956,8 +956,93 @@ export interface MetaDiscoveredPage {
 // Module 9 Phase 9.8 staging-UAT defect fix — every APPROVED Blog/Video
 // content item the caller can view, regardless of pipeline metadata (see
 // PublishingQueryService.listPublishableContent()'s own doc comment).
+// Module 10 Phase 10.4 made an APPROVED SocialPost publishable too
+// (PUBLISHABLE_CONTENT_TYPES includes SOCIAL_POST on the backend) — widened
+// here to match reality, not a new capability.
 export interface PublishableContentView {
   publicId: string;
   title: string;
-  contentType: "BLOG" | "VIDEO";
+  contentType: "BLOG" | "VIDEO" | "SOCIAL_POST";
+}
+
+// Module 10 Phase 10.6 — the generic ContentItemsController's own
+// serializeItem() shape, narrowed to the fields the Social source picker
+// needs. Deliberately NOT reusing PublishableContentView: that type/endpoint
+// is Module 9's own "what can be published" list (already includes
+// SOCIAL_POST, gated by PUBLISH_CREATE) — semantically different from "what
+// can be a Social source" (BLOG/VIDEO only, gated per-contentType by
+// BLOG_VIEW/VIDEO_VIEW), so reusing it would silently misuse a permission
+// boundary that isn't the same one a Social-only role holds.
+export interface ContentItemSummary {
+  publicId: string;
+  title: string;
+  contentType: string;
+  status: ContentItemStatus;
+  featuredMediaAssetId: string | null;
+}
+
+export type SocialPlatform = "FACEBOOK" | "INSTAGRAM";
+
+export interface SocialPostListItem {
+  publicId: string;
+  title: string;
+  status: ContentItemStatus;
+  platform: SocialPlatform;
+  sourceContentItemPublicId: string;
+  sourceContentType: "BLOG" | "VIDEO" | null;
+  caption: string | null;
+  hasMedia: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SocialAiJobRef {
+  publicId: string;
+  agentName: string;
+  agentVersion: string;
+}
+
+export interface SocialGenerationSummary {
+  generated: true;
+  captionAiJob: SocialAiJobRef | null;
+  hashtagAiJob: SocialAiJobRef | null;
+  createdAt: string;
+}
+
+export interface SocialMediaSummary {
+  mediaAssetPublicId: string;
+  status: string;
+  assetType: string;
+}
+
+export interface SocialPostDetail {
+  publicId: string;
+  title: string;
+  status: ContentItemStatus;
+  platform: SocialPlatform;
+  sourceContentItemPublicId: string;
+  sourceContentType: "BLOG" | "VIDEO";
+  sourceContentItemTitle: string;
+  sourceContentVersionPublicId?: string;
+  caption: string | null;
+  hashtags: string[];
+  ctaObjective: string | null;
+  media: SocialMediaSummary | null;
+  currentVersion: { publicId: string; versionNumber: number; createdAt: string } | null;
+  versionCount: number;
+  generation: SocialGenerationSummary | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SocialPostVersion {
+  publicId: string;
+  versionNumber: number;
+  isCurrent: boolean;
+  caption: string | null;
+  hashtags: string[];
+  ctaObjective: string | null;
+  generation: SocialGenerationSummary | null;
+  media: SocialMediaSummary | null;
+  createdAt: string;
 }

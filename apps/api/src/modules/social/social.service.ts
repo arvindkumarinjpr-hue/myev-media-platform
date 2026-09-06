@@ -67,19 +67,37 @@ export class SocialService {
     const socialByItemId = new Map(socialPosts.map((s) => [s.contentItemId, s]));
 
     const sourceIds = [...new Set(socialPosts.map((s) => s.sourceContentItemId))];
-    const sources = await this.prisma.contentItem.findMany({ where: { id: { in: sourceIds } }, select: { id: true, publicId: true } });
-    const sourcePublicIdById = new Map(sources.map((s) => [s.id, s.publicId]));
+    const sources = await this.prisma.contentItem.findMany({ where: { id: { in: sourceIds } }, select: { id: true, publicId: true, contentType: true } });
+    const sourceById = new Map(sources.map((s) => [s.id, s]));
+
+    // Module 10 Phase 10.6 — the list view needs a caption preview + media
+    // indicator without an N+1 detail fetch per row; both are read straight
+    // off each item's own current version, batched exactly like
+    // findOne()/listVersions() already do per-item (safeMediaSummary is not
+    // reused here since the list only needs a boolean, never the asset's
+    // own publicId/status/type).
+    const currentVersionIds = items.map((i) => i.currentVersionId).filter((id): id is string => id !== null);
+    const [versions, versionMedia] = await Promise.all([
+      this.prisma.contentVersion.findMany({ where: { id: { in: currentVersionIds } }, select: { id: true, body: true } }),
+      this.prisma.socialVersionMedia.findMany({ where: { contentVersionId: { in: currentVersionIds } }, select: { contentVersionId: true } }),
+    ]);
+    const bodyByVersionId = new Map(versions.map((v) => [v.id, v.body as Record<string, unknown>]));
+    const hasMediaByVersionId = new Set(versionMedia.map((m) => m.contentVersionId));
 
     return items
       .filter((i) => socialByItemId.has(i.id))
       .map((i) => {
         const social = socialByItemId.get(i.id)!;
+        const body = i.currentVersionId ? bodyByVersionId.get(i.currentVersionId) : undefined;
         return {
           publicId: i.publicId,
           title: i.title,
           status: i.status,
           platform: social.platform,
-          sourceContentItemPublicId: sourcePublicIdById.get(social.sourceContentItemId),
+          sourceContentItemPublicId: sourceById.get(social.sourceContentItemId)?.publicId,
+          sourceContentType: sourceById.get(social.sourceContentItemId)?.contentType ?? null,
+          caption: (body?.caption as string | undefined) ?? null,
+          hasMedia: i.currentVersionId ? hasMediaByVersionId.has(i.currentVersionId) : false,
           createdAt: i.createdAt,
           updatedAt: i.updatedAt,
         };

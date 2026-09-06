@@ -7,6 +7,7 @@ import {
   ProjectIcon,
   PublishingIcon,
   ResearchIcon,
+  SocialIcon,
   TopicClusterIcon,
   VideoIcon,
 } from "../ui/icons";
@@ -71,6 +72,18 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { label: "Knowledge Packs", segment: "knowledge-packs", icon: KnowledgePackIcon, permission: "KP_VIEW" },
       { label: "Projects", segment: "projects", icon: ProjectIcon, permission: "PROJECT_VIEW" },
+    ],
+  },
+  {
+    title: "Social Media",
+    items: [
+      // Module 10 Phase 10.6 — one page, not a page-per-action: the
+      // review queue is a status filter inside Social Content itself
+      // (mirrors Blog/Video's own single-list-plus-detail shape), not a
+      // second nav entry. SOCIAL_VIEW (not CREATE/EDIT/APPROVE): every
+      // role that can see any Social content should see this entry —
+      // the page itself further narrows what's actionable per permission.
+      { label: "Social Content", segment: "social", icon: SocialIcon, permission: "SOCIAL_VIEW" },
     ],
   },
   {

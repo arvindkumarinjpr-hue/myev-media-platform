@@ -6,7 +6,11 @@ import { mockResponse } from "../../lib/test-mock-response";
 import { account, testWorkspace } from "./publishingTestFixtures";
 
 const push = jest.fn();
-jest.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
+let searchParams = new URLSearchParams();
+jest.mock("next/navigation", () => ({
+  useRouter: () => ({ push }),
+  useSearchParams: () => searchParams,
+}));
 
 function renderFlow() {
   return render(
@@ -42,7 +46,10 @@ function baseFetchMock(overrides: Record<string, (url: string, init?: RequestIni
 }
 
 describe("PublishFlow", () => {
-  afterEach(() => jest.restoreAllMocks());
+  afterEach(() => {
+    jest.restoreAllMocks();
+    searchParams = new URLSearchParams();
+  });
 
   it("lists Approved content exactly as the server returns it, and only accounts eligible for the chosen content type", async () => {
     jest.spyOn(global, "fetch").mockImplementation(baseFetchMock() as unknown as typeof fetch);
@@ -126,5 +133,28 @@ describe("PublishFlow", () => {
     const createCall = fetchMock.mock.calls.find((c) => c[0].toString().includes("/publishing/publications") && !c[0].toString().includes("content-candidates") && (c[1] as RequestInit)?.method === "POST")!;
     const body = JSON.parse((createCall[1] as RequestInit).body as string);
     expect(body).toEqual({ contentItemPublicId: "video-approved", channelAccountPublicIds: ["acct-video"] });
+  });
+
+  // Module 10 Phase 10.6 Part O — the Social module's "Send to Publishing"
+  // CTA deep-links here with ?contentItemId=<publicId>; this proves the
+  // handoff actually preselects the real candidate and offers a Facebook
+  // account for it (Phase 10.5 made Facebook/Instagram real SOCIAL_POST
+  // targets — CHANNEL_SUPPORTED_CONTENT_TYPES had to be widened to match).
+  it("preselects an APPROVED SocialPost handed off via ?contentItemId= and offers a connected Facebook account for it", async () => {
+    searchParams = new URLSearchParams({ contentItemId: "social-approved" });
+    jest.spyOn(global, "fetch").mockImplementation(
+      baseFetchMock({
+        "/publications/content-candidates": () =>
+          mockResponse({
+            data: [...contentCandidates, { publicId: "social-approved", title: "EV Tax Credits — FACEBOOK post", contentType: "SOCIAL_POST" }],
+          }),
+        "/publishing/accounts": () => mockResponse({ data: [account({ publicId: "acct-fb", channelType: "FACEBOOK", displayName: "MYEV Page" })] }),
+      }) as unknown as typeof fetch,
+    );
+    renderFlow();
+
+    // Jumped straight to step 2 (account selection) with the SocialPost preselected — no manual re-pick needed.
+    await waitFor(() => expect(screen.getByText("MYEV Page")).toBeInTheDocument());
+    expect(screen.queryByText("No connected accounts support this content type")).not.toBeInTheDocument();
   });
 });

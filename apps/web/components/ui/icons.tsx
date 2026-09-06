@@ -69,6 +69,17 @@ export function KnowledgePackIcon(props: IconProps) {
   );
 }
 
+export function SocialIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <circle cx="6" cy="12" r="2.5" />
+      <circle cx="18" cy="5.5" r="2.5" />
+      <circle cx="18" cy="18.5" r="2.5" />
+      <path d="M8.2 10.8 15.8 6.7M8.2 13.2l7.6 4.1" />
+    </Base>
+  );
+}
+
 export function ProjectIcon(props: IconProps) {
   return (
     <Base {...props}>

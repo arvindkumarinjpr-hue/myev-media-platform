@@ -1,0 +1,26 @@
+.filters {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-4);
+}
+
+.filters > * {
+  min-width: 0;
+}
+
+.titleCell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.captionPreview {
+  font-size: var(--text-sm);
+  color: var(--color-text);
+}
+
+.muted {
+  color: var(--color-text-subtle);
+  font-size: var(--text-sm);
+}
