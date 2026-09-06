@@ -27,6 +27,22 @@ export const PUBLISHING_READINESS_REASONS = {
   RENDER_NOT_READY: "RENDER_NOT_READY",
   MEDIA_ASSET_MISSING: "MEDIA_ASSET_MISSING",
   MEDIA_ASSET_INELIGIBLE: "MEDIA_ASSET_INELIGIBLE",
+  /**
+   * Module 10 Phase 10.5 — SOCIAL_POST only. The channel's own
+   * `socialPostMediaRequirement` is "REQUIRED" (Instagram) and this
+   * SocialPost's current version has no SocialVersionMedia row at all.
+   * Distinct from CHANNEL_NOT_SUPPORTED (Part I: "Do not hide missing
+   * media behind CHANNEL_NOT_SUPPORTED once Instagram SOCIAL_POST support
+   * exists") — the channel DOES support SOCIAL_POST, it just needs media.
+   */
+  SOCIAL_MEDIA_REQUIRED: "SOCIAL_MEDIA_REQUIRED",
+  /**
+   * Module 10 Phase 10.5 — a SocialVersionMedia row exists, but the
+   * referenced MediaAsset is not ACTIVE (deleted/archived/rejected/still
+   * verifying) or is not a channel-compatible assetType (e.g. AUDIO/
+   * DOCUMENT/SUBTITLE) — never silently treated as "no media attached".
+   */
+  SOCIAL_MEDIA_INCOMPATIBLE: "SOCIAL_MEDIA_INCOMPATIBLE",
 } as const;
 
 export type PublishingReadinessReasonCode = (typeof PUBLISHING_READINESS_REASONS)[keyof typeof PUBLISHING_READINESS_REASONS];

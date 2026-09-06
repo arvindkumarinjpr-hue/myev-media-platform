@@ -51,6 +51,25 @@ export function isFacebookUploadCheckpoint(value: unknown): value is FacebookUpl
 }
 
 /**
+ * Module 10 Phase 10.5 — the marker for a SOCIAL_POST text/photo publish,
+ * whose external call (`/PAGE_ID/feed` or `/PAGE_ID/photos`) is a single
+ * atomic request with no preceding upload-session step to distinguish
+ * "never attempted" from "attempted, outcome unknown" — unlike the video
+ * path's own two-phase checkpoint. Same conservative discipline as
+ * FacebookUploadCheckpoint's own PAGE_POST_ATTEMPTED: once this exists,
+ * publish() never repeats the call, since Meta's API documents no
+ * idempotency key for either endpoint (same Part P research finding this
+ * class's own doc comment already cites for the video path).
+ */
+interface FacebookSocialPostCheckpoint {
+  phase: "SOCIAL_POST_ATTEMPTED";
+}
+
+export function isFacebookSocialPostCheckpoint(value: unknown): value is FacebookSocialPostCheckpoint {
+  return isRecord(value) && value.phase === "SOCIAL_POST_ATTEMPTED";
+}
+
+/**
  * Module 9 Phase 9.6 — the mechanical Facebook Page video publishing
  * connector. Framework-free (no NestJS, no Prisma), mirroring
  * YouTubeChannelProvider's own shape exactly. No OAuth refresh (Part F
@@ -76,12 +95,17 @@ export class FacebookChannelProvider implements PublishingChannelProvider {
 
   getCapabilities(): PublishingChannelCapabilities {
     return {
-      supportedContentTypes: ["VIDEO"],
+      // Module 10 Phase 10.5 — SOCIAL_POST added: Facebook Pages can post
+      // caption-only (a plain Page feed post, `/PAGE_ID/feed`) or with an
+      // attached photo/video, so media is OPTIONAL — see publish()'s own
+      // SOCIAL_POST branch.
+      supportedContentTypes: ["VIDEO", "SOCIAL_POST"],
       requiresRenderedMedia: true,
       requiresTitle: false,
       requiresDescription: false,
       supportsTags: false,
       supportsCaption: true,
+      socialPostMediaRequirement: "OPTIONAL",
       // No privacy concept exposed — see class doc comment.
       supportedPrivacyOptions: undefined,
     };
@@ -101,12 +125,23 @@ export class FacebookChannelProvider implements PublishingChannelProvider {
   }
 
   async publish(input: PublishingPublishInput, decryptedCredential: Record<string, unknown>, callbacks?: PublishingExecutionCallbacks): Promise<PublishingPublishResult> {
-    if (input.contentType !== "VIDEO") {
-      throw new PublishingProviderPermanentError("FACEBOOK_UNSUPPORTED_CONTENT_TYPE", `Facebook does not support publishing content type "${input.contentType}".`);
-    }
     const credential = this.parseCredential(decryptedCredential);
     if (!credential || !credential.pageId) {
       throw new PublishingProviderPermanentError("FACEBOOK_CREDENTIAL_INVALID", "Stored Facebook credential is missing required fields.");
+    }
+
+    // Module 10 Phase 10.5 — SOCIAL_POST branch, kept structurally
+    // separate from the VIDEO path below rather than interleaved with it
+    // (Part F: "keep it minimal and demonstrate why" — a caption-only or
+    // photo social post shares none of VIDEO's resumable-upload/
+    // checkpoint mechanics, so branching early avoids threading
+    // SOCIAL_POST-only logic through code that must stay byte-identical
+    // for VIDEO).
+    if (input.contentType === "SOCIAL_POST") {
+      return this.publishSocialPost(input, credential, callbacks);
+    }
+    if (input.contentType !== "VIDEO") {
+      throw new PublishingProviderPermanentError("FACEBOOK_UNSUPPORTED_CONTENT_TYPE", `Facebook does not support publishing content type "${input.contentType}".`);
     }
     if (!input.artifact) {
       throw new PublishingProviderPermanentError("FACEBOOK_ARTIFACT_MISSING", "No resolved video artifact was provided to publish.");
@@ -114,10 +149,18 @@ export class FacebookChannelProvider implements PublishingChannelProvider {
     if (!callbacks?.mediaReader) {
       throw new PublishingProviderPermanentError("FACEBOOK_MEDIA_READER_MISSING", "No media reader was supplied for this VIDEO publish.");
     }
-    const mediaReader = callbacks.mediaReader;
-    const mediaAssetPublicId = input.artifact.mediaAssetPublicId;
+    return this.publishVideoArtifact(credential, input.artifact.mediaAssetPublicId, input.priorCheckpoint, callbacks, input.metadata.caption);
+  }
 
-    const prior = isFacebookUploadCheckpoint(input.priorCheckpoint) ? input.priorCheckpoint : null;
+  private async publishVideoArtifact(
+    credential: MetaCredentialPayload,
+    mediaAssetPublicId: string,
+    priorCheckpoint: Record<string, unknown> | undefined,
+    callbacks: PublishingExecutionCallbacks,
+    caption: string | undefined,
+  ): Promise<PublishingPublishResult> {
+    const mediaReader = callbacks.mediaReader!;
+    const prior = isFacebookUploadCheckpoint(priorCheckpoint) ? priorCheckpoint : null;
     if (prior?.phase === "PAGE_POST_ATTEMPTED") {
       // The one non-idempotent call may or may not have succeeded on
       // Facebook's side — see class doc comment. Never retried blindly.
@@ -141,8 +184,71 @@ export class FacebookChannelProvider implements PublishingChannelProvider {
     // the call landing on Facebook's servers still blocks a blind retry.
     await callbacks.saveCheckpoint({ phase: "PAGE_POST_ATTEMPTED", uploadSessionId } satisfies FacebookUploadCheckpoint);
 
-    return this.createPageVideoPost(credential, fileHandle, input.metadata.caption);
+    return this.createPageVideoPost(credential, fileHandle, caption);
   }
+
+  /**
+   * Module 10 Phase 10.5 Part F — the genuine executable path for
+   * SOCIAL_POST + FACEBOOK + caption-only: a plain Page feed text post
+   * (`/PAGE_ID/feed`), never routed through the video-upload endpoint.
+   * When a media attachment IS present, a VIDEO-typed asset reuses the
+   * EXISTING resumable-upload machinery verbatim (publishVideoArtifact) —
+   * mechanically identical to a plain VIDEO publish, safe to ship as-is.
+   * An IMAGE-typed asset is deliberately NOT implemented this phase: a
+   * real Facebook photo post (`/PAGE_ID/photos`) requires a genuine
+   * multipart/form-data file upload against the plain Graph host, a
+   * protocol this codebase's MetaGraphClient has no primitive for today
+   * (its own `uploadRequest` targets ONLY the separate rupload.facebook.com
+   * resumable-upload host, a different protocol video/Instagram use) —
+   * this is the Part F "existing provider/API abstractions [cannot]
+   * support it safely within this phase" case, disclosed rather than
+   * shipped as a silently-broken call. Readiness still resolves an
+   * IMAGE-typed artifact as ready (Facebook's own media requirement is
+   * OPTIONAL either way), so this gap surfaces as an honest permanent
+   * execution failure, never a false, silent success.
+   */
+  private async publishSocialPost(input: PublishingPublishInput, credential: MetaCredentialPayload, callbacks?: PublishingExecutionCallbacks): Promise<PublishingPublishResult> {
+    const caption = input.metadata.caption;
+    if (!input.artifact) {
+      return this.publishSocialFeedPost(credential, caption, input.priorCheckpoint, callbacks);
+    }
+    if (!callbacks?.mediaReader) {
+      throw new PublishingProviderPermanentError("FACEBOOK_MEDIA_READER_MISSING", "No media reader was supplied for this SOCIAL_POST media publish.");
+    }
+    const head = await callbacks.mediaReader.headObject(input.artifact.mediaAssetPublicId);
+    if (head.contentType?.startsWith("video/")) {
+      return this.publishVideoArtifact(credential, input.artifact.mediaAssetPublicId, input.priorCheckpoint, callbacks, caption);
+    }
+    throw new PublishingProviderPermanentError(
+      "FACEBOOK_SOCIAL_IMAGE_NOT_YET_SUPPORTED",
+      "Publishing a SOCIAL_POST with an attached image to Facebook is not yet implemented — this requires multipart file upload support this connector does not have today.",
+    );
+  }
+
+  private async publishSocialFeedPost(
+    credential: MetaCredentialPayload,
+    caption: string | undefined,
+    priorCheckpoint: Record<string, unknown> | undefined,
+    callbacks?: PublishingExecutionCallbacks,
+  ): Promise<PublishingPublishResult> {
+    if (isFacebookSocialPostCheckpoint(priorCheckpoint)) {
+      throw new PublishingProviderPermanentError(
+        "FACEBOOK_PUBLISH_OUTCOME_UNKNOWN",
+        "A previous attempt already invoked Facebook's feed-post creation and its outcome could not be confirmed; refusing to retry to avoid a duplicate post. Manual verification is required.",
+      );
+    }
+    await callbacks?.saveCheckpoint({ phase: "SOCIAL_POST_ATTEMPTED" } satisfies FacebookSocialPostCheckpoint);
+
+    const { status, json } = await this.client.graphRequest("POST", `/${credential.pageId}/feed`, credential.accessToken, { message: caption ?? "" });
+    if (status < 200 || status >= 300 || !isRecord(json) || typeof json.id !== "string") {
+      throw classifyMetaGraphFailure(status, json, "feed post create");
+    }
+    // No externalUrl — Meta's own feed-post response documents no stable
+    // permalink field, same "never fabricated" discipline as the video
+    // path's own createPageVideoPost.
+    return { externalContentId: json.id };
+  }
+
 
   private async createUploadSession(credential: MetaCredentialPayload, fileLength: number, contentType?: string): Promise<string> {
     const { status, json } = await this.client.graphRequest("POST", `/${this.appId}/uploads`, credential.accessToken, {

@@ -38,15 +38,16 @@ describe("FacebookChannelProvider", () => {
     server = undefined;
   });
 
-  it("reports truthful capabilities — VIDEO only, no privacy concept, caption supported", () => {
+  it("reports truthful capabilities — VIDEO + SOCIAL_POST (media optional), no privacy concept, caption supported", () => {
     const provider = new FacebookChannelProvider({ appId: "app-1" });
     expect(provider.getCapabilities()).toEqual({
-      supportedContentTypes: ["VIDEO"],
+      supportedContentTypes: ["VIDEO", "SOCIAL_POST"],
       requiresRenderedMedia: true,
       requiresTitle: false,
       requiresDescription: false,
       supportsTags: false,
       supportsCaption: true,
+      socialPostMediaRequirement: "OPTIONAL",
       supportedPrivacyOptions: undefined,
     });
   });
@@ -171,9 +172,72 @@ describe("FacebookChannelProvider", () => {
     expect(serializedBodies).not.toContain(CREDENTIAL.accessToken);
   });
 
-  it("rejects a non-VIDEO content type permanently", async () => {
+  it("rejects a non-VIDEO/SOCIAL_POST content type permanently", async () => {
     const provider = new FacebookChannelProvider({ appId: "app-1" });
     const { callbacks } = callbacksWithCheckpoint(mediaReaderFor(VIDEO_BYTES));
     await expect(provider.publish({ ...BASE_INPUT, contentType: "BLOG" }, CREDENTIAL, callbacks)).rejects.toMatchObject({ errorCode: "FACEBOOK_UNSUPPORTED_CONTENT_TYPE" });
+  });
+
+  describe("SOCIAL_POST (Module 10 Phase 10.5)", () => {
+    const SOCIAL_INPUT: PublishingPublishInput = { contentType: "SOCIAL_POST", metadata: { caption: "Charging your EV at home is easier than you think.\n\n#ev #evcharging" }, operationToken: "publishing:target-2:attempt:0" };
+
+    it("caption-only (no artifact) publishes a real Page feed text post, never the video-upload endpoint", async () => {
+      server = await startMetaFixtureServer((req) => {
+        if (req.path === `/v25.0/${CREDENTIAL.pageId}/feed`) return { status: 200, json: { id: "fb-feed-1" } };
+        return { status: 500, json: { error: { message: "should never be reached" } } };
+      });
+      const provider = new FacebookChannelProvider({ appId: "app-1", graphBaseUrl: server.url, uploadBaseUrl: server.url });
+      const { callbacks } = callbacksWithCheckpoint(mediaReaderFor(VIDEO_BYTES));
+
+      const result = await provider.publish(SOCIAL_INPUT, CREDENTIAL, callbacks);
+
+      expect(result).toEqual({ externalContentId: "fb-feed-1" });
+      expect(server.requests.every((r) => !r.path.includes("/videos") && !r.path.includes("/uploads"))).toBe(true);
+      const feedReq = server.requests.find((r) => r.path === `/v25.0/${CREDENTIAL.pageId}/feed`)!;
+      expect((feedReq.body as Record<string, unknown>).message).toBe(SOCIAL_INPUT.metadata.caption);
+    });
+
+    it("saves a SOCIAL_POST_ATTEMPTED checkpoint before the non-idempotent feed-post call", async () => {
+      server = await startMetaFixtureServer(() => ({ status: 200, json: { id: "fb-feed-2" } }));
+      const provider = new FacebookChannelProvider({ appId: "app-1", graphBaseUrl: server.url, uploadBaseUrl: server.url });
+      const { callbacks, getSaved } = callbacksWithCheckpoint(mediaReaderFor(VIDEO_BYTES));
+
+      await provider.publish(SOCIAL_INPUT, CREDENTIAL, callbacks);
+
+      expect(getSaved()).toEqual([{ phase: "SOCIAL_POST_ATTEMPTED" }]);
+    });
+
+    it("a SOCIAL_POST_ATTEMPTED prior checkpoint blocks a retry permanently — never calls /feed again", async () => {
+      server = await startMetaFixtureServer(() => ({ status: 500, json: { error: { message: "should never be reached" } } }));
+      const provider = new FacebookChannelProvider({ appId: "app-1", graphBaseUrl: server.url, uploadBaseUrl: server.url });
+      const { callbacks } = callbacksWithCheckpoint(mediaReaderFor(VIDEO_BYTES));
+
+      await expect(provider.publish({ ...SOCIAL_INPUT, priorCheckpoint: { phase: "SOCIAL_POST_ATTEMPTED" } }, CREDENTIAL, callbacks)).rejects.toMatchObject({ errorCode: "FACEBOOK_PUBLISH_OUTCOME_UNKNOWN" });
+      expect(server.requests).toHaveLength(0);
+    });
+
+    it("a VIDEO-typed attached artifact reuses the existing resumable-upload path verbatim", async () => {
+      server = await startMetaFixtureServer((req) => {
+        if (req.path === `/v25.0/app-1/uploads`) return { status: 200, json: { id: "upload:sess-social" } };
+        if (req.path === "/upload:sess-social") return { status: 200, json: { h: "handle-social" } };
+        if (req.path === `/v25.0/${CREDENTIAL.pageId}/videos`) return { status: 200, json: { id: "fb-video-social" } };
+        return { status: 500, json: {} };
+      });
+      const provider = new FacebookChannelProvider({ appId: "app-1", graphBaseUrl: server.url, uploadBaseUrl: server.url });
+      const { callbacks } = callbacksWithCheckpoint(mediaReaderFor(VIDEO_BYTES));
+
+      const result = await provider.publish({ ...SOCIAL_INPUT, artifact: { mediaAssetPublicId: "asset-video" } }, CREDENTIAL, callbacks);
+      expect(result).toEqual({ externalContentId: "fb-video-social" });
+    });
+
+    it("an IMAGE-typed attached artifact fails honestly — never a silent/broken call", async () => {
+      server = await startMetaFixtureServer(() => ({ status: 500, json: { error: { message: "should never be reached" } } }));
+      const provider = new FacebookChannelProvider({ appId: "app-1", graphBaseUrl: server.url, uploadBaseUrl: server.url });
+      const imageReader: NonNullable<PublishingExecutionCallbacks["mediaReader"]> = { headObject: async () => ({ sizeBytes: 10, contentType: "image/jpeg" }), readRange: async () => Buffer.alloc(10) };
+      const { callbacks } = callbacksWithCheckpoint(imageReader);
+
+      await expect(provider.publish({ ...SOCIAL_INPUT, artifact: { mediaAssetPublicId: "asset-image" } }, CREDENTIAL, callbacks)).rejects.toMatchObject({ errorCode: "FACEBOOK_SOCIAL_IMAGE_NOT_YET_SUPPORTED" });
+      expect(server.requests).toHaveLength(0);
+    });
   });
 });

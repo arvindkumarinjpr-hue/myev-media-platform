@@ -136,6 +136,17 @@ export interface PublishingChannelCapabilities {
   requiresDescription: boolean;
   supportsTags: boolean;
   supportsCaption: boolean;
+  /**
+   * Module 10 Phase 10.5 — media requirement specifically for a
+   * SOCIAL_POST publish, independent of `requiresRenderedMedia` (a
+   * blanket per-channel flag that only ever concerns VIDEO). Undefined
+   * for a channel that doesn't support SOCIAL_POST at all (that case is
+   * already excluded via `supportedContentTypes`). "OPTIONAL" (Facebook):
+   * a caption-only SOCIAL_POST is publish-ready. "REQUIRED" (Instagram):
+   * a caption-only SOCIAL_POST is never publish-ready — see
+   * PUBLISHING_READINESS_REASONS.SOCIAL_MEDIA_REQUIRED.
+   */
+  socialPostMediaRequirement?: "OPTIONAL" | "REQUIRED";
   /** Opaque, provider-defined privacy values (e.g. a future YouTube PRIVATE/UNLISTED/PUBLIC). Undefined = the channel has no privacy concept. */
   supportedPrivacyOptions?: string[];
   /** Only ever populated when backed by an existing frozen product/config authority — never a guessed real-world API limit. Undefined for every channel in Phase 9.2/9.3. */

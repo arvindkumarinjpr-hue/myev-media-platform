@@ -684,6 +684,7 @@ model Workspace {
   videoScripts              VideoScript[]
   socialPosts               SocialPost[]
   socialVersionGenerations  SocialVersionGeneration[]
+  socialVersionMedia        SocialVersionMedia[]
   internalLinks             InternalLink[]
   publishingChannelAccounts PublishingChannelAccount[]
   channelCredentials        ChannelCredential[]
@@ -976,6 +977,10 @@ model MediaAsset {
   // Module 2 Phase 2.1: back-relation for brand_guidelines.logoAssetId.
   brandGuidelines BrandGuideline[]
 
+  // Module 10 Phase 10.5: back-relation for social_version_media's own
+  // workspace-safe composite FK into this table.
+  socialVersionMedia SocialVersionMedia[]
+
   // Safeguard 1: version numbers can never duplicate within one asset
   // group, expressible directly (unlike the two partial indexes above).
   @@unique([assetGroupId, versionNumber])
@@ -1129,6 +1134,7 @@ model ContentVersion {
   // SOCIAL_POST item) was itself AI-generated (see SocialVersionGeneration's
   // own doc comment). Absent for a human-edited version.
   socialVersionGeneration SocialVersionGeneration?
+  socialVersionMedia      SocialVersionMedia?
 
   @@unique([contentItemId, versionNumber])
   @@unique([id, contentItemId])
@@ -2560,6 +2566,7 @@ model SocialPost {
   // destroy every earlier version's own provenance the instant a second
   // generation ran. See SocialVersionGeneration's own doc comment.
   versionGenerations SocialVersionGeneration[]
+  versionMedia       SocialVersionMedia[]
 
   // `contentItemId` alone is already @unique (the real 1:1 guarantee);
   // Prisma additionally requires the composite declared so it recognises
@@ -2634,6 +2641,64 @@ model SocialVersionGeneration {
   @@index([captionAiJobId])
   @@index([hashtagAiJobId])
   @@map("social_version_generations")
+}
+
+// Module 10 Phase 10.5 — one row per SOCIAL_POST ContentVersion that has a
+// media attachment selected for it (proposed from the source Blog/Video's
+// existing media, or a human's explicit choice via PATCH). Deliberately
+// version-level, NOT SocialPost-level: media selection is part of the same
+// "what was approved together" bundle as caption/hashtags/CTA (which
+// already live in ContentVersion.body), so it must be exactly as immutable
+// per version as they are — a SocialPost-level pointer would let media
+// silently drift out of sync with which version was actually approved
+// (identical reasoning to why SocialVersionGeneration exists rather than
+// mutable columns on SocialPost). A real FK (not a JSON field inside
+// body) so referential integrity/workspace-safety is enforced by Postgres,
+// not re-validated ad hoc on every read. No row = no media attached
+// (valid for Facebook text-only; blocks Instagram readiness).
+model SocialVersionMedia {
+  id       String @id @default(uuid()) @db.Uuid
+  publicId String @unique @default(uuid()) @map("public_id") @db.Uuid
+
+  workspaceId String    @map("workspace_id") @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  socialPostId String     @map("social_post_id") @db.Uuid
+  socialPost   SocialPost @relation(fields: [socialPostId], references: [id])
+
+  // Same workspace-safe composite pattern as SocialVersionGeneration's own
+  // contentItemId/contentVersionId pair.
+  contentItemId String @map("content_item_id") @db.Uuid
+
+  // The real 1:1 guarantee is @@unique([contentVersionId, contentItemId])
+  // below (the exact tuple the composite FK uses — same reasoning as
+  // SocialVersionGeneration's own identical field-vs-composite-unique
+  // note) — at most one media attachment per version. Never mutated in
+  // place: attaching different media to an existing DRAFT/IN_PROGRESS
+  // version happens by replacing this row (delete + recreate, or a
+  // service-layer upsert) — the ContentVersion itself never changes
+  // underneath an already-approved item, so this row is equally frozen
+  // once its own version leaves DRAFT/IN_PROGRESS.
+  contentVersionId String         @map("content_version_id") @db.Uuid
+  contentVersion   ContentVersion @relation(fields: [contentVersionId, contentItemId], references: [id, contentItemId])
+
+  // Workspace-safe composite FK — same pattern as ContentItem.
+  // featuredMediaAssetId. Deleted/unavailable media is a service-layer
+  // (status !== ACTIVE) check at read/readiness time, mirroring Video's
+  // own videoOutputMediaAssetStatus precedent exactly — MediaAsset rows
+  // are never hard-deleted (MediaAssetStatus.DELETED is a status
+  // transition), so this FK itself never needs ON DELETE handling beyond
+  // the default RESTRICT.
+  mediaAssetId String     @map("media_asset_id") @db.Uuid
+  mediaAsset   MediaAsset @relation(fields: [mediaAssetId, workspaceId], references: [id, workspaceId])
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([contentVersionId, contentItemId])
+  @@index([workspaceId])
+  @@index([socialPostId])
+  @@index([mediaAssetId])
+  @@map("social_version_media")
 }
 
 // ---------------------------------------------------------------------------

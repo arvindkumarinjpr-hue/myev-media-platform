@@ -1,4 +1,4 @@
-import { ArrayMaxSize, IsArray, IsOptional, IsString, MaxLength, MinLength } from "class-validator";
+import { ArrayMaxSize, IsArray, IsOptional, IsString, IsUUID, MaxLength, MinLength, ValidateIf } from "class-validator";
 
 /**
  * Module 10 Phase 10.3 — PATCH .../social-posts/:itemId input. A human
@@ -26,4 +26,17 @@ export class EditSocialPostDto {
   @IsString()
   @MaxLength(2000)
   ctaObjective?: string;
+
+  /**
+   * Module 10 Phase 10.5 — the MediaAsset to attach to the NEW version
+   * this edit creates. Undefined = leave whatever the current version has
+   * unchanged. Explicit `null` = detach media (Facebook remains valid
+   * caption-only; Instagram readiness becomes not-ready). A real publicId
+   * = attach/replace — SocialService.edit() validates it resolves to a
+   * same-workspace, ACTIVE MediaAsset before writing anything.
+   */
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsUUID()
+  mediaAssetPublicId?: string | null;
 }

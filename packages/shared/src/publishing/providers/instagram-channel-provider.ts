@@ -65,12 +65,18 @@ export class InstagramChannelProvider implements PublishingChannelProvider {
 
   getCapabilities(): PublishingChannelCapabilities {
     return {
-      supportedContentTypes: ["VIDEO"],
+      // Module 10 Phase 10.5 — SOCIAL_POST added: media is REQUIRED
+      // (Part G — Instagram's Graph API has no caption-only post
+      // capability at all), never OPTIONAL like Facebook's own SOCIAL_POST
+      // capability. publish() defensively rejects a media-less SOCIAL_POST
+      // even if readiness were somehow bypassed.
+      supportedContentTypes: ["VIDEO", "SOCIAL_POST"],
       requiresRenderedMedia: true,
       requiresTitle: false,
       requiresDescription: false,
       supportsTags: false,
       supportsCaption: true,
+      socialPostMediaRequirement: "REQUIRED",
       // No privacy concept — a published Reel is live to the connected
       // professional account's own audience by definition (Part Y).
       supportedPrivacyOptions: undefined,
@@ -95,7 +101,7 @@ export class InstagramChannelProvider implements PublishingChannelProvider {
   }
 
   async publish(input: PublishingPublishInput, decryptedCredential: Record<string, unknown>, callbacks?: PublishingExecutionCallbacks): Promise<PublishingPublishResult> {
-    if (input.contentType !== "VIDEO") {
+    if (input.contentType !== "VIDEO" && input.contentType !== "SOCIAL_POST") {
       throw new PublishingProviderPermanentError("INSTAGRAM_UNSUPPORTED_CONTENT_TYPE", `Instagram does not support publishing content type "${input.contentType}".`);
     }
     const credential = this.parseCredential(decryptedCredential);
@@ -103,16 +109,27 @@ export class InstagramChannelProvider implements PublishingChannelProvider {
       throw new PublishingProviderPermanentError("INSTAGRAM_CREDENTIAL_INVALID", "Stored Instagram credential is missing required fields.");
     }
     if (!input.artifact) {
-      throw new PublishingProviderPermanentError("INSTAGRAM_ARTIFACT_MISSING", "No resolved video artifact was provided to publish.");
+      // Module 10 Phase 10.5 Part G — defensive, even for SOCIAL_POST:
+      // Instagram's Graph API has no caption-only post capability at
+      // all, so this is checked here regardless of what readiness
+      // already reported, never assumed satisfied by the caller.
+      throw new PublishingProviderPermanentError("INSTAGRAM_ARTIFACT_MISSING", "No resolved media artifact was provided to publish.");
     }
     if (!callbacks?.mediaReader) {
-      throw new PublishingProviderPermanentError("INSTAGRAM_MEDIA_READER_MISSING", "No media reader was supplied for this VIDEO publish.");
+      throw new PublishingProviderPermanentError("INSTAGRAM_MEDIA_READER_MISSING", "No media reader was supplied for this publish.");
     }
     const mediaReader = callbacks.mediaReader;
     const mediaAssetPublicId = input.artifact.mediaAssetPublicId;
 
+    // Module 10 Phase 10.5 — for SOCIAL_POST, the container's own
+    // media_type is resolved from the artifact's real bytes (never
+    // assumed) so an attached IMAGE publishes as a Feed image container,
+    // not forced through the REELS video path. VIDEO content type keeps
+    // the exact prior behavior — always "REELS" — unchanged.
+    const mediaType = input.contentType === "SOCIAL_POST" && !(await mediaReader.headObject(mediaAssetPublicId)).contentType?.startsWith("video/") ? "IMAGE" : "REELS";
+
     const prior = isInstagramUploadCheckpoint(input.priorCheckpoint) ? input.priorCheckpoint : null;
-    const containerId = prior ? prior.containerId : await this.createContainerAndUpload(credential, mediaAssetPublicId, mediaReader, callbacks, input.metadata.caption);
+    const containerId = prior ? prior.containerId : await this.createContainerAndUpload(credential, mediaAssetPublicId, mediaReader, callbacks, input.metadata.caption, mediaType);
 
     const pollOutcome = await this.pollContainerStatus(credential, containerId);
 
@@ -129,7 +146,7 @@ export class InstagramChannelProvider implements PublishingChannelProvider {
       // The container genuinely died without ever being published — the
       // one case provably safe to start completely fresh (mirrors
       // YouTube's 404-on-checkpoint precedent exactly).
-      const freshContainerId = await this.createContainerAndUpload(credential, mediaAssetPublicId, mediaReader, callbacks, input.metadata.caption);
+      const freshContainerId = await this.createContainerAndUpload(credential, mediaAssetPublicId, mediaReader, callbacks, input.metadata.caption, mediaType);
       const freshPoll = await this.pollContainerStatus(credential, freshContainerId);
       if (freshPoll.status !== "FINISHED") {
         throw new PublishingProviderRetryableError("INSTAGRAM_PROCESSING_NOT_READY", "Instagram is still processing the newly re-uploaded media.");
@@ -158,10 +175,11 @@ export class InstagramChannelProvider implements PublishingChannelProvider {
     mediaReader: NonNullable<PublishingExecutionCallbacks["mediaReader"]>,
     callbacks: PublishingExecutionCallbacks,
     caption?: string,
+    mediaType: "REELS" | "IMAGE" = "REELS",
   ): Promise<string> {
     const head = await mediaReader.headObject(mediaAssetPublicId);
     const { status, json } = await this.client.graphRequest("POST", `/${credential.igUserId}/media`, credential.accessToken, {
-      media_type: "REELS",
+      media_type: mediaType,
       upload_type: "resumable",
       ...(caption ? { caption } : {}),
     });

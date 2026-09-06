@@ -18,6 +18,9 @@ function baseFacts(overrides: Partial<PublishingReadinessFacts> = {}): Publishin
     videoOutputMediaAssetStatus: null,
     videoMetaDescription: null,
     videoTags: null,
+    socialMediaAssetPublicId: null,
+    socialMediaAssetStatus: null,
+    socialMediaAssetType: null,
     ...overrides,
   };
 }
@@ -42,6 +45,32 @@ function videoCapabilities(overrides: Partial<PublishingChannelCapabilities> = {
     requiresDescription: false,
     supportsTags: true,
     supportsCaption: true,
+    ...overrides,
+  };
+}
+
+function facebookSocialCapabilities(overrides: Partial<PublishingChannelCapabilities> = {}): PublishingChannelCapabilities {
+  return {
+    supportedContentTypes: ["SOCIAL_POST"],
+    requiresRenderedMedia: false,
+    requiresTitle: false,
+    requiresDescription: false,
+    supportsTags: false,
+    supportsCaption: true,
+    socialPostMediaRequirement: "OPTIONAL",
+    ...overrides,
+  };
+}
+
+function instagramSocialCapabilities(overrides: Partial<PublishingChannelCapabilities> = {}): PublishingChannelCapabilities {
+  return {
+    supportedContentTypes: ["SOCIAL_POST"],
+    requiresRenderedMedia: false,
+    requiresTitle: false,
+    requiresDescription: false,
+    supportsTags: false,
+    supportsCaption: true,
+    socialPostMediaRequirement: "REQUIRED",
     ...overrides,
   };
 }
@@ -237,6 +266,92 @@ describe("derivePublishingReadiness — Video", () => {
       const result = derivePublishingReadiness(readyVideoFacts({ videoMetaDescription: null }), videoCapabilities({ requiresDescription: true }));
       expect(result.blockingReasons).toContain("REQUIRED_METADATA_MISSING");
     });
+  });
+});
+
+describe("derivePublishingReadiness — SOCIAL_POST (Module 10 Phase 10.5)", () => {
+  function socialFacts(overrides: Partial<PublishingReadinessFacts> = {}): PublishingReadinessFacts {
+    return baseFacts({ contentType: "SOCIAL_POST", blogArticleExists: false, blogPublishingContentAvailable: true, metadataCaption: "A real approved caption.", ...overrides });
+  }
+
+  it("Facebook: caption-only (no media) is ready", () => {
+    const result = derivePublishingReadiness(socialFacts(), facebookSocialCapabilities());
+    expect(result.ready).toBe(true);
+    expect(result.resolvedArtifact).toBeNull();
+  });
+
+  it("Instagram: caption-only (no media) is NOT ready, with an explicit media-required reason — never CHANNEL_NOT_SUPPORTED", () => {
+    const result = derivePublishingReadiness(socialFacts(), instagramSocialCapabilities());
+    expect(result.ready).toBe(false);
+    expect(result.blockingReasons).toEqual(["SOCIAL_MEDIA_REQUIRED"]);
+    expect(result.blockingReasons).not.toContain("CHANNEL_NOT_SUPPORTED");
+  });
+
+  it("Instagram: compatible (ACTIVE, IMAGE) media passes readiness and resolves the artifact", () => {
+    const result = derivePublishingReadiness(
+      socialFacts({ socialMediaAssetPublicId: "media-1", socialMediaAssetStatus: "ACTIVE", socialMediaAssetType: "IMAGE" }),
+      instagramSocialCapabilities(),
+    );
+    expect(result.ready).toBe(true);
+    expect(result.resolvedArtifact).toEqual({ mediaAssetPublicId: "media-1" });
+  });
+
+  it("Instagram: compatible (ACTIVE, VIDEO) media also passes readiness", () => {
+    const result = derivePublishingReadiness(
+      socialFacts({ socialMediaAssetPublicId: "media-2", socialMediaAssetStatus: "ACTIVE", socialMediaAssetType: "VIDEO" }),
+      instagramSocialCapabilities(),
+    );
+    expect(result.ready).toBe(true);
+    expect(result.resolvedArtifact).toEqual({ mediaAssetPublicId: "media-2" });
+  });
+
+  it("Instagram: a non-ACTIVE media asset fails readiness with SOCIAL_MEDIA_INCOMPATIBLE, not silently treated as no-media", () => {
+    const result = derivePublishingReadiness(
+      socialFacts({ socialMediaAssetPublicId: "media-3", socialMediaAssetStatus: "ARCHIVED", socialMediaAssetType: "IMAGE" }),
+      instagramSocialCapabilities(),
+    );
+    expect(result.ready).toBe(false);
+    expect(result.blockingReasons).toEqual(["SOCIAL_MEDIA_INCOMPATIBLE"]);
+  });
+
+  it("Instagram: an incompatible assetType (AUDIO) fails readiness with SOCIAL_MEDIA_INCOMPATIBLE", () => {
+    const result = derivePublishingReadiness(
+      socialFacts({ socialMediaAssetPublicId: "media-4", socialMediaAssetStatus: "ACTIVE", socialMediaAssetType: "AUDIO" }),
+      instagramSocialCapabilities(),
+    );
+    expect(result.ready).toBe(false);
+    expect(result.blockingReasons).toEqual(["SOCIAL_MEDIA_INCOMPATIBLE"]);
+  });
+
+  it("Facebook: media is optional, but an attached compatible asset still resolves as the artifact", () => {
+    const result = derivePublishingReadiness(
+      socialFacts({ socialMediaAssetPublicId: "media-5", socialMediaAssetStatus: "ACTIVE", socialMediaAssetType: "IMAGE" }),
+      facebookSocialCapabilities(),
+    );
+    expect(result.ready).toBe(true);
+    expect(result.resolvedArtifact).toEqual({ mediaAssetPublicId: "media-5" });
+  });
+
+  it("WordPress/YouTube: SOCIAL_POST remains CHANNEL_NOT_SUPPORTED (capabilities unchanged from Phase 10.4)", () => {
+    const wordpressCapabilities: PublishingChannelCapabilities = { supportedContentTypes: ["BLOG"], requiresRenderedMedia: false, requiresTitle: true, requiresDescription: false, supportsTags: false, supportsCaption: false };
+    const youtubeCapabilities: PublishingChannelCapabilities = { supportedContentTypes: ["VIDEO"], requiresRenderedMedia: true, requiresTitle: true, requiresDescription: false, supportsTags: true, supportsCaption: false };
+    expect(derivePublishingReadiness(socialFacts(), wordpressCapabilities).blockingReasons).toContain("CHANNEL_NOT_SUPPORTED");
+    expect(derivePublishingReadiness(socialFacts(), youtubeCapabilities).blockingReasons).toContain("CHANNEL_NOT_SUPPORTED");
+  });
+
+  it("DRAFT/IN_PROGRESS/REVIEW SocialPost is never publishable regardless of media", () => {
+    for (const status of ["DRAFT", "IN_PROGRESS", "REVIEW"]) {
+      const result = derivePublishingReadiness(
+        socialFacts({ contentStatus: status, socialMediaAssetPublicId: "media-6", socialMediaAssetStatus: "ACTIVE", socialMediaAssetType: "IMAGE" }),
+        facebookSocialCapabilities(),
+      );
+      expect(result.ready).toBe(false);
+      expect(result.blockingReasons).toContain("CONTENT_NOT_APPROVED");
+    }
+  });
+
+  it("existing Blog/Video readiness behavior is unaffected", () => {
+    expect(derivePublishingReadiness(baseFacts(), blogCapabilities()).ready).toBe(true);
   });
 });
 

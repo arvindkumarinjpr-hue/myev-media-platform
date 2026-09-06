@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { containsUrl, normalizeHashtags } from "@myev/shared";
 import { ContentItemsService, type ContentActor } from "../content/content-items.service";
@@ -94,6 +95,7 @@ export class SocialService {
     const currentVersion = item.currentVersionId ? await this.prisma.contentVersion.findFirst({ where: { id: item.currentVersionId } }) : null;
     const versionCount = await this.prisma.contentVersion.count({ where: { contentItemId: item.id } });
     const generation = currentVersion ? await this.safeGenerationSummary(currentVersion.id) : null;
+    const media = currentVersion ? await this.safeMediaSummary(currentVersion.id) : null;
 
     const body = (currentVersion?.body as Record<string, unknown>) ?? {};
     return {
@@ -108,6 +110,7 @@ export class SocialService {
       caption: body.caption ?? null,
       hashtags: body.hashtags ?? [],
       ctaObjective: body.ctaObjective ?? null,
+      media,
       currentVersion: currentVersion ? { publicId: currentVersion.publicId, versionNumber: currentVersion.versionNumber, createdAt: currentVersion.createdAt } : null,
       versionCount,
       generation,
@@ -132,6 +135,7 @@ export class SocialService {
           hashtags: body.hashtags ?? [],
           ctaObjective: body.ctaObjective ?? null,
           generation: await this.safeGenerationSummary(v.id),
+          media: await this.safeMediaSummary(v.id),
           createdAt: v.createdAt,
         };
       }),
@@ -147,6 +151,13 @@ export class SocialService {
       this.prisma.aiJob.findUnique({ where: { id: gen.hashtagAiJobId }, select: { publicId: true, agentName: true, agentVersion: true } }),
     ]);
     return { generated: true, captionAiJob: captionJob, hashtagAiJob: hashtagJob, createdAt: gen.createdAt };
+  }
+
+  /** Module 10 Phase 10.5 — null means no media attached (valid for Facebook; not-ready for Instagram). Never exposes a raw storage key/URL — publicId + status/type only, same read-model discipline as safeGenerationSummary. */
+  private async safeMediaSummary(contentVersionId: string): Promise<Record<string, unknown> | null> {
+    const versionMedia = await this.prisma.socialVersionMedia.findFirst({ where: { contentVersionId }, select: { mediaAsset: { select: { publicId: true, status: true, assetType: true } } } });
+    if (!versionMedia) return null;
+    return { mediaAssetPublicId: versionMedia.mediaAsset.publicId, status: versionMedia.mediaAsset.status, assetType: versionMedia.mediaAsset.assetType };
   }
 
   async edit(workspace: { id: string }, actor: ContentActor, itemPublicId: string, dto: EditSocialPostDto, ctx: RequestContext): Promise<Record<string, unknown>> {
@@ -165,7 +176,33 @@ export class SocialService {
     const body: Record<string, unknown> = { caption, hashtags, ...(ctaObjective ? { ctaObjective } : {}) };
     this.bodyValidator.validate("SOCIAL_POST", body);
 
+    // Module 10 Phase 10.5 Part D — media resolution BEFORE createVersion()
+    // runs, so an invalid mediaAssetPublicId is rejected before any new
+    // version is created (never a half-applied edit). undefined = carry
+    // the current version's own media forward unchanged; explicit null =
+    // detach; a real publicId = validated same-workspace ACTIVE asset.
+    let mediaAssetId: string | null | undefined;
+    if (dto.mediaAssetPublicId === undefined) {
+      const currentMedia = currentVersion ? await this.prisma.socialVersionMedia.findFirst({ where: { contentVersionId: currentVersion.id }, select: { mediaAssetId: true } }) : null;
+      mediaAssetId = currentMedia?.mediaAssetId ?? null;
+    } else if (dto.mediaAssetPublicId === null) {
+      mediaAssetId = null;
+    } else {
+      const asset = await this.prisma.mediaAsset.findFirst({ where: { publicId: dto.mediaAssetPublicId, workspaceId: workspace.id }, select: { id: true, status: true } });
+      if (!asset) throw new NotFoundException({ code: "MEDIA_ASSET_NOT_FOUND", message: "Media asset not found." });
+      if (asset.status !== "ACTIVE") throw new BadRequestException({ code: "SOCIAL_MEDIA_NOT_ACTIVE", message: "Only an ACTIVE media asset can be attached." });
+      mediaAssetId = asset.id;
+    }
+
     const updated = await this.contentItems.createVersion(workspace, actor, itemPublicId, { body }, ctx);
+
+    if (mediaAssetId) {
+      const socialPost = await this.prisma.socialPost.findFirstOrThrow({ where: { contentItemId: item.id, workspaceId: workspace.id }, select: { id: true } });
+      await this.prisma.socialVersionMedia.create({
+        data: { id: randomUUID(), publicId: randomUUID(), workspaceId: workspace.id, socialPostId: socialPost.id, contentItemId: item.id, contentVersionId: updated.currentVersionId!, mediaAssetId },
+      });
+    }
+
     return { publicId: updated.publicId, status: updated.status, currentVersionId: updated.currentVersionId };
   }
 
