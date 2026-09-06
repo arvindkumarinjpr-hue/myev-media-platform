@@ -36,4 +36,15 @@ describe("SidebarNav", () => {
     // Topic Clusters has no view-permission gate — always visible.
     expect(screen.getByRole("link", { name: "Topic Clusters" })).toBeInTheDocument();
   });
+
+  // Module 10 Phase 10.6 — the new "Social Content" nav entry, gated by
+  // SOCIAL_VIEW exactly like every other content nav item.
+  it("shows Social Content only with SOCIAL_VIEW", () => {
+    pathname = "/workspaces/ws-1";
+    const { rerender } = render(<SidebarNav workspaceId="ws-1" permissions={["SOCIAL_VIEW"]} />);
+    expect(screen.getByRole("link", { name: "Social Content" })).toHaveAttribute("href", "/workspaces/ws-1/social");
+
+    rerender(<SidebarNav workspaceId="ws-1" permissions={["BLOG_VIEW"]} />);
+    expect(screen.queryByRole("link", { name: "Social Content" })).not.toBeInTheDocument();
+  });
 });
