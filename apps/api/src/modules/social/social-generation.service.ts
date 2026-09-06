@@ -144,6 +144,11 @@ export class SocialGenerationService {
     // create" requirement — see this file's doc comment for why this
     // isn't simply a call to ContentItemsService.create() followed by a
     // second write).
+    // Part E — best-effort proposal, never blocking: a source with no
+    // compatible media leaves the SocialPost fully valid, just Instagram-
+    // not-ready until a human attaches one.
+    const proposedMediaAssetId = await this.proposeSourceMedia(workspace.id, source, dto.platform);
+
     const title = `${source.title} — ${dto.platform} post`.slice(0, 300);
     const item = await this.prisma.$transaction(async (tx) => {
       const itemId = randomUUID();
@@ -186,6 +191,16 @@ export class SocialGenerationService {
           hashtagAiJobId: hashtagResult.aiJobId!,
         },
       });
+
+      // Module 10 Phase 10.5 Part E — same transaction, so v1 either has
+      // its proposed media from the moment it exists, or none at all;
+      // never a window where the version exists without its media
+      // decided.
+      if (proposedMediaAssetId) {
+        await tx.socialVersionMedia.create({
+          data: { id: randomUUID(), publicId: randomUUID(), workspaceId: workspace.id, socialPostId, contentItemId: itemId, contentVersionId: version.id, mediaAssetId: proposedMediaAssetId },
+        });
+      }
 
       await this.audit.recordWithinTransaction(tx, { action: "CONTENT_ITEM_CREATED", actorUserId: actor.internalId, workspaceId: workspace.id, entityType: "content_item", entityId: updated.publicId });
       await this.audit.recordWithinTransaction(tx, {
@@ -300,7 +315,19 @@ export class SocialGenerationService {
     const body: Record<string, unknown> = { caption: captionOutput.caption, hashtags, ...(captionOutput.ctaObjective ? { ctaObjective: captionOutput.ctaObjective } : {}) };
     this.bodyValidator.validate("SOCIAL_POST", body);
 
+    // Part E — re-derived fresh from the SAME pinned source (never the
+    // source's current state), each regeneration; not "carried forward"
+    // from the prior version's own media, keeping this version's media
+    // decision independently traceable to the pinned source every time.
+    const proposedMediaAssetId = await this.proposeSourceMedia(workspace.id, { id: socialPost.sourceContentItemId, contentType: source.contentType }, socialPost.platform);
+
     const updated = await this.contentItems.createVersion(workspace, actor, itemPublicId, { body }, ctx);
+
+    if (proposedMediaAssetId) {
+      await this.prisma.socialVersionMedia.create({
+        data: { id: randomUUID(), publicId: randomUUID(), workspaceId: workspace.id, socialPostId: socialPost.id, contentItemId: item.id, contentVersionId: updated.currentVersionId!, mediaAssetId: proposedMediaAssetId },
+      });
+    }
 
     await this.prisma.socialVersionGeneration.create({
       data: {
@@ -316,6 +343,49 @@ export class SocialGenerationService {
     });
 
     return { publicId: updated.publicId, status: updated.status, currentVersionId: updated.currentVersionId };
+  }
+
+  // Module 10 Phase 10.5 — the SAME compatibility criteria
+  // PublishingReadinessService's own REEL_TARGET_PLATFORM_BY_CHANNEL
+  // already establishes for VIDEO readiness (avoids handing Instagram/
+  // Facebook a wrong-aspect-ratio render) — reused here rather than
+  // reinvented, so a proposed render is always platform-matched.
+  private readonly REEL_TARGET_PLATFORM_BY_SOCIAL_PLATFORM: Record<string, "FACEBOOK_REEL" | "INSTAGRAM_REEL"> = {
+    FACEBOOK: "FACEBOOK_REEL",
+    INSTAGRAM: "INSTAGRAM_REEL",
+  };
+
+  /**
+   * Module 10 Phase 10.5 Part E — proposes an EXISTING, compatible source
+   * asset for auto-attachment at generation time; never generates new
+   * media, never copies bytes (only references the existing MediaAsset
+   * row by id). BLOG: the source's own featuredMediaAssetId, only when
+   * ACTIVE and an IMAGE. VIDEO: the most recent COMPLETED render matching
+   * this SocialPost's own platform (never an arbitrary "first render").
+   * Returns null (never throws) when nothing compatible exists — a
+   * SocialPost remains fully valid without media (Facebook-capable;
+   * Instagram not-ready until a human attaches one via PATCH later).
+   */
+  private async proposeSourceMedia(workspaceId: string, source: { id: string; contentType: string }, platform: string): Promise<string | null> {
+    if (source.contentType === "BLOG") {
+      const blogItem = await this.prisma.contentItem.findFirst({ where: { id: source.id }, select: { featuredMediaAssetId: true } });
+      if (!blogItem?.featuredMediaAssetId) return null;
+      const asset = await this.prisma.mediaAsset.findFirst({ where: { id: blogItem.featuredMediaAssetId, workspaceId }, select: { id: true, status: true, assetType: true } });
+      return asset && asset.status === "ACTIVE" && asset.assetType === "IMAGE" ? asset.id : null;
+    }
+    if (source.contentType === "VIDEO") {
+      const targetPlatform = this.REEL_TARGET_PLATFORM_BY_SOCIAL_PLATFORM[platform];
+      if (!targetPlatform) return null;
+      const renderJob = await this.prisma.videoRenderJob.findFirst({
+        where: { workspaceId, contentItemId: source.id, targetPlatform, status: "COMPLETED" },
+        orderBy: { createdAt: "desc" },
+        select: { outputMediaAssetPublicId: true },
+      });
+      if (!renderJob?.outputMediaAssetPublicId) return null;
+      const asset = await this.prisma.mediaAsset.findFirst({ where: { publicId: renderJob.outputMediaAssetPublicId, workspaceId }, select: { id: true, status: true } });
+      return asset?.status === "ACTIVE" ? asset.id : null;
+    }
+    return null;
   }
 
   private assertEligible(source: SourceContentRow, targetWorkspaceId: string): void {

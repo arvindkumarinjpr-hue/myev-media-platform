@@ -49,6 +49,20 @@ export interface PublishingReadinessFacts {
   metadataCaption?: string;
   /** Module 9 Phase 9.5 — opaque, provider-defined privacy value from the same generic bag. */
   metadataPrivacy?: string;
+
+  /**
+   * Module 10 Phase 10.5 — SOCIAL_POST only. Resolved from
+   * SocialVersionMedia for the item's CURRENT ContentVersion (never a
+   * different/historical version) — null when no row exists (valid: a
+   * caption-only SocialPost). `socialMediaAssetStatus`/`AssetType` are the
+   * referenced MediaAsset's own fields, fetched separately so an asset
+   * that has since become non-ACTIVE (or was never a channel-compatible
+   * type) is caught explicitly rather than assumed usable just because a
+   * row exists — mirrors videoOutputMediaAssetStatus's own precedent.
+   */
+  socialMediaAssetPublicId: string | null;
+  socialMediaAssetStatus: string | null;
+  socialMediaAssetType: string | null;
 }
 
 /** The single, shared authority for "is this stored token expiry already in the past" — called by an adapter BEFORE deciding whether to decrypt/call the provider, and re-checked inside `derivePublishingReadiness` itself so the classification can never depend on whether an adapter remembered to call this first. */
@@ -97,6 +111,8 @@ export function derivePublishingReadiness(facts: PublishingReadinessFacts, capab
     resolvedArtifact = evaluateVideoRenderReadiness(facts, blockingReasons);
   } else if (facts.contentType === "BLOG") {
     evaluateBlogReadiness(facts, blockingReasons);
+  } else if (facts.contentType === "SOCIAL_POST") {
+    resolvedArtifact = evaluateSocialMediaReadiness(facts, capabilities, blockingReasons);
   }
 
   const metadata = resolvePlatformMetadata(facts, capabilities, blockingReasons);
@@ -146,6 +162,37 @@ function evaluateVideoRenderReadiness(facts: PublishingReadinessFacts, blockingR
     return null;
   }
   return { mediaAssetPublicId: facts.videoOutputMediaAssetPublicId };
+}
+
+// Module 10 Phase 10.5 — deterministic compatibility criteria (Part E:
+// "define deterministic compatibility criteria" rather than guessing).
+// Both Facebook and Instagram Graph APIs accept an IMAGE (photo/image
+// container) or VIDEO (page video/Reels container) attachment for a
+// social post — AUDIO/DOCUMENT/SUBTITLE assets are never compatible with
+// either channel's social-post publishing surface.
+const SOCIAL_MEDIA_COMPATIBLE_ASSET_TYPES = ["IMAGE", "VIDEO"];
+
+/**
+ * SOCIAL_POST: media is optional or required depending on the channel's
+ * own `socialPostMediaRequirement` (Facebook: OPTIONAL: Instagram:
+ * REQUIRED — Part H/I). A SocialVersionMedia row existing is not the same
+ * as it being usable — the referenced MediaAsset must be ACTIVE and a
+ * channel-compatible assetType (Part D: "deleted/unavailable media
+ * rejected"), mirroring evaluateVideoRenderReadiness's own
+ * exists-but-ineligible distinction exactly.
+ */
+function evaluateSocialMediaReadiness(facts: PublishingReadinessFacts, capabilities: PublishingChannelCapabilities, blockingReasons: PublishingReadinessReasonCode[]): { mediaAssetPublicId: string } | null {
+  if (!facts.socialMediaAssetPublicId) {
+    if (capabilities.socialPostMediaRequirement === "REQUIRED") {
+      blockingReasons.push(PUBLISHING_READINESS_REASONS.SOCIAL_MEDIA_REQUIRED);
+    }
+    return null;
+  }
+  if (facts.socialMediaAssetStatus !== "ACTIVE" || !facts.socialMediaAssetType || !SOCIAL_MEDIA_COMPATIBLE_ASSET_TYPES.includes(facts.socialMediaAssetType)) {
+    blockingReasons.push(PUBLISHING_READINESS_REASONS.SOCIAL_MEDIA_INCOMPATIBLE);
+    return null;
+  }
+  return { mediaAssetPublicId: facts.socialMediaAssetPublicId };
 }
 
 /**

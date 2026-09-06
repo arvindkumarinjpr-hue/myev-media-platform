@@ -169,6 +169,12 @@ export class PublishingReadinessService {
       metadataTags: publishingMetadata.tags,
       metadataCaption: publishingMetadata.caption,
       metadataPrivacy: publishingMetadata.privacy,
+      // Overridden for SOCIAL_POST in buildContentTypeFacts(); null by
+      // default since these facts are meaningless (never checked) for
+      // other content types.
+      socialMediaAssetPublicId: null,
+      socialMediaAssetStatus: null,
+      socialMediaAssetType: null,
     };
   }
 
@@ -208,7 +214,32 @@ export class PublishingReadinessService {
         ...videoContentTypeFacts,
       };
     }
+    if (contentItem.contentType === "SOCIAL_POST") {
+      return this.buildSocialMediaFacts(workspaceId, contentItem.currentVersionId);
+    }
     return {};
+  }
+
+  /**
+   * Module 10 Phase 10.5 — resolves the CURRENT ContentVersion's own
+   * SocialVersionMedia row (never a different/historical version) and
+   * the referenced MediaAsset's live status/type, mirroring the VIDEO
+   * branch's own "row existing is not the same as usable" precedent
+   * exactly (videoOutputMediaAssetStatus). null publicId is valid — a
+   * caption-only SocialPost has no row at all.
+   */
+  private async buildSocialMediaFacts(workspaceId: string, currentVersionId: string | null): Promise<Partial<PublishingReadinessFacts>> {
+    if (!currentVersionId) return { socialMediaAssetPublicId: null, socialMediaAssetStatus: null, socialMediaAssetType: null };
+    const versionMedia = await this.prisma.socialVersionMedia.findFirst({
+      where: { workspaceId, contentVersionId: currentVersionId },
+      select: { mediaAsset: { select: { publicId: true, status: true, assetType: true } } },
+    });
+    if (!versionMedia) return { socialMediaAssetPublicId: null, socialMediaAssetStatus: null, socialMediaAssetType: null };
+    return {
+      socialMediaAssetPublicId: versionMedia.mediaAsset.publicId,
+      socialMediaAssetStatus: versionMedia.mediaAsset.status,
+      socialMediaAssetType: versionMedia.mediaAsset.assetType,
+    };
   }
 
   /**

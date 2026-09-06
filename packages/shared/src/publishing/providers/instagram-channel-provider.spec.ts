@@ -38,15 +38,16 @@ describe("InstagramChannelProvider", () => {
     server = undefined;
   });
 
-  it("reports truthful capabilities — VIDEO only, no privacy concept, caption supported", () => {
+  it("reports truthful capabilities — VIDEO + SOCIAL_POST (media required), no privacy concept, caption supported", () => {
     const provider = new InstagramChannelProvider();
     expect(provider.getCapabilities()).toEqual({
-      supportedContentTypes: ["VIDEO"],
+      supportedContentTypes: ["VIDEO", "SOCIAL_POST"],
       requiresRenderedMedia: true,
       requiresTitle: false,
       requiresDescription: false,
       supportsTags: false,
       supportsCaption: true,
+      socialPostMediaRequirement: "REQUIRED",
       supportedPrivacyOptions: undefined,
     });
   });
@@ -206,5 +207,65 @@ describe("InstagramChannelProvider", () => {
     const provider = new InstagramChannelProvider();
     const { callbacks } = callbacksWithCheckpoint(mediaReaderFor(VIDEO_BYTES));
     await expect(provider.publish(BASE_INPUT, { accessToken: "x" }, callbacks)).rejects.toBeInstanceOf(PublishingProviderPermanentError);
+  });
+
+  describe("SOCIAL_POST (Module 10 Phase 10.5)", () => {
+    const SOCIAL_INPUT: PublishingPublishInput = {
+      contentType: "SOCIAL_POST",
+      metadata: { caption: "Charging your EV at home is easier than you think.\n\n#ev #evcharging" },
+      artifact: { mediaAssetPublicId: "asset-social" },
+      operationToken: "publishing:target-2:attempt:0",
+    };
+
+    it("rejects a caption-only (no artifact) SOCIAL_POST — Instagram has no text-only post capability, never a silent call", async () => {
+      server = await startMetaFixtureServer(() => ({ status: 500, json: { error: { message: "should never be reached" } } }));
+      const provider = new InstagramChannelProvider({ graphBaseUrl: server.url, uploadBaseUrl: server.url });
+      const { callbacks } = callbacksWithCheckpoint(mediaReaderFor(VIDEO_BYTES));
+
+      await expect(provider.publish({ ...SOCIAL_INPUT, artifact: undefined }, CREDENTIAL, callbacks)).rejects.toMatchObject({ errorCode: "INSTAGRAM_ARTIFACT_MISSING" });
+      expect(server.requests).toHaveLength(0);
+    });
+
+    it("an IMAGE-typed artifact creates an IMAGE container (not REELS) and publishes end to end", async () => {
+      server = await startMetaFixtureServer((req) => {
+        if (req.path === `/v25.0/${CREDENTIAL.igUserId}/media`) return { status: 200, json: { id: "container-image-1" } };
+        if (req.path === "/v25.0/container-image-1?fields=status_code") return { status: 200, json: { status_code: "FINISHED" } };
+        if (req.path === `/v25.0/${CREDENTIAL.igUserId}/media_publish`) return { status: 200, json: { id: "ig-image-1" } };
+        return { status: 200, json: { permalink: "https://instagram.com/p/fixture" } };
+      });
+      const provider = new InstagramChannelProvider({ graphBaseUrl: server.url, uploadBaseUrl: server.url });
+      const imageReader: NonNullable<PublishingExecutionCallbacks["mediaReader"]> = { headObject: async () => ({ sizeBytes: 10, contentType: "image/jpeg" }), readRange: async () => Buffer.alloc(10) };
+      const { callbacks } = callbacksWithCheckpoint(imageReader);
+
+      const result = await provider.publish(SOCIAL_INPUT, CREDENTIAL, callbacks);
+
+      expect(result).toEqual({ externalContentId: "ig-image-1", externalUrl: "https://instagram.com/p/fixture" });
+      const containerReq = server.requests.find((r) => r.path === `/v25.0/${CREDENTIAL.igUserId}/media`)!;
+      expect((containerReq.body as Record<string, unknown>).media_type).toBe("IMAGE");
+      expect((containerReq.body as Record<string, unknown>).caption).toBe(SOCIAL_INPUT.metadata.caption);
+    });
+
+    it("a VIDEO-typed artifact still creates a REELS container for SOCIAL_POST, identical to the plain VIDEO path", async () => {
+      server = await startMetaFixtureServer((req) => {
+        if (req.path === `/v25.0/${CREDENTIAL.igUserId}/media`) return { status: 200, json: { id: "container-video-social" } };
+        if (req.path === "/v25.0/container-video-social?fields=status_code") return { status: 200, json: { status_code: "FINISHED" } };
+        if (req.path === `/v25.0/${CREDENTIAL.igUserId}/media_publish`) return { status: 200, json: { id: "ig-video-social" } };
+        return { status: 200, json: {} };
+      });
+      const provider = new InstagramChannelProvider({ graphBaseUrl: server.url, uploadBaseUrl: server.url });
+      const { callbacks } = callbacksWithCheckpoint(mediaReaderFor(VIDEO_BYTES));
+
+      const result = await provider.publish(SOCIAL_INPUT, CREDENTIAL, callbacks);
+
+      expect(result.externalContentId).toBe("ig-video-social");
+      const containerReq = server.requests.find((r) => r.path === `/v25.0/${CREDENTIAL.igUserId}/media`)!;
+      expect((containerReq.body as Record<string, unknown>).media_type).toBe("REELS");
+    });
+
+    it("rejects an unsupported content type permanently (unchanged)", async () => {
+      const provider = new InstagramChannelProvider();
+      const { callbacks } = callbacksWithCheckpoint(mediaReaderFor(VIDEO_BYTES));
+      await expect(provider.publish({ ...SOCIAL_INPUT, contentType: "BLOG" }, CREDENTIAL, callbacks)).rejects.toMatchObject({ errorCode: "INSTAGRAM_UNSUPPORTED_CONTENT_TYPE" });
+    });
   });
 });
